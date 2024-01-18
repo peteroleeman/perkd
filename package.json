@@ -1,20 +1,13 @@
 {
   "name": "app",
-  "version": "1.0.0",
-  "description": "This repository contains a Node.js application used to demonstrate different deployment processes.",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/jeremylevy/node-app.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/jeremylevy/node-app/issues"
-  },
-  "homepage": "https://github.com/jeremylevy/node-app#readme"
+  "main": "server.js",
+  "dependencies": {
+    "@google-cloud/logging": "^10.5.0",
+    "axios": "^1.4.0",
+    "body-parser": "^1.19.0",
+    "cors": "^2.8.5",
+    "dotenv": "^10.0.0",
+    "express": "^4.17.1",
+    "firebase": "^8.0.1"
+  }
 }
