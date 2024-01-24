@@ -2,6 +2,7 @@
 var http = require('http');
 var qs = require('querystring');
 var crypto = require('crypto');
+const axios = require('axios');
 
 
 var USER = "fcey@me.com";//必填，飞鹅云 www.feieyun.cn后台注册的账号名
@@ -128,16 +129,197 @@ class UtilFeie
             }
     }
 
+    async  checkPrinterQueue(printerSN) {
 
-    print(snValue)
+      try {
+        // Make a GET request to the specified URL with the serial number
+        const response = await axios.get(`https://us-central1-foodio-ab3b2.cloudfunctions.net/app/checkfeiequeue/${printerSN}`);
+    
+        // Extract the response data
+        const responseData = response.data;
+    
+        // Return the response data
+        
+        return (responseData);
+       
+
+      } catch (error) {
+        // Handle errors by logging and returning an empty string
+       
+        return( error.message);
+        
+      }
+    }
+
+    async checkFeieStatus(printerSN)
     {
+      const USER = "fcey@me.com";
+      const UKEY = "rVN3AhIH27JbJkEU";
+      let SN = printerSN; // "223510740";
+     
+  
+      const timeStamp = Math.floor(Date.now() / 1000).toString();
+  
+      const bytes = Buffer.from(`${USER}${UKEY}${timeStamp}`, 'utf-8');
+      const SIG = crypto.createHash('sha1').update(bytes).digest('hex');
+  
+      // let content = "";
+      // for (const contentItem of contentList) {
+      //     content += contentItem;
+      // }
+  
+      const url = 'http://api.feieyun.cn/Api/Open/';
+      const headers = {
+          'Content-Type': 'application/x-www-form-urlencoded',
+      };
+  
+      const bodyContent = {
+          user: USER,
+          stime: timeStamp,
+          sig: SIG,
+          apiname: "Open_queryPrinterStatus",
+          sn: SN,
+          times: "1",
+      };
+  
+      try {
+          const response = await axios.post(url, bodyContent, { headers });
+          const statusCode = response.status;
 
-            console.log("print called");
+          return `${statusCode} : ${JSON.stringify(response.data)}}`;
+          // Handle the response as needed
+      } catch (error) {
+          // Handle errors or exceptions
+          console.error(`Error: ${error.message}`);
+
+          return `Error : ${error.message}}`;
+      }
+  
+      console.log(`Demo receipt sent to printer ${SN}`);
+
+      return `Receipt sent to printer ${SN}`;
+      // Handle state update if needed
+    }
+
+    async printFeie2(printerSN, contentList) {
+      const USER = "fcey@me.com";
+      const UKEY = "rVN3AhIH27JbJkEU";
+      let SN = printerSN; // "223510740";
+     
+      console.log( "printer SN:" + printerSN);
+  
+      const timeStamp = Math.floor(Date.now() / 1000).toString();
+  
+      const bytes = Buffer.from(`${USER}${UKEY}${timeStamp}`, 'utf-8');
+      const SIG = crypto.createHash('sha1').update(bytes).digest('hex');
+  
+      let content = "";
+      for (const contentItem of contentList) {
+          content += contentItem;
+      }
+  
+      const url = 'http://api.feieyun.cn/Api/Open/';
+      const headers = {
+          'Content-Type': 'application/x-www-form-urlencoded',
+      };
+  
+      const bodyContent = {
+          user: USER,
+          stime: timeStamp,
+          sig: SIG,
+          apiname: "Open_printMsg",
+          sn: SN,
+          content: content,
+          times: "1",
+      };
+  
+      try {
+          const response = await axios.post(url, bodyContent, { headers });
+          const statusCode = response.status;
+
+          return `${statusCode} : Request sent}`;
+          // Handle the response as needed
+      } catch (error) {
+          // Handle errors or exceptions
+          console.error(`Error: ${error.message}`);
+
+          return `Error : ${error.message}}`;
+      }
+  
+      console.log(`Demo receipt sent to printer ${SN}`);
+
+      return `Receipt sent to printer ${SN}`;
+      // Handle state update if needed
+  }
+  
+
+    async  printFeie(contentList) {
+
+        let content = "";
+        content = contentList.join('');
+
+        return new Promise((resolve, reject) =>{
+
+
+                 var sn = this.SN;
+
+
+
+                var STIME = Math.floor(new Date().getTime() / 1000);//请求时间,当前时间的秒数
+                var post_data = {
+                    user: this.USER,//账号
+                    stime:this.STIME,//当前时间的秒数，请求时间
+                    sig:this.signature(STIME),//签名
+                    apiname:"Open_printMsg",//不需要修改
+                    sn:sn,//打印机编号
+                    content:content,//打印内容
+                    times:"1"//打印联数,默认为1
+                    };
+                var content = qs.stringify(post_data);
+
+                console.log(post_data);
+
+                var options = {
+                    hostname: this.HOST,
+                    port: 80,
+                    path: this.PATH,
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                    }
+                };
+                var req = http.request( options, function (res) {
+                    res.setEncoding('utf-8');
+                    res.on('data', function (response){
+                        //response是返回的JSON字符串
+                        //服务器返回值，建议要当做日志记录起来
+                        console.log(response);
+                        resolve(response);
+                    });
+                });
+                req.on('error', function (e) {
+                    console.log('error!');
+                    console.log(e);
+                    reject(e);
+                });
+                req.write(content);
+                req.end();
+
+                console.log("print done");
+                //return "Print data posted to cloud successfully";
+            });
+    }
+
+
+
+    print()
+    {
+             return new Promise((resolve, reject) =>{
+
+
             var sn = SN;
-            if(snValue != "")
-            {
-                sn = snValue;
-            }
+
+
 
             //标签说明：
             //单标签:
@@ -170,7 +352,7 @@ class UtilFeie
             orderInfo += "<QR>http://www.dzist.com</QR>";//把二维码字符串用标签套上即可自动生成二维码
         var STIME = Math.floor(new Date().getTime() / 1000);//请求时间,当前时间的秒数
         var post_data = {
-            user:USER,//账号
+            user: USER,//账号
             stime:STIME,//当前时间的秒数，请求时间
             sig:this.signature(STIME),//签名
             apiname:"Open_printMsg",//不需要修改
@@ -179,6 +361,9 @@ class UtilFeie
             times:"1"//打印联数,默认为1
             };
         var content = qs.stringify(post_data);
+
+       
+
         var options = {
             hostname:HOST,
             port: 80,
@@ -194,15 +379,20 @@ class UtilFeie
                 //response是返回的JSON字符串
                 //服务器返回值，建议要当做日志记录起来
                 console.log(response);
+                resolve(response);
             });
         });
         req.on('error', function (e) {
             console.log('error!');
+            console.log(e);
+            reject(e);
         });
         req.write(content);
         req.end();
 
         console.log("print done");
+        //return "Print data posted to cloud successfully";
+    });
     }
 
 
@@ -308,7 +498,14 @@ class UtilFeie
     }
 
  signature(STIME){
-	return crypto.createHash('sha1').update(USER+UKEY+STIME).digest('hex');//获取签名
+    //var textValue = "${this.USER}${this.UKEY}${STIME}";
+    console.log(USER);
+    console.log(UKEY);
+    console.log(STIME);
+    var textValue = USER + UKEY + STIME;
+    console.log("generating signature with parameter below");
+    console.log(textValue);
+	return crypto.createHash('sha1').update(textValue).digest('hex');//获取签名
     }
 
 
@@ -383,6 +580,227 @@ class UtilFeie
 
       return receiptLine.getReceipt();
     }
+
+
+  //SECTION create data from JSON
+ createFeieSNFromJSON(snData)
+ {
+  const result = new feieSN(snData);
+   
+  return result;
+ }
+
+  createFeieOrderFromJSON(jsonData) {
+   
+    //test data is meant to test out the jsonData input, in case jsonData input no longer working
+    const testData = {
+      "sn" : "223510740",
+      "orderId": "12345",
+      "storeTitle": "MDV",
+      "mobileAssignedTable": "A1",
+      "totalPrice": "RM 100",
+      "name": "John Doe",
+      "userPhoneNumber": "1234567890",
+      "orderItems": [
+        {
+          "title": "Item 1",
+          "qty": 2,
+          "modInfo": "Extra cheese",
+          "setMenu1": "Side Salad",
+          "setMenu2": "Soft Drink"
+        },
+        {
+          "title": "Item 2",
+          "qty": 1,
+          "modInfo": "",
+          "setMenu1": "",
+          "setMenu2": ""
+        }
+        // Add more order items as needed
+      ]
+    };
+    
+    const order = new feieOrder(jsonData);
+    
+    console.log(order);
+
+    return order;
+
+  }
+
+  createFeieOrderItemFromJSON(item) {
+    return new feieOrderItem(
+      item.title,
+      item.qty,
+      item.modInfo,
+      item.setMenu1,
+      item.setMenu2
+    );
+  }
+
+  //SECTION print function
+  printOrderItemSlip(orderModel, element, bReprint = false, type = 0) {
+        const receipt = [];
+        const now = new Date();
+        const dateFormatter = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' });
+        const timeFormatter = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const currentDate = dateFormatter.format(now);
+        const currentTime = timeFormatter.format(now);
+
+        let keyLen = 16;
+        let valueLen = 16;
+
+        if (type === 1) {
+          keyLen = 24;
+          valueLen = 24;
+        }
+
+        const dualTable = new ReceiptDualTable();
+        const line = new ReceiptLine();
+        line.init(keyLen + valueLen);
+        dualTable.init(keyLen, valueLen);
+
+        if (bReprint === true) {
+          line.addText(ReceiptFormat.setCenterBIG("*DUPLICATE*"));
+        }
+
+        line.addText(ReceiptFormat.setCenter(`${currentDate} ${currentTime}`));
+        for (const lineText of line.getReceipt()) {
+          receipt.push(lineText);
+        }
+
+        dualTable.refresh();
+        dualTable.addKey(`${orderModel?.orderId}`);
+        dualTable.addValue(orderModel?.mobileAssignedTable || "-");
+
+        for (const lineText of dualTable.getReceipt()) {
+          receipt.push(lineText);
+        }
+
+        let totalQty = 0;
+        for (const orderItem of orderModel.orderItems) {
+          totalQty += orderItem.qty;
+        }
+
+        line.refresh();
+
+        line.addText(ReceiptFormat.setBIG(element.title) + "<BR>");
+        line.addText(
+          ReceiptFormat.setRightAlign(`<B>${element.qty}/${totalQty}</B>`));
+
+        if (element.modInfo !== "" && element.modInfo !== "null") {
+          line.addText(`S:${element.modInfo}<BR>`);
+        }
+
+        if (element.setMenu1 !== "") {
+          line.addText(`S1:${element.setMenu1}<BR>`);
+        }
+        if (element.setMenu2 !== "") {
+          line.addText(`S2:${element.setMenu2}<BR>`);
+        }
+        if (element.setMenu3 !== "") {
+          line.addText(`S3:${element.setMenu3}<BR>`);
+        }
+        if (element.setMenu4 !== "") {
+          line.addText(`S4:${element.setMenu4}<BR>`);
+        }
+        if (element.setMenu5 !== "") {
+          line.addText(`S5:${element.setMenu5}<BR>`);
+        }
+
+        line.addText("<BR>");
+        line.addText(`${orderModel?.name}<BR>`);
+        line.addText(orderModel?.userPhoneNumber || "-");
+
+        for (const lineText of line.getReceipt()) {
+          receipt.push(lineText);
+        }
+
+        console.log("Feie order slip printed");
+        return receipt;
+      }
+
+      //bReprint = false as default
+      //type = 0 as default. 0 is normal receipt, 1 is wide receipt
+      printOrderReceiptFromOrder(orderModel, bReprint, type ) {
+    
+
+          const receipt = [];
+
+          const now = new Date();
+          // const dateFormatter = format(now, 'yyyy-MM-dd');
+          // const timeFormatter = format(now, 'HH:mm:ss');
+          // const currentDate = dateFormatter;
+          // const currentTime = timeFormatter;
+
+
+const dateFormatter = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' });
+const timeFormatter = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
+const currentDate = dateFormatter.format(now);
+const currentTime = timeFormatter.format(now);
+
+          let dateLen = 16;
+          let timeLen = 16;
+          if (type === 1) {
+              dateLen = 24;
+              timeLen = 24;
+          }
+
+          const dualTable = new ReceiptDualTable();
+          const line = new ReceiptLine();
+          line.init(dateLen + timeLen);
+          dualTable.init(dateLen, timeLen);
+
+          if (bReprint === true) {
+              line.addText('*DUPLICATE*');
+          }
+
+          if ((orderModel?.storeTitle || "") !== "") {
+              line.addText(orderModel?.storeTitle);
+          }
+
+          line.addText(`${currentDate} ${currentTime}`);
+          line.addText(orderModel.orderId || "-");
+
+          // ... (Skipping other parts for brevity)
+
+          for (let lineItem of line.getReceipt()) {
+              receipt.push(lineItem);
+          }
+
+          // ... (Skipping other parts for brevity)
+
+          // Printing the summary
+          let keyLen = 10;
+          let valueLen = 22;
+
+          if (type === 1) {
+              keyLen = 10;
+              valueLen = 38;
+          }
+
+          dualTable.init(keyLen, valueLen);
+          dualTable.addKey("");
+          dualTable.addValue("Currency");
+
+          // ... (Skipping other parts for brevity)
+
+          for (let line of dualTable.getReceipt()) {
+              receipt.push(line);
+          }
+
+          line.refresh();
+
+          receipt.push(`Total ${orderModel.totalPrice}`);
+          receipt.push('* * *');
+
+          // ... (Skipping other parts for brevity)
+
+          return receipt;
+      }
+
+
 }
 
 
@@ -654,6 +1072,14 @@ class ReceiptDualTable {
     return subChunk.textLen === 0;
   }
 
+  getTextLen(input) {
+    // Implement your own logic for getting the text length
+    // This is a placeholder for the missing UtilString.getTextLen function
+    // You may need to replace it with your actual implementation.
+    return input.length;
+  }
+
+
   getLine(index) {
     const subChunk = this.keyList[index];
     const lineChar = subChunk.values[0];
@@ -701,7 +1127,9 @@ class ReceiptDualTable {
 
   // Example JSON structure for orderModel
   {
+    "storeTitle" : "Store A"
     "orderId": "12345",
+    "totalPrice" : "RM 100"
     "mobileAssignedTable": "A1",
     "name": "John Doe",
     "userPhoneNumber": "1234567890",
@@ -734,159 +1162,53 @@ class ReceiptDualTable {
   }
   */
 
-  printOrderItemSlip(orderModel, element, bReprint = false, type = 0) {
-        const receipt = [];
-        const now = new Date();
-        const dateFormatter = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' });
-        const timeFormatter = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const currentDate = dateFormatter.format(now);
-        const currentTime = timeFormatter.format(now);
 
-        let keyLen = 16;
-        let valueLen = 16;
+  
+}
 
-        if (type === 1) {
-          keyLen = 24;
-          valueLen = 24;
-        }
-
-        const dualTable = new ReceiptDualTable();
-        const line = new ReceiptLine();
-        line.init(keyLen + valueLen);
-        dualTable.init(keyLen, valueLen);
-
-        if (bReprint === true) {
-          line.addText(ReceiptFormat.setCenterBIG("*DUPLICATE*"));
-        }
-
-        line.addText(ReceiptFormat.setCenter(`${currentDate} ${currentTime}`));
-        for (const lineText of line.getReceipt()) {
-          receipt.push(lineText);
-        }
-
-        dualTable.refresh();
-        dualTable.addKey(`${orderModel?.orderId}`);
-        dualTable.addValue(orderModel?.mobileAssignedTable || "-");
-
-        for (const lineText of dualTable.getReceipt()) {
-          receipt.push(lineText);
-        }
-
-        let totalQty = 0;
-        for (const orderItem of orderModel.orderItems) {
-          totalQty += orderItem.qty;
-        }
-
-        line.refresh();
-
-        line.addText(ReceiptFormat.setBIG(element.title) + "<BR>");
-        line.addText(
-          ReceiptFormat.setRightAlign(`<B>${element.qty}/${totalQty}</B>`));
-
-        if (element.modInfo !== "" && element.modInfo !== "null") {
-          line.addText(`S:${element.modInfo}<BR>`);
-        }
-
-        if (element.setMenu1 !== "") {
-          line.addText(`S1:${element.setMenu1}<BR>`);
-        }
-        if (element.setMenu2 !== "") {
-          line.addText(`S2:${element.setMenu2}<BR>`);
-        }
-        if (element.setMenu3 !== "") {
-          line.addText(`S3:${element.setMenu3}<BR>`);
-        }
-        if (element.setMenu4 !== "") {
-          line.addText(`S4:${element.setMenu4}<BR>`);
-        }
-        if (element.setMenu5() !== "") {
-          line.addText(`S5:${element.setMenu5}<BR>`);
-        }
-
-        line.addText("<BR>");
-        line.addText(`${orderModel?.name}<BR>`);
-        line.addText(orderModel?.userPhoneNumber || "-");
-
-        for (const lineText of line.getReceipt()) {
-          receipt.push(lineText);
-        }
-
-        console.log("Feie order slip printed");
-        return receipt;
-      }
-
-
-      printOrderReceiptFromOrder(storeModel, orderModel, { bReprint = false, type = 0 }) {
-          const receipt = [];
-
-          const now = new Date();
-          const dateFormatter = format(now, 'yyyy-MM-dd');
-          const timeFormatter = format(now, 'HH:mm:ss');
-          const currentDate = dateFormatter;
-          const currentTime = timeFormatter;
-
-          let dateLen = 16;
-          let timeLen = 16;
-          if (type === 1) {
-              dateLen = 24;
-              timeLen = 24;
-          }
-
-          const dualTable = new ReceiptDualTable();
-          const line = new ReceiptLine();
-          line.init(dateLen + timeLen);
-          dualTable.init(dateLen, timeLen);
-
-          if (bReprint === true) {
-              line.addText('*DUPLICATE*');
-          }
-
-          if ((orderModel?.storeTitle || "") !== "") {
-              line.addText(orderModel?.storeTitle);
-          }
-
-          line.addText(`${currentDate} ${currentTime}`);
-          line.addText(orderModel.orderId || "-");
-
-          // ... (Skipping other parts for brevity)
-
-          for (let lineItem of line.getReceipt()) {
-              receipt.push(lineItem);
-          }
-
-          // ... (Skipping other parts for brevity)
-
-          // Printing the summary
-          let keyLen = 10;
-          let valueLen = 22;
-
-          if (type === 1) {
-              keyLen = 10;
-              valueLen = 38;
-          }
-
-          dualTable.init(keyLen, valueLen);
-          dualTable.addKey("");
-          dualTable.addValue("Currency");
-
-          // ... (Skipping other parts for brevity)
-
-          for (let line of dualTable.getReceipt()) {
-              receipt.push(line);
-          }
-
-          line.refresh();
-
-          receipt.push(`Total ${orderModel.totalPrice.toFixed(2)}`);
-          receipt.push('* * *');
-
-          // ... (Skipping other parts for brevity)
-
-          return receipt;
-      }
-
+class feieSN
+{
+  constructor(snData)
+  {
+    this.sn = snData.sn;
+  }
 
 }
+
+class feieOrder {
+  constructor(orderData) {
+    // this.storeTitle = storeTitle
+    // this.orderId = orderId;
+    // this.totalPrice = totalPrice;
+    // this.mobileAssignedTable = mobileAssignedTable;
+    // this.name = name;
+    // this.userPhoneNumber = userPhoneNumber;
+    // this.orderItems = orderItems;//orderItems.map(item => new feieOrderItem(item.title, item.qty, item.modInfo, item.setMenu1, item.setMenu2));
+    this.sn = orderData.sn;
+    this.orderId = orderData.orderId;
+    this.storeTitle = orderData.storeTitle;
+    this.mobileAssignedTable = orderData.mobileAssignedTable;
+    this.totalPrice = orderData.totalPrice;
+    this.name = orderData.name;
+    this.userPhoneNumber = orderData.userPhoneNumber;
+    this.orderItems = orderData.orderItems.map(itemData => new feieOrderItem(itemData));
+  
+  }
+
+}
+
+class feieOrderItem {
+  constructor(itemData) {
+    this.title = itemData.title;
+    this.qty = itemData.qty;
+    this.modInfo = itemData.modInfo;
+    this.setMenu1 = itemData.setMenu1;
+    this.setMenu2 = itemData.setMenu2;
+  }
+}
+
+
+
 
 
 module.exports = UtilFeie;
