@@ -14,6 +14,7 @@ var OdooRouter = require('./odoorouter');
 
 
 var {Logging} = require('@google-cloud/logging');
+const GKashRouter = require("./gkashrouter");
 var projectId = 'foodio-ab3b2'; // Your Google Cloud Platform project ID
 var logName = 'perkd-log'; // The name of the log to write to
 var logging = new Logging({projectId});
@@ -35,6 +36,14 @@ function writeLog(logValue)
 // this will let us get the data from a POST
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  next();
+});
+
 
 var port = process.env.PORT || 8080;        // set our port
 var storeId = "S_172a0745-2d5e-4f7a-9b98-ee4ad6fe0067" ; //set the test store id
@@ -148,6 +157,10 @@ app.use('/perkd', router);
 //for odoo
 const myOdoo = new OdooRouter();
 app.use('/odoo', myOdoo.getRouter());
+
+//for gkash
+const myGKash = new GKashRouter();
+app.use('/gkash', myGKash.getRouter());
 
 // START THE SERVER
 // =============================================================================

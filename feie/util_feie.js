@@ -628,6 +628,51 @@ class UtilFeie
 
   }
 
+  createFeieOrderSlipFromJSON(jsonData)
+  {
+    const testData = 
+    {
+      "sn": "223510740",
+      "orderId": "POS_12345",
+      "dateTime" : "02/05/2024 Mon 01:00PM",
+      "storeTitle": "MDV",
+      "buzzer": "13",
+      "remark": "this is a long remark entered by end user",
+      "orderMode": "Take Away",
+      "orderItems": [
+        {
+          "title": "Single Jr Cone",
+          "qty": 1,
+          "modInfo": [
+            { "title": "Extra cheese", "qty": 1 }
+          ]
+        },
+        {
+          "title": "Single Jr Cone",
+          "qty": 2,
+          "modInfo": [
+            { "title": "Chocolate", "qty": 1 },
+            { "title": "Strawberry", "qty": 1 }
+          ]
+        },
+        {
+          "title": "Pizza",
+          "qty": 1,
+          "modInfo": [
+            { "title": "Extra cheese", "qty": 1 }
+          ]
+        }
+      ]
+    }
+    
+    const order = new FeieOrderSlip(jsonData);
+    
+    console.log(order);
+
+    return order;
+
+  }
+
   createFeieOrderItemFromJSON(item) {
     return new feieOrderItem(
       item.title,
@@ -639,13 +684,18 @@ class UtilFeie
   }
 
   //SECTION print function
-  printOrderItemSlip(orderModel, element, bReprint = false, type = 0) {
+  printOrderItemSlip(orderModel, bReprint = false, type = 0) {
+        //console.log(orderModel);
+
         const receipt = [];
-        const now = new Date();
-        const dateFormatter = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' });
-        const timeFormatter = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const currentDate = dateFormatter.format(now);
-        const currentTime = timeFormatter.format(now);
+        // const now = new Date();
+        // const dateFormatter = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' });
+        // const timeFormatter = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit' });
+        
+        // const currentDate = dateFormatter.format(now);
+        // const currentTime = timeFormatter.format(now);
+
+        // const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'short' });
 
         let keyLen = 16;
         let valueLen = 16;
@@ -664,59 +714,126 @@ class UtilFeie
           line.addText(ReceiptFormat.setCenterBIG("*DUPLICATE*"));
         }
 
-        line.addText(ReceiptFormat.setCenter(`${currentDate} ${currentTime}`));
+        line.addText(
+          ReceiptFormat.setRightAlign(`<BOLD>${orderModel.printerName}</BOLD>`));
+        
+       
+
+        line.addText(  ReceiptFormat.setCenterBIG(`${orderModel.buzzer} (${orderModel.orderMode})`));
+        line.addText("<BR>");
+        line.addText(ReceiptFormat.setCenter(`${orderModel.dateTime}`));
+        line.addText("<BR>");
+        line.addText(
+        ReceiptFormat.setBold(`**NOTE:` + "<BR>"));
+        line.addText(orderModel.remark);
+        line.addText("<BR>");
+
+
+        line.addLine("-");
+
         for (const lineText of line.getReceipt()) {
           receipt.push(lineText);
         }
 
-        dualTable.refresh();
-        dualTable.addKey(`${orderModel?.orderId}`);
-        dualTable.addValue(orderModel?.mobileAssignedTable || "-");
+        // dualTable.refresh();
+        // dualTable.addKey(`${orderModel?.orderId}`);
+        // dualTable.addValue(orderModel?.mobileAssignedTable || "-");
 
         for (const lineText of dualTable.getReceipt()) {
           receipt.push(lineText);
         }
 
-        let totalQty = 0;
+        let qty = 0;
+        let title = "";
+        let modInfo = "";
+       
         for (const orderItem of orderModel.orderItems) {
-          totalQty += orderItem.qty;
+          qty = orderItem.qty;
+          title = orderItem.title;
+
+          dualTable.refresh();
+          dualTable.addKey(`${title}`);
+          dualTable.addValue(`${qty}` || "-");
+
+          for (const lineText of dualTable.getReceipt()) {
+            receipt.push(lineText);
+          }
+
+
+          if (orderItem?.modInfo !== "" && orderItem?.modInfo !== "null"  && orderItem?.modInfo !== undefined) {
+            //modInfo = (`S:${orderItem.modInfo}<BR>`);
+             for(const mod of orderItem.modInfo)
+             {
+                let modTitle = mod.title;
+                let modQty = mod.qty;
+
+                dualTable.refresh();
+                dualTable.addKey(`  ${modTitle}`);
+                if(modQty > 1)
+                {
+                dualTable.addBoldValue(`${modQty}`);
+                }
+                else
+                {
+                  dualTable.addValue(`${modQty}`);
+                }
+
+                for (const lineText of dualTable.getReceipt()) {
+                  receipt.push(lineText);
+                }
+
+                
+
+             }
+
+          }
+          
+
+         
+          line.refresh();
+          line.addLine("-");
+          for (const lineText of line.getReceipt()) 
+          {
+             receipt.push(lineText);
+          }
+
         }
 
-        line.refresh();
+        
 
-        line.addText(ReceiptFormat.setBIG(element.title) + "<BR>");
-        line.addText(
-          ReceiptFormat.setRightAlign(`<B>${element.qty}/${totalQty}</B>`));
+        // line.addText(ReceiptFormat.setBIG(title) + "<BR>");
+        // line.addText(
+        //   ReceiptFormat.setRightAlign(`<B>${totalQty}</B>`));
 
-        if (element.modInfo !== "" && element.modInfo !== "null") {
-          line.addText(`S:${element.modInfo}<BR>`);
-        }
+        // if (modInfo !== "" && modInfo !== "null") {
+        //   line.addText(`${modInfo}<BR>`);
+        // }
 
-        if (element.setMenu1 !== "") {
-          line.addText(`S1:${element.setMenu1}<BR>`);
-        }
-        if (element.setMenu2 !== "") {
-          line.addText(`S2:${element.setMenu2}<BR>`);
-        }
-        if (element.setMenu3 !== "") {
-          line.addText(`S3:${element.setMenu3}<BR>`);
-        }
-        if (element.setMenu4 !== "") {
-          line.addText(`S4:${element.setMenu4}<BR>`);
-        }
-        if (element.setMenu5 !== "") {
-          line.addText(`S5:${element.setMenu5}<BR>`);
-        }
+        // if (menu1 !== "") {
+        //   line.addText(`${menu1}<BR>`);
+        // }
+        // if (menu2 !== "") {
+        //   line.addText(`${menu2}<BR>`);
+        // }
+        // if (menu3 !== "") {
+        //   line.addText(`${menu3}<BR>`);
+        // }
+        // if (menu4 !== "") {
+        //   line.addText(`${menu4}<BR>`);
+        // }
+        // if (menu5 !== "") {
+        //   line.addText(`${menu5}<BR>`);
+        // }
 
-        line.addText("<BR>");
-        line.addText(`${orderModel?.name}<BR>`);
-        line.addText(orderModel?.userPhoneNumber || "-");
+        // line.addText("<BR>");
+        // line.addText(`${orderModel?.name}<BR>`);
+        // line.addText(orderModel?.userPhoneNumber || "-");
 
-        for (const lineText of line.getReceipt()) {
-          receipt.push(lineText);
-        }
+        // for (const lineText of line.getReceipt()) {
+        //   receipt.push(lineText);
+        // }
 
-        console.log("Feie order slip printed");
+        //console.log("Feie order slip printed");
         return receipt;
       }
 
@@ -1063,6 +1180,22 @@ class ReceiptDualTable {
     this.valueList.push(subChunk);
   }
 
+  addBoldValue(text) {
+    const index = this.valueList.length;
+    const subChunk = new ReceiptSubChunk();
+
+    let remainLen = this.valueLen - this.getTextLen(text.toString());
+    remainLen = remainLen < 0 ? 0 : remainLen;
+
+    const newText = `<RIGHT><BOLD>${' '.padEnd(remainLen, ' ')}${text}</BOLD></RIGHT>`;
+    if (remainLen === 0) {
+      newText = `<RIGHT><BOLD>${text}</BOLD></RIGHT>`;
+    }
+
+    subChunk.setChunk(index, newText, this.getTextLen(newText), ' ', 0);
+    this.valueList.push(subChunk);
+  }
+
   isLine(index) {
     if (index > this.keyList.length - 1) {
       return false;
@@ -1207,6 +1340,80 @@ class feieOrderItem {
   }
 }
 
+
+class FeieOrderSlip {
+  constructor(orderDetails) {
+    this.dateTime = orderDetails.dateTime || '';
+    this.printerName = orderDetails.printerName || '';
+    this.sn = orderDetails.sn || '';
+    this.orderId = orderDetails.orderId || '';
+    this.storeTitle = orderDetails.storeTitle || '';
+    this.buzzer = orderDetails.buzzer || '';
+    this.remark = orderDetails.remark || '';
+    this.orderMode = orderDetails.orderMode || '';
+    this.orderItems = orderDetails.orderItems || [];
+  }
+
+  printOrderSummary() {
+    console.log(`Printer Name: ${this.printerName}`);
+    console.log(`Date Time: ${this.dateTime}`);
+    console.log(`Order ID: ${this.orderId}`);
+    console.log(`Store Title: ${this.storeTitle}`);
+    console.log(`Buzzer: ${this.buzzer}`);
+    console.log(`Remark: ${this.remark}`);
+    console.log(`Order Mode: ${this.orderMode}`);
+    
+    if (this.orderItems.length > 0) {
+      console.log('Order Items:');
+      this.orderItems.forEach((item, index) => {
+        console.log(`${index + 1}. ${item.qty}x ${item.title}`);
+        if (item.modInfo && item.modInfo.length > 0) {
+          console.log('   Modifications:');
+          item.modInfo.forEach(mod => {
+            console.log(`      ${mod.qty}x ${mod.title}`);
+          });
+        }
+      });
+    } else {
+      console.log('No order items found.');
+    }
+  }
+}
+
+// Example usage:
+const orderDetails = {
+  sn: "223510740",
+  dateTime: "02/05/2024 Mon 01:00PM",
+  orderId: "POS_12345",
+  storeTitle: "MDV",
+  buzzer: "13",
+  remark: "this is a long remark entered by end user",
+  orderMode: "Take Away",
+  orderItems: [
+    {
+      title: "Single Jr Cone",
+      qty: 1,
+      modInfo: [
+        { title: "Extra cheese", qty: 1 }
+      ]
+    },
+    {
+      title: "Single Jr Cone",
+      qty: 2,
+      modInfo: [
+        { title: "Chocolate", qty: 1 },
+        { title: "Strawberry", qty: 1 }
+      ]
+    },
+    {
+      title: "Pizza",
+      qty: 1,
+      modInfo: [
+        { title: "Extra cheese", qty: 1 }
+      ]
+    }
+  ]
+};
 
 
 

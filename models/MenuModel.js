@@ -1,6 +1,9 @@
-import React, { Component } from 'react';
-import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
-import { gIsOdoo } from '../global';
+// import React, { Component } from 'react';
+// import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
+// import { gIsOdoo } from '../global';
+
+const { v4: uuidv4, v5: uuidv5 } = require('uuid');
+const { gIsOdoo } = require('../global');
 
 class MenuModel {
     constructor(props) {
@@ -453,5 +456,8 @@ function createNewMenu(storeModel)
     
 }
 
-export default MenuModel;
-export {createNewMenu};
+module.exports = MenuModel; // Export the default value
+module.exports.createNewMenu = createNewMenu; // Export the named function
+
+// export default MenuModel;
+// export {createNewMenu};

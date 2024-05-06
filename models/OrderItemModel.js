@@ -1,50 +1,77 @@
-import React, { Component } from 'react';
-import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
-import { ConsumeOption, PaymentOption } from '../global'
-import { DateTime } from "react-datetime";
-import moment from "moment";
-import MenuModel from './MenuModel';
+// import React, { Component } from 'react';
+// import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
+// import { ConsumeOption, PaymentOption } from '../global'
+// import { DateTime } from "react-datetime";
+// import moment from "moment";
+// import MenuModel from './MenuModel';
 
-class OrderItemModel extends Component {
+const { v4: uuidv4, v5: uuidv5 } = require('uuid');
+const {  PaymentOption } = require('../global');
+const MenuModel = require('./MenuModel');
+
+
+/*
+"id": "ITEM_2953",
+            "quantity": 1,
+            "remark": "",
+            "price": 9.50,
+            "coupon_code": "",
+            "discount_id": "",
+            "discount_amount": "",
+            "modifiers": [
+                {"id": "MOD_1132", "price": 0, "quantity":  1},
+                {"id": "MOD_7771", "price": 1.50, "quantity": 1}
+            ]
+*/
+
+class OrderItemModel  {
     constructor(props) {
-        super(props);
-       
         this.id = props.id;
-        this.menuid = props.menuid;
         this.quantity = props.quantity;
+        this.remark = "";
         this.price = props.price;
-        this.discount = props.discount;
-        this.img = props.img;
-        this.title = props.title;
-        this.subtitle = props.subtitle;
-        this.remark = props.remark;
-        this.store = props.store;
-        this.storeid = props.storeid;
-        this.orderid = props.orderid;
-        this.modinfo = props.modinfo;
-        this.modgroupinfo = props.modgroupinfo;
-        this.modprice = props.modprice;
-        this.timeslot = props.timeslot;
-        this.deliveryoption = props.deliveryoption;
-        this.orderdatetime = props.orderdatetime;
-        this.orderyear = props.orderyear;
-        this.ordermonth = props.ordermonth;
-        this.orderday = props.orderday;
-        this.orderhour = props.orderhour;
-        this.paymentstatus = props.paymentstatus;
-        this.submenus1 = props.submenus1;
-        this.submenus2 = props.submenus2;
-        this.submenus3 = props.submenus3;
-        this.submenus4 = props.submenus4;
-        this.submenus5 = props.submenus5;
-        this.category = props.category;
-        this.menusku = props.menusku;
-        this.location = props.location;
-        //public img link for perkd
-        this.publicimglink = props.publicimglink;
+        this.coupon_code = "";
+        this.discount_id = "";
+        this.discount_amount = props.discount;
+        this.modifiers = "";
+        this.sku = props.sku;
+        
+        // this.id = props.id;
+        // this.menuid = props.menuid;
+        // this.quantity = props.quantity;
+        // this.price = props.price;
+        // this.discount = props.discount;
+        // this.img = props.img;
+        // this.title = props.title;
+        // this.subtitle = props.subtitle;
+        // this.remark = props.remark;
+        // this.store = props.store;
+        // this.storeid = props.storeid;
+        // this.orderid = props.orderid;
+        // this.modinfo = props.modinfo;
+        // this.modgroupinfo = props.modgroupinfo;
+        // this.modprice = props.modprice;
+        // this.timeslot = props.timeslot;
+        // this.deliveryoption = props.deliveryoption;
+        // this.orderdatetime = props.orderdatetime;
+        // this.orderyear = props.orderyear;
+        // this.ordermonth = props.ordermonth;
+        // this.orderday = props.orderday;
+        // this.orderhour = props.orderhour;
+        // this.paymentstatus = props.paymentstatus;
+        // this.submenus1 = props.submenus1;
+        // this.submenus2 = props.submenus2;
+        // this.submenus3 = props.submenus3;
+        // this.submenus4 = props.submenus4;
+        // this.submenus5 = props.submenus5;
+        // this.category = props.category;
+        // this.menusku = props.menusku;
+        // this.location = props.location;
+        // //public img link for perkd
+        // this.publicimglink = props.publicimglink;
 
-        //this one getting from menu model
-        this.recomenus = props?.recomenus ?? "";
+        // //this one getting from menu model
+        // this.recomenus = props?.recomenus ?? "";
     }
 
     toOdooOrderItem()
@@ -59,7 +86,13 @@ class OrderItemModel extends Component {
         let kModifiers = "modifiers";
         let itemMap = new Map(); 
 
-        itemMap.set(kId, this.id);
+        var itemId = this.id;
+        // if((this.sku != "") && (this.sku != undefined))
+        // {
+        //     itemId = this.sku;
+        // }
+
+        itemMap.set(kId, itemId);
         itemMap.set(kQuantity, "" + this.quantity);
         itemMap.set(kRemark, "");
         itemMap.set(kPrice, "" + this.price);
@@ -207,7 +240,9 @@ function OrderItemFromMenuModel(mModel, qty, orderId, timeSlot, consumeOption) {
 }
 
 
+module.exports = OrderItemModel; // Export the default value
+module.exports.OrderItemFromMenuModel = OrderItemFromMenuModel; // Export the named class
+module.exports.PerkdModelFromOrderItemModel = PerkdModelFromOrderItemModel; // Export the named class
 
-
-export default OrderItemModel;
-export { OrderItemFromMenuModel, PerkdModelFromOrderItemModel };
+// export default OrderItemModel;
+// export { OrderItemFromMenuModel, PerkdModelFromOrderItemModel };

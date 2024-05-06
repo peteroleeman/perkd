@@ -1,7 +1,7 @@
 
 let gIsOdoo = true;
 
-
-export { gIsOdoo };
+module.exports.gIsOdoo = gIsOdoo;
+//export { gIsOdoo };
 
 

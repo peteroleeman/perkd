@@ -1,75 +1,95 @@
-import React from "react";
-import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
-import { ConsumeOption, PaymentOption } from '../global'
-import { DateTime } from "react-datetime";
-import moment from "moment";
-import OrderCalUtil from "../utils/OrderCalUtil";
-import { ThreeSixty } from "@mui/icons-material";
-import OrderItemModel from "./OrderItemModel";
-import OdooOrderItemModel from "./odoo/OdooOrderItemModel";
+
+
+const { v4: uuidv4, v5: uuidv5 } = require('uuid');
+const OrderItemModel =  require( "./OrderItemModel");
+const OdooOrderItemModel = require( "./odoo/OdooOrderItemModel");
+const moment = require('moment');
 
 
 class OrderModel {
     constructor(props) {
         //super(doc);
+      
+    
+        this.bill_discount_amount = props?.bill_discount_amount ?? "";
+        this.order_id = props.order_id;
+        this.short_order_number = props.order_id;
+        this.store_merchant_code = props.store_merchant_code;
+        this.order_datetime  =  moment.utc(props.order_datetime, "YYYY-MM-DD HH:mm:ss").utcOffset(4).format("YYYY-MM-DDTHH:mm:ss.SSS[Z]"); // props.order_datetime; //"2024-03-28T18:00:00.000Z";
+        this.member_code = props?.member_code ?? "";
+        this.remark = "-";
+        this.bill_discount_id = props?.bill_discount_id ?? "";
+        this.bill_discount_amount = props?.bill_discount_amount ?? "";
+        this.customer_payment = props?.customer_payment ?? 0.0;
+        this.gateway_payment = "";
+        this.payment_type = props.payment_type;//"Credit Card";
+        this.payment_reference = "";
+        this.subtotal = props?.subtotal ?? 0.0;
+        this.discount_total = props?.discount_total ?? 0.0;
+        this.grand_total = props?.grand_total ?? 0.0;
+        this.mode = props.mode;
+        this.items = props.items;
+        
+        console.log("OrderModel props");
+        console.log(props);
+       
 
-        //let props = doc.data();
-        this.id = props.id;
-        this.storeid = props.storeid;
-        this.storetitle = props.storetitle;
-        this.storeaddress = props.storeaddress;
-        this.storeimg = props.storeimg;
-        this.storeisopen = props.storeisopen;
-        this.orderdatetime = props.orderdatetime;
-        this.orderid = props.orderid
-        this.totalqty = props.totalqty;
-        this.totalprice = props.totalprice;
-        this.roundng = props.roundng;
-        this.tax = props.tax;
-        this.taxinclusive = props.taxinclusive;
-        this.servicecharge = props.servicecharge;
-        this.totaldiscount = props.totaldiscount;
-        this.totalpaid = props.totalpaid;
-        this.totalchanged = props.totalchanged;
-        this.subtotal = props.subtotal ?? 0.0;
-        this.receiptdiscount = props.receiptdiscount;
-        this.paymenttype = props.paymenttype;
-        this.transactiondetail = props.transactiondetail;
-        this.timeslot = props.timeslot;
-        this.status = props.status;
-        this.paymentstatus = props.paymentstatus;
-        this.deliveryoption = props.deliveryoption;
-        this.mobileassignedtable = props.mobileassignedtable;
-        this.transactionid = props.transactionid;
-        this.voucher = props.voucher;
-        this.orderyear = props.orderyear;
-        this.ordermonth = props.ordermonth;
-        this.orderday = props.orderday;
-        this.orderhour = props.orderhour;
-        this.orderitems = props.orderitems;
-        this.orders = props.orders;
-        this.orderoriginal = props.orderoriginal;
-        //List<OrderItemModel> orderItemList = [];
-        this.pax = props.pax;
-        this.name = props.name;
-        this.userphonenumber = props.userphonenumber;
-        this.email = props.email;
-        this.epaymenttype = props.epaymenttype;
-        this.epaymentdetail = props.epaymentdetail;
-        this.isonhold = props.isonhold;
-        this.serverid = props.serverid;
-        this.collecteddatetime = props.collecteddatetime;
-        this.paymentvouchers = props.paymentvouchers;
-        this.ordertype = props.ordertype;
-        this.kdsstatuslist = props.kdsstatuslist;
-        this.cashamount = props.cashamount;
-        this.epayamount = props.epayamount;
-        this.cashvoucheramount = props.cashvoucheramount;
-        this.ipaytransid = props.ipaytransid;
-        this.ordervariant = props.ordervariant;
-        this.orderitemsrecent = props.orderitemsrecent;
-        this.orderfromonline = props.orderfromonline;
-        this.onlineorderid = props.onlineorderid;
+        // this.id = props.id;
+        // this.storeid = props.storeid;
+        // this.storetitle = props.storetitle;
+        // this.storeaddress = props.storeaddress;
+        // this.storeimg = props.storeimg;
+        // this.storeisopen = props.storeisopen;
+        // this.orderdatetime = props.orderdatetime;
+        // this.orderid = props.orderid //change to order_id
+        // this.totalqty = props.totalqty;
+        // this.totalprice = props.totalprice;
+        // this.roundng = props.roundng;
+        // this.tax = props.tax;
+        // this.taxinclusive = props.taxinclusive;
+        // this.servicecharge = props.servicecharge;
+        // this.totaldiscount = props.totaldiscount; //change to bill_discount_amount
+        // this.totalpaid = props.totalpaid;
+        // this.totalchanged = props.totalchanged;
+        // this.subtotal = props.subtotal ?? 0.0;
+        // this.receiptdiscount = props.receiptdiscount;
+        // this.paymenttype = props.paymenttype;
+        // this.transactiondetail = props.transactiondetail;
+        // this.timeslot = props.timeslot;
+        // this.status = props.status;
+        // this.paymentstatus = props.paymentstatus;
+        // this.deliveryoption = props.deliveryoption;
+        // this.mobileassignedtable = props.mobileassignedtable;
+        // this.transactionid = props.transactionid;
+        // this.voucher = props.voucher;
+        // this.orderyear = props.orderyear;
+        // this.ordermonth = props.ordermonth;
+        // this.orderday = props.orderday;
+        // this.orderhour = props.orderhour;
+        // this.orderitems = props.orderitems;
+        // this.orders = props.orders;
+        // this.orderoriginal = props.orderoriginal;
+        // //List<OrderItemModel> orderItemList = [];
+        // this.pax = props.pax;
+        // this.name = props.name;
+        // this.userphonenumber = props.userphonenumber;
+        // this.email = props.email;
+        // this.epaymenttype = props.epaymenttype;
+        // this.epaymentdetail = props.epaymentdetail;
+        // this.isonhold = props.isonhold;
+        // this.serverid = props.serverid;
+        // this.collecteddatetime = props.collecteddatetime;
+        // this.paymentvouchers = props.paymentvouchers;
+        // this.ordertype = props.ordertype;
+        // this.kdsstatuslist = props.kdsstatuslist;
+        // this.cashamount = props.cashamount;
+        // this.epayamount = props.epayamount;
+        // this.cashvoucheramount = props.cashvoucheramount;
+        // this.ipaytransid = props.ipaytransid;
+        // this.ordervariant = props.ordervariant;
+        // this.orderitemsrecent = props.orderitemsrecent;
+        // this.orderfromonline = props.orderfromonline;
+        // this.onlineorderid = props.onlineorderid;
 
 
        
@@ -78,6 +98,8 @@ class OrderModel {
 
     toOdooOrder()
     {
+
+
         let kRemark = "remark";
         let kBillDiscountAmount = "bill_discount_amount";
         let kOrderId = "order_id";
@@ -97,11 +119,15 @@ class OrderModel {
         let kPaymentType = "payment_type";
 
         let orderMap = new Map();
+
+
+        
+
         orderMap.set(kRemark, "");
         orderMap.set(kBillDiscountAmount, "");
         orderMap.set(kOrderId, this.orderid);
         orderMap.set(kItems, "");
-        orderMap.set(kCustomerPayment, "" + this.totalpaid);
+        orderMap.set(kCustomerPayment, "" + this.customer_payment);
         orderMap.set(kBillDiscountId,"");
         orderMap.set(kGrandTotal, "" + this.totalprice);
         orderMap.set(kMode, "dine_in");
@@ -112,11 +138,14 @@ class OrderModel {
         orderMap.set(kMemberCode , "");
         orderMap.set(kSubTotal , "");
         orderMap.set(kPaymentReference , "");
-        orderMap.set(kOrderDateTime, this.orderdatetime);
+        orderMap.set(kOrderDateTime, this.order_datetime);
         orderMap.set(kPaymentType, "Credit Card");
+        
+        console.log("this.items");
+        console.log(this.items);
 
         let itemList = [];
-        for(let item of this.orderitems)
+        for(let item of this.items)
         {
             let itemModel = item;
             if(!(itemModel instanceof OrderItemModel))
@@ -127,6 +156,8 @@ class OrderModel {
             let odooItemModel = new OdooOrderItemModel(itemModel);
             itemList.push(odooItemModel);
         }
+
+
         orderMap.set(kItems, itemList);
 
         return orderMap;
@@ -249,29 +280,13 @@ function CreateNewOrder(storeModel, orderId) {
         name: "",
         email: "",
         receiptdiscount: "0.0", //set to no discount
-        //v5
-        //isOrderOnHold: orderModel.isOrderOnHold, //not relevant
-        //serverId: orderModel.serverId, //not relevant
-        //v6
-        //collectedDateTime: orderModel.collectedDateTime, //not relevant
-        //v7
         paymentvouchers: "", //set to none first
         transactiondetail: "", //use to record transaction detail
         ordertype: kOrderTypeDineIn, //redundant as delivery option
         paymentType: kPayByIpay,
-        //v8
-        //cashAmount: orderModel.cashAmount,//no relevant
         epayamount: "0.0", //need to capture payment amount
-        //cashVoucherAmount: orderModel.cashVoucherAmount, //not relevant
-        //v9
         ipaytransid: "", //to capture ipay transaction id
-
-        //v10
-        //orderVariant: 1, //not relevant
-
         orderitems: [], //later need to set to order items
-        //orderItemsRecent: [], //not relevant
-        //v13
         orderfromonline: "true",
         onlineorderid: orderId
     })
@@ -281,5 +296,8 @@ function CreateNewOrder(storeModel, orderId) {
 }
 
 
-export default OrderModel;
-export {CreateNewOrder};
+module.exports = OrderModel; // Export the default value
+module.exports.CreateNewOrder = CreateNewOrder; // Export the named function
+
+// export default OrderModel;
+// export {CreateNewOrder};

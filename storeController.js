@@ -20,6 +20,35 @@ const getStore = async (storeId, req,res) => {
   }
 };
 
+const writeGKashTransaction = async (storeId, dateValue, gkashTransaction) =>{
+
+  try{
+
+    if(
+    (storeId == "") || 
+    (dateValue == "") || 
+    (gkashTransaction.CARTID == "") || 
+    (gkashTransaction.CARTID == undefined)
+    )
+    {
+      console.log("error: store id, dateValue, CartId of transaction cannot be empty");
+      return;
+    }
+      
+     console.log("write gkash transaction " + storeId + " " + dateValue);
+      console.log(gkashTransaction);
+
+         const trans = await fireStore.collection("gkash").doc(storeId).collection(dateValue).doc(gkashTransaction.CARTID);
+         await trans.set(gkashTransaction);
+      
+   }
+   catch(error){
+       
+       console.log(error);
+   }
+
+};
+
 const writeTransaction = async (storeId, dateValue, refId, transStatus, res) =>{
 
     try{
@@ -42,5 +71,6 @@ const writeTransaction = async (storeId, dateValue, refId, transStatus, res) =>{
 
 module.exports = {
   getStore,
-  writeTransaction
+  writeTransaction,
+  writeGKashTransaction
 };
