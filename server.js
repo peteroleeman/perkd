@@ -11,6 +11,7 @@ var express    = require('express');        // call express
 var app        = express();                 // define our app using express
 var bodyParser = require('body-parser');
 var OdooRouter = require('./odoorouter');
+var DemoOdooRouter = require("./demoodoorouter");
 
 
 var {Logging} = require('@google-cloud/logging');
@@ -157,6 +158,9 @@ app.use('/perkd', router);
 //for odoo
 const myOdoo = new OdooRouter();
 app.use('/odoo', myOdoo.getRouter());
+
+const myOdooDemo = new DemoOdooRouter();
+app.use('/odoodemo', myOdooDemo.getRouter());
 
 //for gkash
 const myGKash = new GKashRouter();

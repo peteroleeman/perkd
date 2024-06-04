@@ -12,7 +12,7 @@ Staging: https://staging.gspos.odoo.my/
 Production: https://gspos.hosted.my/ 
 */
 
-class OdooRouter {
+class DemoOdooRouter {
   constructor() {
     this.router = express.Router();
     this.initializeRoutes();
@@ -22,7 +22,7 @@ class OdooRouter {
   initializeRoutes() {
 
     this.router.get('/about', function(req, res) {
-     res.json({ message: 'Endpoint for Odoo integration v1.24'});
+     res.json({ message: 'Endpoint for Stagging Odoo integration v1.24'});
     });
 
     this.router.post('/gettoken', this.getToken.bind(this));
@@ -73,7 +73,7 @@ class OdooRouter {
         console.log("triggerMenuSync " + storeId);
 
         //https://demo-c6qevkp34a-uc.a.run.app/odgetmenu?storeid=TRX
-        const url = 'https://demo-c6qevkp34a-uc.a.run.app/odgetmenu?storeid=' + storeId;
+        const url = 'https://demo-c6qevkp34a-uc.a.run.app/oddemogetmenu?storeid=' + storeId;
         console.log(url);
 
         axios.get(url)
@@ -173,7 +173,7 @@ class OdooRouter {
       let config = {
         method: 'post',
         maxBodyLength: Infinity,
-        url: 'https://gspos.hosted.my/api/kiosks/querycoupon',
+        url: 'https://staging.gspos.odoo.my/api/kiosks/querycoupon',
         headers: { 
           'Content-Type': 'application/json', 
           'Authorization': 'Bearer ' + token, 
@@ -237,7 +237,7 @@ class OdooRouter {
       let config = {
         method: 'post',
         maxBodyLength: Infinity,
-        url: 'https://gspos.hosted.my/api/kiosks/querymember',
+        url: 'https://staging.gspos.odoo.my/api/kiosks/querymember',
         headers: { 
           'Content-Type': 'application/json', 
           'Authorization': 'Bearer ' + token, 
@@ -302,7 +302,7 @@ class OdooRouter {
       let config = {
         method: 'post',
         maxBodyLength: Infinity,
-        url: 'https://gspos.hosted.my/api/kiosks/querymember',
+        url: 'https://staging.gspos.odoo.my/api/kiosks/querymember',
         headers: { 
           'Content-Type': 'application/json', 
           'Authorization': 'Bearer ' + token, 
@@ -352,7 +352,7 @@ class OdooRouter {
       let config = {
         method: 'post',
         maxBodyLength: Infinity,
-        url: 'https://gspos.hosted.my/api/auth/jsontoken',
+        url: 'https://staging.gspos.odoo.my/api/auth/jsontoken',
         headers: { 
           'Content-Type': 'application/json'
         },
@@ -436,7 +436,7 @@ class OdooRouter {
            return;
       }
 
-      const storeRef = await fireStore.collection("store").doc("S_5aca69dd-e964-45ea-ae6d-e1061e28f737");
+      //const storeRef = await fireStore.collection("store").doc("S_5aca69dd-e964-45ea-ae6d-e1061e28f737");
       const orderRef = await fireStore.collection("odoo").doc(storeid).collection("order").doc(orderid);
      
       const doc = await orderRef.get();
@@ -514,7 +514,7 @@ console.log(data2);
 let config = {
   method: 'post',
   maxBodyLength: Infinity,
-  url: 'https://gspos.hosted.my/api/kiosks/order',
+  url: 'https://staging.gspos.odoo.my/api/kiosks/order',
   headers: { 
     'Content-Type': 'application/json', 
     'Authorization': 'Bearer ' + token, 
@@ -576,7 +576,7 @@ axios.request(config)
 
                 const syncRef = fireStore.collection("odoo").doc(storeid).collection("synccall").doc("999");
                 syncRef.set({ message: "demo trigger", datatime: formattedDate  });
-                
+
               } else {
                 res.status(401).json({ error: 'Invalid token' });
               }
@@ -924,4 +924,4 @@ axios.request(config)
   }
 }
 
-module.exports = OdooRouter;
+module.exports = DemoOdooRouter;

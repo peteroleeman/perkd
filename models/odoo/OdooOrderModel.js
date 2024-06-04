@@ -34,8 +34,20 @@ class OdooOrderModel {
         let itemList = [];
         for (let item of orderModel.orderitems) {
             let itemModel = item instanceof OrderItemModel ? item : new OrderItemModel(item);
-            let odooItemModel = new OdooOrderItemModel(itemModel);
+            var odooItemModel = new OdooOrderItemModel(itemModel);
+
+            console.log("getDiscountid with " + odooItemModel.id);
+            const discountId = getDiscountId(odooItemModel.id);
+            console.log("getDiscountid with result is " + discountId);
+            if(discountId)
+                {
+                    odooItemModel.discount_id = discountId;
+                    console.log("done assign getDiscountid with result is " + discountId);
+                }
+
             itemList.push(odooItemModel);
+
+            
         }
         this.items = itemList;
 
@@ -62,6 +74,39 @@ class OdooOrderModel {
             });
         }
     }
+
+
+    //Method to check for discount id for limited time
+    getDiscountId(itemId) {
+
+        const discounts = [
+          {
+            discountId: "RP1683",
+            applicableItems: [
+              "ITEM_9246",
+              "ITEM_9247",
+              "ITEM_9243",
+              "ITEM_9244",
+              "ITEM_9022"
+            ]
+          },
+          {
+            discountId: "RP1684",
+            applicableItems: [
+              "ITEM_9650",
+              "ITEM_9414"
+            ]
+          }
+        ];
+  
+        for (const discount of discounts) {
+          if (discount.applicableItems.includes(itemId)) {
+            return discount.discountId;
+          }
+        }
+        return null; // Return null if the item is not part of any discount list
+      }
+  
 
     // Method to get the JSON structure output for the print function
     toJSONForFeiePrint() {

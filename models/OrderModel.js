@@ -13,9 +13,9 @@ class OrderModel {
     
         this.bill_discount_amount = props?.bill_discount_amount ?? "";
         this.order_id = props.order_id;
-        this.short_order_number = props.order_id;
+        this.short_order_number = props?.short_order_number ?? "";
         this.store_merchant_code = props.store_merchant_code;
-        this.order_datetime  =  moment.utc(props.order_datetime, "YYYY-MM-DD HH:mm:ss").utcOffset(4).format("YYYY-MM-DDTHH:mm:ss.SSS[Z]"); // props.order_datetime; //"2024-03-28T18:00:00.000Z";
+        this.order_datetime  =  props.order_datetime; //moment.utc(props.order_datetime, "YYYY-MM-DD HH:mm:ss").utcOffset(0).format("YYYY-MM-DDTHH:mm:ss.SSS[Z]"); // props.order_datetime; //"2024-03-28T18:00:00.000Z";
         this.member_code = props?.member_code ?? "";
         this.remark = "-";
         this.bill_discount_id = props?.bill_discount_id ?? "";
@@ -23,15 +23,41 @@ class OrderModel {
         this.customer_payment = props?.customer_payment ?? 0.0;
         this.gateway_payment = "";
         this.payment_type = props.payment_type;//"Credit Card";
-        this.payment_reference = "";
+        this.payment_reference = props?.payment_reference;
         this.subtotal = props?.subtotal ?? 0.0;
         this.discount_total = props?.discount_total ?? 0.0;
         this.grand_total = props?.grand_total ?? 0.0;
         this.mode = props.mode;
         this.items = props.items;
+
+        this.discount_id = "";
+        this.discount_amount = "0.0"; //default is zero
+
+
+
+        let itemList = [];
+        for (let item of props.items) {
+           
+            console.log("getDiscountid with " + item.id);
+            const discountId = this.getDiscountId(item.id);
+            console.log("getDiscountid with result is " + discountId);
+            if(discountId)
+                {
+                    item.discount_id = discountId;
+                    console.log("done assign getDiscountid with result is " + discountId);
+                }
+
+            itemList.push(item);
+
+            
+        }
+        this.items = itemList;
+
+
+
         
-        console.log("OrderModel props");
-        console.log(props);
+        //console.log("OrderModel props");
+        //console.log(props);
        
 
         // this.id = props.id;
@@ -134,10 +160,10 @@ class OrderModel {
         orderMap.set(kGatewayPayment, "");
         orderMap.set(kVDiscountTotal, "");
         orderMap.set(kStoreMerchantCode , "MDV1");
-        orderMap.set(kShortOrderNumber , this.orderid);
+        orderMap.set(kShortOrderNumber , this.short_order_number);
         orderMap.set(kMemberCode , "");
         orderMap.set(kSubTotal , "");
-        orderMap.set(kPaymentReference , "");
+        orderMap.set(kPaymentReference , this.payment_reference);
         orderMap.set(kOrderDateTime, this.order_datetime);
         orderMap.set(kPaymentType, "Credit Card");
         
@@ -153,7 +179,17 @@ class OrderModel {
                 itemModel = new OrderItemModel(item);
             }
 
-            let odooItemModel = new OdooOrderItemModel(itemModel);
+            var odooItemModel = new OdooOrderItemModel(itemModel);
+
+            // console.log("getDiscountid with " + odooItemModel.id);
+            // const discountId = getDiscountId(odooItemModel.id);
+            // console.log("getDiscountid with result is " + discountId);
+            // if(discountId)
+            //     {
+            //         odooItemModel.discount_id = discountId;
+            //         console.log("done assign getDiscountid with result is " + discountId);
+            //     }
+
             itemList.push(odooItemModel);
         }
 
@@ -162,6 +198,41 @@ class OrderModel {
 
         return orderMap;
     }
+
+
+    //Method to check for discount id for limited time
+    getDiscountId(itemId) {
+
+        const discounts = [
+          {
+            discountId: "RL1D1679",
+            applicableItems: [
+              "ITEM_9246",
+              "ITEM_9247",
+              "ITEM_9243",
+              "ITEM_9244",
+              "ITEM_9022"
+            ]
+          },
+          
+          {
+            discountId: "RPD1681",
+            applicableItems: [
+              "ITEM_9688",
+              "ITEM_9689",
+              "ITEM_9690",
+              "ITEM_9691"
+            ]
+          }
+        ];
+  
+        for (const discount of discounts) {
+          if (discount.applicableItems.includes(itemId)) {
+            return discount.discountId;
+          }
+        }
+        return null; // Return null if the item is not part of any discount list
+      }
 
     getOrderItems()
     {
