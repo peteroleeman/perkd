@@ -456,8 +456,66 @@ function createNewMenu(storeModel)
     
 }
 
+
+function createNewMenuFromOdoo(storeId, storeTitle, menuModel)
+{
+    const v4Id = uuidv4();
+    return ({
+        modifiergroups :[],
+        cats :[],
+        id : "M_" +   v4Id,
+        idesl : "M_"   +  v4Id,
+        img:"",
+        img1 :"",
+        img2:"",
+        img3 :"",
+        img4 :"",
+        img5 :"",
+        title : menuModel?.title ??"",
+        smalltitle :"",
+        subtitle : menuModel?.subtitle ??"",
+        smallsubtitle :"",
+        remark :"",
+        store : storeTitle,
+        storeid : storeId,
+        price:  menuModel?.price ?? 0.0,
+        category : menuModel?.category ??"",
+        modifiergroup : menuModel?.modifiergroup ??"",
+        issoldout : menuModel?.issoldout ?? true,
+        isweight : false,
+        discount : menuModel?.discount ?? 0.0,
+        discountdetail : menuModel?.discountdetail ??  "",
+        submenu1title: menuModel?.submenu1title ?? "",
+        submenu2title: menuModel?.submenu2title ?? "",
+        submenu3title : menuModel?.submenu3title ??"",
+        submenu4title : menuModel?.submenu4title ?? "",
+        submenu5title : menuModel?.submenu5title ?? "",
+        submenus1 :[],
+        submenus2 :[],
+        submenus3 :[],
+        submenus4 :[],
+        submenus5 :[],
+        pricelogin :  0.0,
+        pricemember : menuModel?.pricemember ?? 0.0,
+        menusku : menuModel?.menusku ?? "",
+        racklocation :"",
+        qty: menuModel?.qty ?? 0,
+
+        //public img link
+        publicimglink:"",
+
+        //selectable modifiergroup
+        selectablemg : false, //false as none selectable modifier group
+        //reco menus
+        recomenus: "",
+    }
+    )
+
+    
+}
+
 module.exports = MenuModel; // Export the default value
 module.exports.createNewMenu = createNewMenu; // Export the named function
-
+module.exports.createNewMenuFromOdoo = createNewMenuFromOdoo;
 // export default MenuModel;
 // export {createNewMenu};

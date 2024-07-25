@@ -11,6 +11,7 @@ class ModifierModel {
       this.price = parseFloat("" + props.price);
       this.index = -1;
       this.isavailable = (props.availableStatus == "AVAILABLE") ? true : false;
+      this.real_time = props.real_time;
     } else {
       this.id = props.id;
       this.modifierImg = props.modifierimg;
@@ -18,6 +19,7 @@ class ModifierModel {
       this.price = props.price;
       this.index = -1;
       this.isavailable = true;
+      this.real_time = false;
     }
   }
 
@@ -56,9 +58,25 @@ function createNewModifier(modifierModel) {
     modifierImg: modifierModel.modifierImg,
     title: modifierModel.title,
     price: modifierModel.price,
-    index: modifierModel.index
+    index: modifierModel.index,
+    isavailable : modifierModel?.isavailable ?? true,
+    real_time : modifierModel?.real_time ?? false,
+  };
+}
+
+function createNewModifierFromOdoo(modifierModel) {
+  const v4Id = uuidv4();
+  return {
+    id: "O_" + v4Id,
+    modifierImg: "",
+    title: modifierModel.title,
+    price: modifierModel.price,
+    index: -1,
+    isavailable : modifierModel?.isavailable ?? true,
+    real_time : modifierModel?.real_time ?? false,
   };
 }
 
 module.exports = ModifierModel;
 module.exports.createNewModifier = createNewModifier;
+module.exports.createNewModifierFromOdoo = createNewModifierFromOdoo;

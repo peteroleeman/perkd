@@ -32,6 +32,9 @@ class ModifierGroupModel extends Component {
      }
   }
 
+
+  
+
   get_id()
   {
     return this.id ?? "";
@@ -89,4 +92,25 @@ class ModifierGroupModel extends Component {
 
 }
 
+
+function createNewModifierGroupFromOdoo( modifierGroupModel)
+{
+    const v4Id = uuidv4();
+    return ({
+      id : "MG_" + v4Id, //this going to be overwrite in modifier box full popup,
+      modifiers : [],
+      groupimg : "",
+      title : modifierGroupModel?.name ?? "",
+      modifier : modifierGroupModel?.modifier ?? "",
+      modifiercount : modifierGroupModel?.modifiercount ?? 1,//there is also a props.selectionRangeMin
+      modifiermincount : modifierGroupModel?.modifiermincount ?? 0,
+      modifieremptyimg : "",
+      price : modifierGroupModel?.price ?? 0.0,
+    }
+    )
+
+    
+}
+
 export default ModifierGroupModel;
+module.exports.createNewModifierGroupFromOdoo = createNewModifierGroupFromOdoo; 

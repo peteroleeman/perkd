@@ -3,9 +3,15 @@ const crypto = require('crypto');
 const axios = require('axios');
 const UtilFeie = require("./feie/util_feie");
 const OrderModel = require('./models/OrderModel')
+const { PromoScope, PromoMain, PromoList }  = require("./util/util_promo")
 
 const firebase = require("./db");
+const MenuModel = require('./models/MenuModel');
+const { testString } = require('./global');
+const fs = require('fs');
+const { json } = require('body-parser');
 const fireStore = firebase.firestore();
+
 
 /*!SECTION
 Staging: https://staging.gspos.odoo.my/
@@ -22,28 +28,56 @@ class OdooRouter {
   initializeRoutes() {
 
     this.router.get('/about', function(req, res) {
-     res.json({ message: 'Endpoint for Odoo integration v1.24'});
+     res.json({ message: 'Endpoint for Odoo integration v1.27'});
     });
 
     this.router.post('/gettoken', this.getToken.bind(this));
     this.router.post('/checktoken', this.checkToken.bind(this));
     this.router.post('/syncmenu', this.syncMenu.bind(this));
+    this.router.post('/newsyncmenu', this.newSyncMenu.bind(this));
+    this.router.post('/createmenu', this.createMenu.bind(this));
+    
+    this.router.post('/ovoidorder', this.voidOrder.bind(this));
     this.router.post('/oquerycoupon', this.queryCoupon.bind(this));
     this.router.post('/oquerymember', this.queryMember.bind(this));
     this.router.post('/oquerymembercode', this.queryMemberCode.bind(this));
     this.router.post('/oquerytoken', this.queryToken.bind(this));
+    this.router.post('/omenumapping', this.menuMapping.bind(this));
+
+
     this.router.post("/setkioskfooter", this.setKioskReceiptFooter.bind(this));
     this.router.post('/setorder', this.setOrder.bind(this));
 
+     //promo
+     this.router.post("/promo", this.handlePromo.bind(this) );
+
+     //real time stock
+     this.router.post('/checkstock', this.checkStock.bind(this));
+
     //feie test
-    this.router.post('/kdstest', this.printTest.bind(this));
-     this.router.post('/kdssample', this.printSample.bind(this));
-     this.router.post('/kdssampleorderslip', this.printSampleOrderSlip.bind(this));
+    this.router.post('/kdstest', this.handlePrintTestCN.bind(this));
+    this.router.post('/kdstestap', this.handlePrintTestJP.bind(this));
+    // this.router.post('/kdssample', this.printSample.bind(this));
+     //this.router.post('/kdssampleorderslip', this.printSampleOrderSlip.bind(this));
 
      //feie actual print
-     this.router.post('/kdsreceipt', this.printReceipt.bind(this));
-     this.router.post('/kdsorderslip', this.printOrderSlip.bind(this));
-     this.router.post('/kdsstatus', this.checkStatus.bind(this));
+     this.router.post('/kdsreceipt', this.handlePrintReceiptCN.bind(this));
+     this.router.post('/kdsreceiptap', this.handlePrintReceiptJP.bind(this));
+
+     this.router.post('/kdsorderslip', this.handlePrintOrderSlipCN.bind(this));
+     this.router.post('/kdsorderslipap', this.handlePrintOrderSlipJP.bind(this));
+
+     this.router.post('/kdsstatus', this.handleCheckStatusCN.bind(this));
+     this.router.post('/kdsstatusap', this.handleCheckStatusJP.bind(this));
+
+
+     //only existing in odoo router, as this is internal used
+     this.router.post('/kdsorderslipfrominfo', this.handlePrintOrderSlipFromOrderInfoCN.bind(this));
+     this.router.post('/kdsorderslipfrominfoap', this.handlePrintOrderSlipFromOrderInfoJP.bind(this));
+
+     //simulation for order slip
+     this.router.post('/kdsorderslipsim', this.handlePrintOrderSlipSimulationCN.bind(this));
+     this.router.post('/kdsorderslipsimap', this.handlePrintOrderSlipSimulationJP.bind(this));
 
   }
 
@@ -85,6 +119,68 @@ class OdooRouter {
             console.error('triggersync error:', error.message);
             // Handle any errors that occurred during the request
           });
+    }
+
+
+    async  savePromoToFirestore(promo) {
+      if((promo?.discount_id ?? "") != "")
+        {
+      await fireStore.collection('odoopromo').doc(promo?.discount_id).set(promo.toFirestore());
+      console.log('Promo saved to Firestore');
+        }
+    }
+
+    async handlePromo(req, res)
+    {
+      
+
+      
+        // Check if the token matches the valid token (replace this with your token validation logic)
+        const authHeader = req.headers['authorization'];
+
+        if (!authHeader) {
+            return res.status(401).json({ error: 'Authorization header missing' });
+         }
+         const authHeaderParts = authHeader.split(' ');
+
+         if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+              return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+         }
+
+         const token = authHeaderParts[1]; // Extract the token
+
+        if (token == this.generateEncryptedToken()) {
+
+        } else {
+          res.status(401).json({ error: 'Invalid token' });
+          return;
+        }
+
+
+        // Validate the request body
+        if (!req.body) {
+                res.status(400).json({ error: 'Request body is missing or empty' });
+                return;
+        }
+
+        
+        try{
+
+          //let feieOrder = feie.createFeieOrderFromJSON(req.body);
+          
+
+          const promo = new PromoMain(req.body);
+          this.savePromoToFirestore(promo);
+
+          console.log(promo);
+          
+           res.json({ message: "done" });
+        }
+        catch(ex)
+        {
+            console.log(ex);
+            res.status(401).json({ error: ex });
+        }
     }
 
    async setKioskReceiptFooter(req,res)
@@ -134,6 +230,58 @@ class OdooRouter {
         }
     }
 
+   
+    voidOrder(req,res)
+    {
+
+      const authHeader = req.headers['authorization'];
+
+      if (!authHeader) {
+           return res.status(401).json({ error: 'Authorization header missing' });
+      }
+
+      const authHeaderParts = authHeader.split(' ');
+
+          if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+            return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+          }
+
+          const token = authHeaderParts[1]; // Extract the token
+
+
+      const { order_id, remark} = req.body;
+      
+
+      let data = JSON.stringify({
+        "order_id": order_id,
+        "remark": remark,
+      });
+      
+      let config = {
+        method: 'post',
+        maxBodyLength: Infinity,
+        url: 'https://gspos.hosted.my/api/kiosks/voidorder',
+        headers: { 
+          'Authorization': 'Bearer ' + token, 
+          'Content-Type': 'application/json', 
+          
+        },
+        data : data
+      };
+      
+      axios.request(config)
+      .then((response) => {
+        console.log(JSON.stringify(response.data));
+        res.status(200).json(JSON.stringify(response.data));
+      })
+      .catch((error) => {
+        console.log(error);
+        res.status(401).json({ error: error?.config?.data ?? error });
+      });
+      
+
+    }
+
 
     queryCoupon(req,res)
     {
@@ -177,7 +325,7 @@ class OdooRouter {
         headers: { 
           'Content-Type': 'application/json', 
           'Authorization': 'Bearer ' + token, 
-          'Cookie': 'session_id=f3892e4827051f5315646787eb1acf6acaade537'
+         
         },
         data : data
       };
@@ -324,6 +472,77 @@ class OdooRouter {
     }
 
 
+    menuMapping(req,res)
+    {
+      console.log("trigger menu mapping");
+      
+      const authHeader = req.headers['authorization'];
+
+      if (!authHeader) {
+           return res.status(401).json({ error: 'Authorization header missing' });
+      }
+
+      const authHeaderParts = authHeader.split(' ');
+
+          if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+            return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+          }
+
+          const token = authHeaderParts[1]; // Extract the token
+
+
+      const { odoo_id, kiosk_id} = req.body;
+      if(token == '')
+      {
+        res.status(401).json({ error: 'Please provide a token' });
+        return;
+      }
+
+
+      if(odoo_id == '')
+      {
+        res.status(401).json({ error: 'Please provide a odoo id' });
+        return;
+      }
+
+      if(kiosk_id == '')
+        {
+          res.status(401).json({ error: 'Please provide a kiosk id' });
+          return;
+        }
+
+      console.log("menumapping " + odoo_id + " " + kiosk_id + " with token " + token);
+
+      let data = JSON.stringify({
+       
+        "odoo_id":  odoo_id, 
+        "kiosk_id" : kiosk_id
+      });
+      
+      let config = {
+        method: 'post',
+        maxBodyLength: Infinity,
+        url: 'https://gspos.hosted.my/api/kiosks/menumapping',
+        headers: { 
+          'Content-Type': 'application/json', 
+          'Authorization': 'Bearer ' + token, 
+          
+        },
+        data : data
+      };
+      
+      axios.request(config)
+      .then((response) => {
+        console.log(JSON.stringify(response.data));
+        res.status(200).json(JSON.stringify(response.data));
+      })
+      .catch((error) => {
+        console.log(error);
+        res.status(401).json({ error: error });
+      });
+
+    }
+
     queryToken(req,res)
     {
       console.log("queryToken");
@@ -416,8 +635,129 @@ class OdooRouter {
     }
 
 
-     
-    
+    // checkStock(req, res)
+    // {
+
+    //   const authHeader = req.headers['authorization'];
+
+    //   if (!authHeader) {
+    //        return res.status(401).json({ error: 'Authorization header missing' });
+    //   }
+
+    //   const authHeaderParts = authHeader.split(' ');
+
+    //   if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+    //         return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+    //   }
+
+    //   const token = authHeaderParts[1]; // Extract the token
+      
+    //   console.log(token);
+    //   console.log(JSON.stringify(req.body));
+
+    //   const axios = require('axios');
+    //       // let data = JSON.stringify({
+    //       //   "store_merchant_code": "MDV1",
+    //       //   "modifiers": [
+    //       //     "MOD_1132",
+    //       //     "MOD_8797",
+    //       //     "ITEM_8946"
+    //       //   ]
+    //       // });
+
+    //       let data = JSON.stringify(req.body);
+
+    //       let config = {
+    //         method: 'post',
+    //         maxBodyLength: Infinity,
+    //         url: 'https://gspos.hosted.my/api/kiosks/realtime',
+    //         headers: { 
+    //           'Content-Type': 'application/json', 
+    //           'Authorization': 'Bearer ' + token, 
+             
+    //         },
+    //         data : data
+    //       };
+
+    //       axios.request(config)
+    //       .then((response) => {
+    //         console.log(JSON.stringify(response.data));
+    //         res.status(200).json(JSON.stringify(response.data));
+    //       })
+    //       .catch((error) => {
+    //         console.log(error);
+    //         res.status(401).json({ error: error });
+    //       });
+
+    // }
+
+    checkStock(req, res)
+    {
+
+      const authHeader = req.headers['authorization'];
+
+      if (!authHeader) {
+           return res.status(401).json({ error: 'Authorization header missing' });
+      }
+
+      const authHeaderParts = authHeader.split(' ');
+
+      if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+          
+            return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+      }
+
+      const token = authHeaderParts[1]; // Extract the token
+      
+      console.log(token);
+      console.log(JSON.stringify(req.body));
+
+      const axios = require('axios');
+          // let data = JSON.stringify({
+          //   "store_merchant_code": "MDV1",
+          //   "modifiers": [
+          //     "MOD_1132",
+          //     "MOD_8797",
+          //     "ITEM_8946"
+          //   ]
+          // });
+
+          let data = JSON.stringify(req.body);
+
+          // let data = JSON.stringify({
+          //   "store_merchant_code": "MDV1",
+          //   "modifiers": [
+          //     "MOD_1132",
+          //     "MOD_8797",
+          //     "ITEM_8946"
+          //   ]
+          // });
+
+          console.log(data);
+
+          let config = {
+            method: 'post',
+            maxBodyLength: Infinity,
+            url: 'https://gspos.hosted.my/api/kiosks/realtime',
+            headers: { 
+              'Content-Type': 'application/json', 
+              'Authorization': 'Bearer ' + token, 
+             
+            },
+            data : data
+          };
+
+          axios.request(config)
+          .then((response) => {
+            console.log(JSON.stringify(response.data));
+            res.status(200).json(JSON.stringify(response.data));
+          })
+          .catch((error) => {
+            console.log(error);
+            res.status(401).json({ error: error });
+          });
+
+    }
     
     async setOrder(req,res) 
     {
@@ -571,11 +911,11 @@ axios.request(config)
 
                 res.json({ message: 'Sync done with ' + storeid });
 
-                const currentDate = new Date();
-                const formattedDate = currentDate.toLocaleString();
+                // const currentDate = new Date();
+                // const formattedDate = currentDate.toLocaleString();
 
-                const syncRef = fireStore.collection("odoo").doc(storeid).collection("synccall").doc("999");
-                syncRef.set({ message: "demo trigger", datatime: formattedDate  });
+                // const syncRef = fireStore.collection("odoo").doc(storeid).collection("synccall").doc("999");
+                // syncRef.set({ message: "demo trigger", datatime: formattedDate  });
                 
               } else {
                 res.status(401).json({ error: 'Invalid token' });
@@ -590,11 +930,74 @@ axios.request(config)
           {
                 res.status(401).json({ error: ex.toString() });
           }
-        }
+   }
+
+
+    createMenu(req, res) 
+    {
+          //const { token,storeid } = req.body;
+           try{
+
+          const authHeader = req.headers['authorization'];
+
+           if (!authHeader) {
+                return res.status(401).json({ error: 'Authorization header missing' });
+           }
+
+           const authHeaderParts = authHeader.split(' ');
+
+               if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+                 return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+               }
+
+               const token = authHeaderParts[1]; // Extract the token
+
+          //const token = authHeader.split(' ')[1]; // Assuming "Bearer <token>", split by space and get the token
+          const { storeid, storetitle, menumodel } = req.body;
+          console.log("create mennu:" + token + " " + storeid + " " + " " + storetitle + " " + menumodel);
+
+          const menuCreate = MenuModel.createNewMenuFromOdoo(storeid, storetitle, menumodel);
+          console.log(JSON.stringify(menuCreate));
+          // Check if the token matches the valid token (replace this with your token validation logic)
+          if(storeid != "")
+          {
+              if (token == this.generateEncryptedToken()) {
+                console.log("about to create Menu");
+                
+                
+                fireStore.collection("store").doc(storeid).collection("menu").set(menumodel);
+               
+                res.status(200).json({id: menumodel.id, storeid: menumodel.storeid, message: 'Menu created successfully' });
+
+              } else {
+                res.status(401).json({ error: 'Invalid token' });
+              }
+          }
+          else
+          {
+                res.status(401).json({ error: 'Invalid store' });
+          }
+          }
+          catch(ex)
+          {
+                res.status(401).json({ error: ex.toString() });
+          }
+   }
+
 
       //SECTION Feie related
 
-      async checkStatus(req, res){
+      async handleCheckStatusCN(req,res)
+      {
+          return this.checkStatus(req,res,false);
+      }
+
+      async handleCheckStatusJP(req,res)
+      {
+        return this.checkStatus(req,res.true);
+      }
+
+      async checkStatus(req, res, isJP){
         const feie = new UtilFeie();
 
         
@@ -639,7 +1042,7 @@ axios.request(config)
           try{
 
             let feieSN = feie.createFeieSNFromJSON(req.body);
-            let feieResult = await feie.checkFeieStatus(feieSN.sn);
+            let feieResult = await feie.checkFeieStatus(feieSN.sn, isJP);
             
              res.json({ message: feieResult });
           }
@@ -652,7 +1055,17 @@ axios.request(config)
       }
 
 
-      async printReceipt(req, res){
+      async handlePrintReceiptCN(req,res)
+      {
+        return this.printReceipt(req,res, false);
+      }
+
+      async handlePrintReceiptJP(req,res)
+      {
+        return this.printReceipt(req,res, true);
+      }
+
+      async printReceipt(req, res, isJP){
         const feie = new UtilFeie();
 
         
@@ -700,7 +1113,7 @@ axios.request(config)
           try{
 
             let feieOrder = feie.createFeieOrderFromJSON(req.body);
-            let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderReceiptFromOrder(feieOrder, false, 0));
+            let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderReceiptFromOrder(feieOrder, false, 0), isJP);
             
              res.json({ message: feieResult });
           }
@@ -712,7 +1125,119 @@ axios.request(config)
 
       }
 
-      async printOrderSlip(req, res){
+
+      async handlePrintOrderSlipFromOrderInfoCN(req,res)
+      {
+        return this.printOrderSlipFromOrderInfo(req,res, false);
+      }
+
+      async handlePrintOrderSlipFromOrderInfoJP(req,res)
+      {
+        return this.printOrderSlipFromOrderInfo(req,res,true);
+      }
+
+
+
+      async handlePrintOrderSlipSimulationCN(req,res)
+      {
+        return this.printOrderSlipFromOrderInfoSimulate(req,res, false);
+      }
+
+      async handlePrintOrderSlipSimulationJP(req,res)
+      {
+        return this.printOrderSlipFromOrderInfoSimulate(req,res,true);
+      }
+
+       generateRandomBoolean()  {
+        return Math.random() >= 0.5;
+      }
+
+      async printOrderSlipFromOrderInfoSimulate(req, res, isJP){
+        const feie = new UtilFeie();
+        if (!req.body) {
+          res.status(400).json({ error: 'Request body is missing or empty' });
+          return;
+          }
+
+          //const requiredFields = ['sn', 'orderinfo'];
+          const { sn, orderinfo } = req.body;
+          try{
+
+            
+            var returnResult = '{"ret":-1,"msg":"Verification failed: Printer Sn and User do not match","data":null,"serverExecutedTime":0}';
+            if(this.generateRandomBoolean() == true)
+              {
+                returnResult = '{"ret":0,"msg":"Prink OK","data":null,"serverExecutedTime":0}';
+              }
+            
+            res.json({result: returnResult });
+          }
+          catch(ex)
+          {
+              console.log(ex);
+              res.status(401).json({ error: ex });
+          }
+      }
+
+      async printOrderSlipFromOrderInfo(req, res, isJP){
+        const feie = new UtilFeie();
+
+        
+          // Check if the token matches the valid token (replace this with your token validation logic)
+          // const authHeader = req.headers['authorization'];
+
+          // if (!authHeader) {
+          //     return res.status(401).json({ error: 'Authorization header missing' });
+          //  }
+          //  const authHeaderParts = authHeader.split(' ');
+
+          //  if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+          //       return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+          //  }
+
+          //  const token = authHeaderParts[1]; // Extract the token
+
+          // if (token == this.generateEncryptedToken()) {
+
+          // } else {
+          //   res.status(401).json({ error: 'Invalid token' });
+          //   return;
+          // }
+
+
+          // Validate the request body
+          if (!req.body) {
+                  res.status(400).json({ error: 'Request body is missing or empty' });
+                  return;
+          }
+
+          //const requiredFields = ['sn', 'orderinfo'];
+          const { sn, orderinfo } = req.body;
+          try{
+
+            let feieResult = await feie.printFeieFromContent(sn, orderinfo, isJP);
+            
+             res.json({result: feieResult });
+          }
+          catch(ex)
+          {
+              console.log(ex);
+              res.status(401).json({ error: ex });
+          }
+
+      }
+
+      async handlePrintOrderSlipCN(req,res)
+      {
+        return this.printOrderSlip(req,res, false);
+      }
+
+      async handlePrintOrderSlipJP(req,res)
+      {
+        return this.printOrderSlip(req,res,true);
+      }
+
+      async printOrderSlip(req, res, isJP){
         const feie = new UtilFeie();
 
         
@@ -762,7 +1287,7 @@ axios.request(config)
             //let feieOrder = feie.createFeieOrderFromJSON(req.body);
             let feieOrder = feie.createFeieOrderSlipFromJSON(req.body);
 
-            let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderItemSlip(feieOrder, false, 1));
+            let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderItemSlip(feieOrder, false, 1), isJP);
             
              res.json({ message: feieResult });
           }
@@ -774,7 +1299,18 @@ axios.request(config)
 
       }
 
-     async printTest(req, res)  {
+      async handlePrintTestCN(req,res)
+      {
+          return this.printTest(req,res,false);
+      }
+
+      async handlePrintTestJP (req, res)
+      {
+        return this.printTest(req,res, true);
+      }
+
+
+     async printTest(req, res, isJP)  {
 
             const feie = new UtilFeie();
 
@@ -823,7 +1359,7 @@ axios.request(config)
 
 
             try{
-                   let feieResult = await feie.print();
+                   let feieResult = await feie.print(isJP);
                     res.json({ message: feieResult });
             }
             catch(ex)
@@ -834,94 +1370,311 @@ axios.request(config)
 
      }
 
-     async printSample(req, res) {
-
-                 const feie = new UtilFeie();
-
-                  // Check if the token matches the valid token (replace this with your token validation logic)
-                             const authHeader = req.headers['authorization'];
-
-                             if (!authHeader) {
-                                 return res.status(401).json({ error: 'Authorization header missing' });
-                              }
-                              const authHeaderParts = authHeader.split(' ');
-
-                              if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
-                                   return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
-                              }
-
-                              const token = authHeaderParts[1]; // Extract the token
+  //odoo sync menu new structure
+    newSyncMenu (req, res)
+    {
 
 
-                 // Check if the token matches the valid token (replace this with your token validation logic)
-                 if (token == this.generateEncryptedToken()) {
+      const filePath = './newstruct.txt';
 
-                 } else {
-                   res.status(401).json({ error: 'Invalid token' });
-                   return;
+// Asynchronous reading and processing
+fs.readFile(filePath, 'utf8', (err, data) => {
+    if (err) {
+        console.error('Error reading file:', err);
+        return;
+    }
 
-                 }
+    const parsedData = JSON.parse((data));
+    const parsedClassInstance = new ParsedClass(parsedData);
+        const innerData = parsedClassInstance.data?.getValue();
 
+        const menu = this.createMenuFromString(innerData);
+        
+        let docId = menu.storeMerchantCode;
+        if(docId != "")
+          {
+        this.saveMenuToFirestore(menu, docId).then(() => {
+          this.getMenuFromFirestore(docId).then(retrievedMenu => {
+            console.log(JSON.stringify(retrievedMenu, null, 2));
+          });
+        });
+        res.status(200).json({ message: docId + " sync completed" });
+        return;
+      }
+      
+      res.status(401).json({message: "store merchant code appeared to be empty"});
 
+});
 
-                  try{
-                                    let feieResult = await feie.printFeie2(feie.printSampleReceipt());
-                                     res.json({ message: feieResult });
-                             }
-                             catch(ex)
-                             {
-                                 console.log(ex);
-                                 res.status(401).json({ error: ex });
-                             }
+    
 
-          }
+      // const menu = this.createMenuFromString(jsonString);
+      // console.log(JSON.stringify(menu, null, 2));
 
-    async printSampleOrderSlip(req, res) {
+      
 
-                    const feie = new UtilFeie();
-                     // Check if the token matches the valid token (replace this with your token validation logic)
-                                const authHeader = req.headers['authorization'];
+      /*
 
-                                if (!authHeader) {
-                                    return res.status(401).json({ error: 'Authorization header missing' });
-                                 }
-                                 const authHeaderParts = authHeader.split(' ');
-
-                                 if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
-                                      return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
-                                 }
-
-                                 const token = authHeaderParts[1]; // Extract the token
-
-
-                    // Check if the token matches the valid token (replace this with your token validation logic)
-                    if (token == this.generateEncryptedToken()) {
-                      //res.json({ message: 'Token is valid' });
-                    } else {
-                      res.status(401).json({ error: 'Invalid token' });
-                      return;
-
-                    }
-
-
-
-                    try{
-                                                        let feieResult = await feie.printFeie2(feie.printSampleOrderSlip());
-                                                         res.json({ message: feieResult });
-                                                 }
-                                                 catch(ex)
-                                                 {
-                                                     console.log(ex);
-                                                     res.status(401).json({ error: ex });
-                                                 }
-
-             }
+      const menu = createMenuFromString(jsonString);
+      const docId = 'exampleMenu';
+      saveMenuToFirestore(menu, docId).then(() => {
+        getMenuFromFirestore(docId).then(retrievedMenu => {
+          console.log(JSON.stringify(retrievedMenu, null, 2));
+        });
+      });
+      
+      */
 
 
+    }
+ 
+     createMenuFromString(jsonString) {
+      
+      console.log("create menu from string");
+      console.log(jsonString);
+      return new Menu(jsonString);
+    }
+    
+    
+    async  saveMenuToFirestore(menu, docId) {
+      await fireStore.collection('newodoo').doc(docId).set(menu.toFirestore());
+      console.log('Menu saved to Firestore');
+    }
+    
+    async  getMenuFromFirestore(docId) {
+      const doc = await fireStore.collection('newodoo').doc(docId).get();
+      if (doc.exists) {
+        const menu = Menu.fromFirestore(doc.data());
+        console.log('Menu retrieved from Firestore', menu);
+        return menu;
+      } else {
+        console.log('No such document!');
+        return null;
+      }
+    }
 
   getRouter() {
     return this.router;
   }
 }
+
+
+class ParsedClass {
+  constructor({ count, data }) {
+      this.count = count;
+      this.data = new DataClass(data);
+  }
+}
+
+class DataClass {
+  constructor(data) {
+      this.data = data?.data?.toString() ?? "";  // assuming `data` is a string that represents a nested JSON
+  }
+
+  getValue() {
+      const nestedData = JSON.parse(this.data);
+      return nestedData;
+  }
+}
+
+class Menu {
+  constructor(data) {
+    this.storeMerchantCode = data?.store_merchant_code ?? "";
+    this.categories = data.categories?.map(category => new Category(category)) ?? [];
+  }
+
+  toFirestore() {
+    return {
+      store_merchant_code: this.storeMerchantCode,
+      categories: this.categories.map(category => category.toFirestore())
+    };
+  }
+
+  static fromFirestore(data) {
+    return new Menu({
+      store_merchant_code: data.store_merchant_code,
+      categories: data.categories.map(Category.fromFirestore)
+    });
+  }
+}
+
+class Category {
+  constructor(data) {
+    this.kioskId = data?.kiosk_id ?? "";
+    this.id = data?.id ?? "";
+    this.name = data?.name ?? "";
+    this.sequence = data?.sequence ?? "";
+    this.availableStatus = data?.available_status ?? "";
+    this.subCategories = data.sub_categories?.map(subCategory => new SubCategory(subCategory)) ?? [];
+  }
+
+  toFirestore() {
+    return {
+      id: this.id,
+      kiosk_id: this.kioskId,
+      name: this.name,
+      sequence: this.sequence,
+      available_status: this.availableStatus,
+      sub_categories: this.subCategories?.map(subCategory => subCategory.toFirestore())
+    };
+  }
+
+  static fromFirestore(data) {
+    return new Category({
+      id : data.id,
+      kiosk_id: data.kiosk_id,
+      name: data.name,
+      sequence: data.sequence,
+      available_status: data.available_status,
+      sub_categories: data.sub_categories?.map(SubCategory.fromFirestore)
+    });
+  }
+}
+
+class SubCategory {
+  constructor(data) {
+    this.id = data.id,
+    this.items = data.items?.map(item => new Item(item)) ?? [];
+  }
+
+  toFirestore() {
+    return {
+      id: this.id,
+      items: this.items.map(item => item.toFirestore())
+    };
+  }
+
+  static fromFirestore(data) {
+    return new SubCategory({
+      id: data.id,
+      items: data.items.map(Item.fromFirestore)
+    });
+  }
+}
+
+class Item {
+  constructor(data) {
+    this.id = data?.id ?? "";
+    this.printer_sn = data?.printer_sn ?? "";
+    this.kioskId = data?.kiosk_id ?? "";
+    this.description = data?.description ?? "";
+    this.sequence = data?.sequence ?? "";
+    this.price = data?.price ?? "";
+    this.photos = data?.photos ?? "";
+    this.availableStatus = data?.available_status ?? "";
+    this.modifierGroups = data.modifier_groups?.map(group => new ModifierGroup(group)) ?? [];
+  }
+
+  toFirestore() {
+    return {
+      id: this.id,
+      printer_sn : this.printer_sn,
+      kiosk_id: this.kioskId,
+      description: this.description,
+      sequence: this.sequence,
+      price: this.price,
+      photos: this.photos,
+      available_status: this.availableStatus,
+      modifier_groups: this.modifierGroups?.map(group => group.toFirestore())
+    };
+  }
+
+  static fromFirestore(data) {
+    return new Item({
+      id: data.id,
+      printer_sn : data.printer_sn,
+      kiosk_id: data.kiosk_id,
+      description: data.description,
+      sequence: data.sequence,
+      price: data.price,
+      photos: data.photos,
+      available_status: data.available_status,
+      modifier_groups: data.modifier_groups.map(ModifierGroup.fromFirestore)
+    });
+  }
+}
+
+class ModifierGroup {
+  constructor(data) {
+    this.id = data?.id ?? "";
+    this.kioskId = data?.kiosk_id ?? "";
+    this.name = data?.name ?? "";
+    this.sequence = data?.sequence ?? "";
+    this.selectionRangeMax = data?.selection_range_max ?? "";
+    this.selectionRangeMin = data?.selection_range_min ?? "";
+    this.photos = data?.photos ?? "";
+    this.availableStatus = data?.available_status ?? "";
+    this.modifiers = data.modifiers?.map(modifier => new Modifier(modifier)) ?? [];
+    this.addons_groups = data.addons_groups?.map(group => new ModifierGroup(group)) ?? [];
+  }
+
+  toFirestore() {
+    return {
+      id : this.id,
+      kiosk_id: this.kioskId,
+      name: this.name,
+      sequence: this.sequence,
+      selection_range_max: this.selectionRangeMax,
+      selection_range_min: this.selectionRangeMin,
+      photos: this.photos,
+      available_status: this.availableStatus,
+      modifiers: this.modifiers.map(modifier => modifier.toFirestore()),
+      addons_groups : this.addons_groups?.map(group => group.toFirestore())
+    };
+  }
+
+  static fromFirestore(data) {
+    return new ModifierGroup({
+      id: data.id,
+      kiosk_id: data.kiosk_id,
+      name: data.name,
+      sequence: data.sequence,
+      selection_range_max: data.selection_range_max,
+      selection_range_min : data.selection_range_min,
+      photos: data.photos,
+      available_status: data.available_status,
+      modifiers: data.modifiers.map(Modifier.fromFirestore),
+      addons_groups: data.addons_groups.map(ModifierGroup.fromFirestore)
+    });
+  }
+}
+
+class Modifier {
+  constructor(data) {
+    this.kioskId = data?.kiosk_id ?? "";
+    this.name = data?.name ?? "";
+    this.sequence = data?.sequence ?? "";
+    this.price = data?.price ?? "";
+    this.photos = data?.photos ?? "";
+    this.availableStatus = data?.available_status ?? "";
+    this.id = data?.id ?? "";
+  }
+
+  toFirestore() {
+    return {
+      kiosk_id: this.kioskId,
+      name: this.name,
+      sequence: this.sequence,
+      price: this.price,
+      photos: this.photos,
+      available_status: this.availableStatus,
+      id: this.id
+    };
+  }
+
+  static fromFirestore(data) {
+    return new Modifier({
+      kiosk_id: data.kiosk_id,
+      name: data.name,
+      sequence: data.sequence,
+      price: data.price,
+      photos: data.photos,
+      available_status: data.available_status,
+      id: data.id
+    });
+  }
+}
+
+
 
 module.exports = OdooRouter;

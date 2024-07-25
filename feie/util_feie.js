@@ -11,6 +11,7 @@ var SN = "223510740";
 
 //以下URL参数不需要修改
 var HOST = "api.feieyun.cn";     //域名
+var HOST_JP = "api.jp.feieyun.com"
 var PORT = "80";		         //端口
 var PATH = "/Api/Open/";         //接口路径
 
@@ -151,7 +152,7 @@ class UtilFeie
       }
     }
 
-    async checkFeieStatus(printerSN)
+    async checkFeieStatus(printerSN, isJP)
     {
       const USER = "fcey@me.com";
       const UKEY = "rVN3AhIH27JbJkEU";
@@ -168,7 +169,13 @@ class UtilFeie
       //     content += contentItem;
       // }
   
-      const url = 'http://api.feieyun.cn/Api/Open/';
+      var url = 'http://api.feieyun.cn/Api/Open/';
+
+      if(isJP)
+        {
+          'http://api.jp.feieyun.com/Api/Open/';
+        }
+
       const headers = {
           'Content-Type': 'application/x-www-form-urlencoded',
       };
@@ -201,7 +208,7 @@ class UtilFeie
       // Handle state update if needed
     }
 
-    async printFeie2(printerSN, contentList) {
+    async printFeie2(printerSN, contentList, isJP) {
       const USER = "fcey@me.com";
       const UKEY = "rVN3AhIH27JbJkEU";
       let SN = printerSN; // "223510740";
@@ -218,7 +225,13 @@ class UtilFeie
           content += contentItem;
       }
   
-      const url = 'http://api.feieyun.cn/Api/Open/';
+      var url = 'http://api.feieyun.cn/Api/Open/';
+      if(isJP)
+        {
+          url = 'http://api.jp.feieyun.com/Api/Open/';
+        }
+
+
       const headers = {
           'Content-Type': 'application/x-www-form-urlencoded',
       };
@@ -252,6 +265,61 @@ class UtilFeie
       // Handle state update if needed
   }
   
+  async printFeieFromContent(printerSN, content, isJP) {
+    const USER = "fcey@me.com";
+    const UKEY = "rVN3AhIH27JbJkEU";
+    let SN = printerSN; // "223510740";
+   
+    console.log( "printer SN:" + printerSN);
+    //console.log( "content to print" + content);
+
+    const timeStamp = Math.floor(Date.now() / 1000).toString();
+
+    const bytes = Buffer.from(`${USER}${UKEY}${timeStamp}`, 'utf-8');
+    const SIG = crypto.createHash('sha1').update(bytes).digest('hex');
+
+    
+    var url = 'http://api.feieyun.cn/Api/Open/';
+    if(isJP)
+      {
+        url = 'http://api.jp.feieyun.com/Api/Open/';
+      }
+
+
+    const headers = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+    };
+
+    const bodyContent = {
+        user: USER,
+        stime: timeStamp,
+        sig: SIG,
+        apiname: "Open_printMsg",
+        sn: SN,
+        content: content,
+        times: "1",
+    };
+
+    try {
+        const response = await axios.post(url, bodyContent, { headers });
+        const statusCode = response.status;
+        console.log(JSON.stringify(response.data));
+        return `${JSON.stringify(response.data)}`;
+        // Handle the response as needed
+    } catch (error) {
+        // Handle errors or exceptions
+        console.error(`Error: ${error.message}`);
+
+        return `Error : ${error.message}}`;
+    }
+
+    console.log(`Demo receipt sent to printer ${SN}`);
+
+    return `Receipt sent to printer ${SN}`;
+    // Handle state update if needed
+}
+
+
 
     async  printFeie(contentList) {
 
@@ -312,7 +380,7 @@ class UtilFeie
 
 
 
-    print()
+    print(isJP)
     {
              return new Promise((resolve, reject) =>{
 
@@ -362,10 +430,14 @@ class UtilFeie
             };
         var content = qs.stringify(post_data);
 
-       
+       var host = HOST;
+       if(isJP)
+        {
+          host = HOST_JP;
+        }
 
         var options = {
-            hostname:HOST,
+            hostname: host,
             port: 80,
             path: PATH,
             method: 'POST',
@@ -697,12 +769,12 @@ class UtilFeie
 
         // const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'short' });
 
-        let keyLen = 16;
-        let valueLen = 16;
+        let keyLen = 16 + 14;
+        let valueLen = 2;
 
         if (type === 1) {
-          keyLen = 24;
-          valueLen = 24;
+          keyLen = 24 + 22;
+          valueLen = 2;
         }
 
         const dualTable = new ReceiptDualTable();
@@ -886,6 +958,7 @@ const currentTime = timeFormatter.format(now);
               receipt.push(lineItem);
           }
 
+          console.log(receipt);
           // ... (Skipping other parts for brevity)
 
           // Printing the summary
@@ -893,8 +966,8 @@ const currentTime = timeFormatter.format(now);
           let valueLen = 22;
 
           if (type === 1) {
-              keyLen = 10;
-              valueLen = 38;
+              keyLen = 3;
+              valueLen = 38 + 7;
           }
 
           dualTable.init(keyLen, valueLen);

@@ -3,8 +3,10 @@ const crypto = require('crypto');
 const axios = require('axios');
 const UtilFeie = require("./feie/util_feie");
 const OrderModel = require('./models/OrderModel')
+const { PromoScope, PromoMain, PromoList }  = require("./util/util_promo")
 
 const firebase = require("./db");
+const { Console } = require('console');
 const fireStore = firebase.firestore();
 
 /*!SECTION
@@ -22,28 +24,45 @@ class DemoOdooRouter {
   initializeRoutes() {
 
     this.router.get('/about', function(req, res) {
-     res.json({ message: 'Endpoint for Stagging Odoo integration v1.24'});
+     res.json({ message: 'Endpoint for Stagging Odoo integration v1.27'});
     });
 
     this.router.post('/gettoken', this.getToken.bind(this));
     this.router.post('/checktoken', this.checkToken.bind(this));
     this.router.post('/syncmenu', this.syncMenu.bind(this));
+    this.router.post('/ovoidorder', this.voidOrder.bind(this));
     this.router.post('/oquerycoupon', this.queryCoupon.bind(this));
     this.router.post('/oquerymember', this.queryMember.bind(this));
     this.router.post('/oquerymembercode', this.queryMemberCode.bind(this));
     this.router.post('/oquerytoken', this.queryToken.bind(this));
+    this.router.post('/omenumapping', this.menuMapping.bind(this));
+
+
     this.router.post("/setkioskfooter", this.setKioskReceiptFooter.bind(this));
     this.router.post('/setorder', this.setOrder.bind(this));
 
+    //promo
+    this.router.post("/promo", this.handlePromo.bind(this) );
+    
+    //real time stock
+    this.router.post('/checkstock', this.checkStock.bind(this));
+
     //feie test
-    this.router.post('/kdstest', this.printTest.bind(this));
-     this.router.post('/kdssample', this.printSample.bind(this));
-     this.router.post('/kdssampleorderslip', this.printSampleOrderSlip.bind(this));
+    this.router.post('/kdstest', this.handlePrintTestCN.bind(this));
+    this.router.post('/kdstestap', this.handlePrintTestJP.bind(this));
+    // this.router.post('/kdssample', this.printSample.bind(this));
+     //this.router.post('/kdssampleorderslip', this.printSampleOrderSlip.bind(this));
 
      //feie actual print
-     this.router.post('/kdsreceipt', this.printReceipt.bind(this));
-     this.router.post('/kdsorderslip', this.printOrderSlip.bind(this));
-     this.router.post('/kdsstatus', this.checkStatus.bind(this));
+     this.router.post('/kdsreceipt', this.handlePrintReceiptCN.bind(this));
+     this.router.post('/kdsreceiptap', this.handlePrintReceiptJP.bind(this));
+
+     this.router.post('/kdsorderslip', this.handlePrintOrderSlipCN.bind(this));
+     this.router.post('/kdsorderslipap', this.handlePrintOrderSlipJP.bind(this));
+
+     this.router.post('/kdsstatus', this.handleCheckStatusCN.bind(this));
+     this.router.post('/kdsstatusap', this.handleCheckStatusJP.bind(this));
+
 
   }
 
@@ -78,11 +97,11 @@ class DemoOdooRouter {
 
         axios.get(url)
           .then(response => {
-            console.log('triggersync:', response.data);
+            //console.log('triggersync:', response.data);
             // Handle the response data as needed
           })
           .catch(error => {
-            console.error('triggersync error:', error.message);
+            //console.error('triggersync error:', error.message);
             // Handle any errors that occurred during the request
           });
     }
@@ -132,6 +151,58 @@ class DemoOdooRouter {
         {
               res.status(401).json({ error: ex.toString() });
         }
+    }
+
+
+    voidOrder(req,res)
+    {
+
+      const authHeader = req.headers['authorization'];
+
+      if (!authHeader) {
+           return res.status(401).json({ error: 'Authorization header missing' });
+      }
+
+      const authHeaderParts = authHeader.split(' ');
+
+          if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+            return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+          }
+
+          const token = authHeaderParts[1]; // Extract the token
+
+
+      const { order_id, remark} = req.body;
+      
+
+      let data = JSON.stringify({
+        "order_id": order_id,
+        "remark": remark,
+      });
+      
+      let config = {
+        method: 'post',
+        maxBodyLength: Infinity,
+        url: 'https://staging.gspos.odoo.my/api/kiosks/voidorder',
+        headers: { 
+          'Authorization': 'Bearer ' + token, 
+          'Content-Type': 'application/json', 
+          
+        },
+        data : data
+      };
+      
+      axios.request(config)
+      .then((response) => {
+        console.log(JSON.stringify(response.data));
+        res.status(200).json(JSON.stringify(response.data));
+      })
+      .catch((error) => {
+        console.log(error);
+        res.status(401).json(JSON.stringify(error?.config?.data ?? error));
+      });
+      
+
     }
 
 
@@ -192,6 +263,78 @@ class DemoOdooRouter {
         res.status(401).json({ error: error });
       });
       
+    }
+
+
+    menuMapping(req,res)
+    {
+      console.log("trigger menu mapping");
+      
+      const authHeader = req.headers['authorization'];
+
+      if (!authHeader) {
+           return res.status(401).json({ error: 'Authorization header missing' });
+      }
+
+      const authHeaderParts = authHeader.split(' ');
+
+          if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+            return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+          }
+
+          const token = authHeaderParts[1]; // Extract the token
+
+
+      const { odoo_id, kiosk_id} = req.body;
+      if(token == '')
+      {
+        res.status(401).json({ error: 'Please provide a token' });
+        return;
+      }
+
+
+      if(odoo_id == '')
+      {
+        res.status(401).json({ error: 'Please provide a odoo id' });
+        return;
+      }
+
+      if(kiosk_id == '')
+        {
+          res.status(401).json({ error: 'Please provide a kiosk id' });
+          return;
+        }
+
+      console.log("menumapping " + odoo_id + " " + kiosk_id + " with token " + token);
+
+      let data = JSON.stringify({
+       
+        "odoo_id":  odoo_id, 
+        "kiosk_id" : kiosk_id
+      });
+      
+      let config = {
+        method: 'post',
+        maxBodyLength: Infinity,
+        url: 'https://staging.gspos.odoo.my/api/kiosks/menumapping',
+        headers: { 
+          'Content-Type': 'application/json', 
+          'Authorization': 'Bearer ' + token, 
+          
+        },
+        data : data
+      };
+      
+      axios.request(config)
+      .then((response) => {
+        console.log(JSON.stringify(response.data));
+        res.status(200).json(JSON.stringify(response.data));
+      })
+      .catch((error) => {
+        console.log(error);
+        res.status(401).json({ error: error });
+      });
+
     }
 
     queryMember(req,res)
@@ -255,6 +398,62 @@ class DemoOdooRouter {
         console.log(error);
         res.status(401).json({ error: error });
       });
+
+    }
+
+    checkStock(req, res)
+    {
+
+      const authHeader = req.headers['authorization'];
+
+      if (!authHeader) {
+           return res.status(401).json({ error: 'Authorization header missing' });
+      }
+
+      const authHeaderParts = authHeader.split(' ');
+
+      if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+            return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+      }
+
+      const token = authHeaderParts[1]; // Extract the token
+      
+      console.log(token);
+      console.log(JSON.stringify(req.body));
+
+      const axios = require('axios');
+          // let data = JSON.stringify({
+          //   "store_merchant_code": "MDV1",
+          //   "modifiers": [
+          //     "MOD_1132",
+          //     "MOD_8797",
+          //     "ITEM_8946"
+          //   ]
+          // });
+
+          let data = JSON.stringify(req.body);
+
+          let config = {
+            method: 'post',
+            maxBodyLength: Infinity,
+            url: 'https://staging.gspos.odoo.my/api/kiosks/realtime',
+            headers: { 
+              'Content-Type': 'application/json', 
+              'Authorization': 'Bearer ' + token, 
+             
+            },
+            data : data
+          };
+
+          axios.request(config)
+          .then((response) => {
+            console.log(JSON.stringify(response.data));
+            res.status(200).json(JSON.stringify(response.data));
+          })
+          .catch((error) => {
+            console.log(error);
+            res.status(401).json({ error: error });
+          });
 
     }
 
@@ -571,11 +770,11 @@ axios.request(config)
 
                 res.json({ message: 'Sync done with ' + storeid });
 
-                const currentDate = new Date();
-                const formattedDate = currentDate.toLocaleString();
+                // const currentDate = new Date();
+                // const formattedDate = currentDate.toLocaleString();
 
-                const syncRef = fireStore.collection("odoo").doc(storeid).collection("synccall").doc("999");
-                syncRef.set({ message: "demo trigger", datatime: formattedDate  });
+                // const syncRef = fireStore.collection("odoo").doc(storeid).collection("synccall").doc("999");
+                // syncRef.set({ message: "demo trigger", datatime: formattedDate  });
 
               } else {
                 res.status(401).json({ error: 'Invalid token' });
@@ -594,7 +793,17 @@ axios.request(config)
 
       //SECTION Feie related
 
-      async checkStatus(req, res){
+      async handleCheckStatusCN(req,res)
+      {
+        return this.checkStatus(req,res, false);
+      }
+
+      async handleCheckStatusJP(req,res)
+      {
+        return this.checkStatus(req,res,true);
+      }
+
+      async checkStatus(req, res, isJP){
         const feie = new UtilFeie();
 
         
@@ -639,7 +848,7 @@ axios.request(config)
           try{
 
             let feieSN = feie.createFeieSNFromJSON(req.body);
-            let feieResult = await feie.checkFeieStatus(feieSN.sn);
+            let feieResult = await feie.checkFeieStatus(feieSN.sn, isJP);
             
              res.json({ message: feieResult });
           }
@@ -651,8 +860,17 @@ axios.request(config)
 
       }
 
+      async handlePrintReceiptCN(req, res)
+      {
+          return this.printReceipt(req,res, false);
+      }
 
-      async printReceipt(req, res){
+      async handlePrintReceiptJP(req,res)
+      {
+        return this.printReceipt(req,res, true);
+      }
+
+      async printReceipt(req, res, isJP){
         const feie = new UtilFeie();
 
         
@@ -700,7 +918,7 @@ axios.request(config)
           try{
 
             let feieOrder = feie.createFeieOrderFromJSON(req.body);
-            let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderReceiptFromOrder(feieOrder, false, 0));
+            let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderReceiptFromOrder(feieOrder, false, 0), isJP);
             
              res.json({ message: feieResult });
           }
@@ -712,7 +930,79 @@ axios.request(config)
 
       }
 
-      async printOrderSlip(req, res){
+      async handlePrintOrderSlipCN(req,res)
+      {
+          return this.printOrderSlip(req, res, false);
+      }
+
+      async handlePrintOrderSlipJP(req,res)
+      {
+        return this.printOrderSlip(req, res, true);
+      }
+
+
+      async  savePromoToFirestore(promo) {
+        if((promo?.discount_id ?? "") != "")
+          {
+        await fireStore.collection('odoopromo').doc(promo?.discount_id).set(promo.toFirestore());
+        console.log('Promo saved to Firestore');
+          }
+      }
+
+      async handlePromo(req, res)
+      {
+        
+
+        
+          // Check if the token matches the valid token (replace this with your token validation logic)
+          const authHeader = req.headers['authorization'];
+
+          if (!authHeader) {
+              return res.status(401).json({ error: 'Authorization header missing' });
+           }
+           const authHeaderParts = authHeader.split(' ');
+
+           if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+                return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+           }
+
+           const token = authHeaderParts[1]; // Extract the token
+
+          if (token == this.generateEncryptedToken()) {
+
+          } else {
+            res.status(401).json({ error: 'Invalid token' });
+            return;
+          }
+
+
+          // Validate the request body
+          if (!req.body) {
+                  res.status(400).json({ error: 'Request body is missing or empty' });
+                  return;
+          }
+
+          
+          try{
+
+            //let feieOrder = feie.createFeieOrderFromJSON(req.body);
+            
+
+            const promo = new PromoMain(req.body);
+            this.savePromoToFirestore(promo);
+
+            console.log(promo);
+            
+             res.json({ message: "done" });
+          }
+          catch(ex)
+          {
+              console.log(ex);
+              res.status(401).json({ error: ex });
+          }
+      }
+
+      async printOrderSlip(req, res, isJP){
         const feie = new UtilFeie();
 
         
@@ -762,7 +1052,7 @@ axios.request(config)
             //let feieOrder = feie.createFeieOrderFromJSON(req.body);
             let feieOrder = feie.createFeieOrderSlipFromJSON(req.body);
 
-            let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderItemSlip(feieOrder, false, 1));
+            let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderItemSlip(feieOrder, false, 1),isJP);
             
              res.json({ message: feieResult });
           }
@@ -774,7 +1064,17 @@ axios.request(config)
 
       }
 
-     async printTest(req, res)  {
+     async handlePrintTestCN(req,res) 
+     {
+        return this.printTest(req,res, false);
+     }
+
+     async handlePrintTestJP(req,res) 
+     {
+        return this.printTest(req,res, true);
+     }
+
+     async printTest(req, res, isJP)  {
 
             const feie = new UtilFeie();
 
@@ -823,7 +1123,7 @@ axios.request(config)
 
 
             try{
-                   let feieResult = await feie.print();
+                   let feieResult = await feie.print(isJP);
                     res.json({ message: feieResult });
             }
             catch(ex)
@@ -834,88 +1134,88 @@ axios.request(config)
 
      }
 
-     async printSample(req, res) {
+    //  async printSample(req, res) {
 
-                 const feie = new UtilFeie();
+    //              const feie = new UtilFeie();
 
-                  // Check if the token matches the valid token (replace this with your token validation logic)
-                             const authHeader = req.headers['authorization'];
+    //               // Check if the token matches the valid token (replace this with your token validation logic)
+    //                          const authHeader = req.headers['authorization'];
 
-                             if (!authHeader) {
-                                 return res.status(401).json({ error: 'Authorization header missing' });
-                              }
-                              const authHeaderParts = authHeader.split(' ');
+    //                          if (!authHeader) {
+    //                              return res.status(401).json({ error: 'Authorization header missing' });
+    //                           }
+    //                           const authHeaderParts = authHeader.split(' ');
 
-                              if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
-                                   return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
-                              }
+    //                           if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+    //                                return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+    //                           }
 
-                              const token = authHeaderParts[1]; // Extract the token
-
-
-                 // Check if the token matches the valid token (replace this with your token validation logic)
-                 if (token == this.generateEncryptedToken()) {
-
-                 } else {
-                   res.status(401).json({ error: 'Invalid token' });
-                   return;
-
-                 }
+    //                           const token = authHeaderParts[1]; // Extract the token
 
 
+    //              // Check if the token matches the valid token (replace this with your token validation logic)
+    //              if (token == this.generateEncryptedToken()) {
 
-                  try{
-                                    let feieResult = await feie.printFeie2(feie.printSampleReceipt());
-                                     res.json({ message: feieResult });
-                             }
-                             catch(ex)
-                             {
-                                 console.log(ex);
-                                 res.status(401).json({ error: ex });
-                             }
+    //              } else {
+    //                res.status(401).json({ error: 'Invalid token' });
+    //                return;
 
-          }
-
-    async printSampleOrderSlip(req, res) {
-
-                    const feie = new UtilFeie();
-                     // Check if the token matches the valid token (replace this with your token validation logic)
-                                const authHeader = req.headers['authorization'];
-
-                                if (!authHeader) {
-                                    return res.status(401).json({ error: 'Authorization header missing' });
-                                 }
-                                 const authHeaderParts = authHeader.split(' ');
-
-                                 if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
-                                      return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
-                                 }
-
-                                 const token = authHeaderParts[1]; // Extract the token
-
-
-                    // Check if the token matches the valid token (replace this with your token validation logic)
-                    if (token == this.generateEncryptedToken()) {
-                      //res.json({ message: 'Token is valid' });
-                    } else {
-                      res.status(401).json({ error: 'Invalid token' });
-                      return;
-
-                    }
+    //              }
 
 
 
-                    try{
-                                                        let feieResult = await feie.printFeie2(feie.printSampleOrderSlip());
-                                                         res.json({ message: feieResult });
-                                                 }
-                                                 catch(ex)
-                                                 {
-                                                     console.log(ex);
-                                                     res.status(401).json({ error: ex });
-                                                 }
+    //               try{
+    //                                 let feieResult = await feie.printFeie2(feie.printSampleReceipt());
+    //                                  res.json({ message: feieResult });
+    //                          }
+    //                          catch(ex)
+    //                          {
+    //                              console.log(ex);
+    //                              res.status(401).json({ error: ex });
+    //                          }
 
-             }
+    //       }
+
+    // async printSampleOrderSlip(req, res) {
+
+    //                 const feie = new UtilFeie();
+    //                  // Check if the token matches the valid token (replace this with your token validation logic)
+    //                             const authHeader = req.headers['authorization'];
+
+    //                             if (!authHeader) {
+    //                                 return res.status(401).json({ error: 'Authorization header missing' });
+    //                              }
+    //                              const authHeaderParts = authHeader.split(' ');
+
+    //                              if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+    //                                   return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+    //                              }
+
+    //                              const token = authHeaderParts[1]; // Extract the token
+
+
+    //                 // Check if the token matches the valid token (replace this with your token validation logic)
+    //                 if (token == this.generateEncryptedToken()) {
+    //                   //res.json({ message: 'Token is valid' });
+    //                 } else {
+    //                   res.status(401).json({ error: 'Invalid token' });
+    //                   return;
+
+    //                 }
+
+
+
+    //                 try{
+    //                                                     let feieResult = await feie.printFeie2(feie.printSampleOrderSlip());
+    //                                                      res.json({ message: feieResult });
+    //                                              }
+    //                                              catch(ex)
+    //                                              {
+    //                                                  console.log(ex);
+    //                                                  res.status(401).json({ error: ex });
+    //                                              }
+
+    //          }
 
 
 

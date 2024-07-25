@@ -10,7 +10,7 @@ class OrderModel {
     constructor(props) {
         //super(doc);
       
-    
+        this.kiosk_machine = props?.kiosk_machine ?? "" ,
         this.bill_discount_amount = props?.bill_discount_amount ?? "";
         this.order_id = props.order_id;
         this.short_order_number = props?.short_order_number ?? "";
@@ -24,6 +24,13 @@ class OrderModel {
         this.gateway_payment = "";
         this.payment_type = props.payment_type;//"Credit Card";
         this.payment_reference = props?.payment_reference;
+
+        this.payment_terminal_id = props?.payment_terminal_id ?? "";
+        this.payment_card_number = props?.payment_card_number ?? "";
+        this.payment_product_brand = props?.payment_product_brand ?? "";
+        this.payment_approval_code = props?.payment_approval_code ?? "";
+        this.payment_ret_reference = props?.payment_ret_reference ?? "";
+
         this.subtotal = props?.subtotal ?? 0.0;
         this.discount_total = props?.discount_total ?? 0.0;
         this.grand_total = props?.grand_total ?? 0.0;
