@@ -76,7 +76,7 @@ class PromoMain {
   {
      constructor (discount)
      {
-       this.scope = new PromoScope(discount?.scopoe ?? "");
+       this.scope = new PromoScope(discount?.scope ?? "");
        this.type = discount?.type ?? "";
        this.min_basket_amount = discount?.min_basket_amount ?? 0;
        this.min_quantity = discount?.min_quantity  ?? 0;
@@ -99,6 +99,7 @@ class PromoMain {
   {
     constructor(scope)
     {
+      this.min_quantity = scope?.min_quantity ?? "",
        this.type = scope?.type ?? "",
         this.item_ids = scope?.item_ids ?? []
     }
@@ -106,6 +107,7 @@ class PromoMain {
     toFirestore()
     {
       return {
+        min_quantity : this.min_quantity,
         type : this.type,
         item_ids : this.item_ids
       }

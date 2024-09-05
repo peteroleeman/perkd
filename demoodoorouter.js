@@ -7,6 +7,9 @@ const { PromoScope, PromoMain, PromoList }  = require("./util/util_promo")
 
 const firebase = require("./db");
 const { Console } = require('console');
+const OdooOrderModel = require('./models/odoo/OdooOrderModel');
+const MenuModel = require('./models/MenuModel');
+const { default: CatModel } = require('./models/CatModel');
 const fireStore = firebase.firestore();
 
 /*!SECTION
@@ -24,12 +27,14 @@ class DemoOdooRouter {
   initializeRoutes() {
 
     this.router.get('/about', function(req, res) {
-     res.json({ message: 'Endpoint for Stagging Odoo integration v1.27'});
+     res.json({ message: 'Endpoint for Stagging Odoo integration v1.28'});
     });
 
     this.router.post('/gettoken', this.getToken.bind(this));
     this.router.post('/checktoken', this.checkToken.bind(this));
     this.router.post('/syncmenu', this.syncMenu.bind(this));
+    this.router.post('/syncodoo', this.triggerSyncOdoo.bind(this));
+    this.router.post('/synccall', this.syncCall.bind(this));
     this.router.post('/ovoidorder', this.voidOrder.bind(this));
     this.router.post('/oquerycoupon', this.queryCoupon.bind(this));
     this.router.post('/oquerymember', this.queryMember.bind(this));
@@ -40,6 +45,7 @@ class DemoOdooRouter {
 
     this.router.post("/setkioskfooter", this.setKioskReceiptFooter.bind(this));
     this.router.post('/setorder', this.setOrder.bind(this));
+    //this.router.post('/repostorder', this.repostOrder.bind(this));
 
     //promo
     this.router.post("/promo", this.handlePromo.bind(this) );
@@ -104,6 +110,450 @@ class DemoOdooRouter {
             //console.error('triggersync error:', error.message);
             // Handle any errors that occurred during the request
           });
+    }
+
+    async triggerSyncOdoo() 
+    {
+
+      const FirebaseDB = {
+        cat : "cat",
+        mainCat : "maincat",
+        store : "store",
+        menu: "menu",
+        odoo :"odoo",
+        order : "order",
+        todayOrder: "today_order"
+      }
+
+      
+      var menuFull = [];
+      var odooMap = new Map();
+      var modPrice = new Map();
+      var menuNotAvailable = [];
+      var menuToHide = [];
+      var menuRealTime = [];
+
+      var storeConfiguredId = "S_ab87a396-8d11-45cb-9d4a-84a6b977980b";
+      var odooConfigureId = "MDV3";
+      //const menuCollectionRef = collection(db, FirebaseDB.store, storeConfiguredId, FirebaseDB.menu);
+      //const mainCatCollectionRef = collection(db, FirebaseDB.store, storeConfiguredId, FirebaseDB.mainCat);
+
+      const menuCollectionRef = fireStore.collection(FirebaseDB.store).doc(storeConfiguredId).collection(FirebaseDB.menu);
+      const mainCatCollectionRef = fireStore.collection(FirebaseDB.odoo).doc(odooConfigureId).collection(FirebaseDB.mainCat);
+
+      var odooMainCatCollectionRef = fireStore.collection(FirebaseDB.odoo).doc(odooConfigureId).collection(FirebaseDB.cat);
+
+      console.log("trigger sync odoo");
+
+      var odooResult = await odooMainCatCollectionRef.get();
+       
+       if(!odooResult.empty)
+       {
+          for(var doc of odooResult.docs)
+          {
+              
+            
+           
+            var odooMenu = doc.data();
+
+           
+
+            if((odooMenu?.id ?? "") != "")
+            {
+                odooMap.set(odooMenu.id, odooMenu);
+            
+              if((odooMenu?.availableStatus ?? "") == "UNAVAILABLE")
+              {
+                menuNotAvailable.push(odooMenu.id);
+               
+              }
+
+              if((odooMenu?.real_time?.toLowerCase() ?? "") == "true")
+                {
+                  menuRealTime.push(odooMenu.id);
+                }
+
+                modPrice.set(odooMenu.id, parseFloat( odooMenu.price ?? "0.00" ));
+
+            }
+
+          }
+       }
+       else
+       {
+          console.log("odoo result is empty");
+       }
+      
+
+       var menuResult =  await menuCollectionRef.get();
+
+       console.log("menu result gotten");
+
+       if (!menuResult.empty)
+       {
+      
+        for(var doc of menuResult.docs)
+          {
+              var menuModel = doc.data();
+
+              
+              
+             
+              if((menuModel?.menusku ?? "") != "")
+              {
+                 var odooMenu = odooMap.get(menuModel.menusku);
+                 
+                 menuModel.isSoldOut = odooMenu?.isSoldOut ?? false; //odooMenu?.isSoldOut
+                 menuModel.isShow = odooMenu?.isShow ?? true;
+                 menuModel.discountDetail = odooMenu?.discountDetail ?? "";
+
+                 if (odooMenu?.qty != undefined && odooMenu?.qty != "")
+                  {
+                    
+                      menuModel.qty = odooMenu?.qty ?? 0;
+                     
+                    
+                  }
+      
+                  if(odooMenu?.menuprice != undefined)
+                  {
+                    var menuValue = parseFloat(String(odooMenu?.menuprice ?? "0.0"));
+                   
+                     menuModel.menuprice = parseFloat(String(odooMenu?.menuprice ?? "0.0"));
+      
+                  }
+
+
+                  //now check for mg
+                  for(var mg of menuModel?.modifiergroups ?? [])
+                    {
+                       
+                      //3008
+                      for (var optionG of mg?.optiongroups ?? []) {
+                        for (var option of optionG?.groups ?? []) {
+                          if (menuNotAvailable.includes(option?.sku ?? "-")) {
+                            option.isSoldOut = true;
+                            
+            
+                          }
+                          else {
+                            option.isSoldOut = false;
+            
+            
+                          }
+
+                          console.log("option issoldout:" +option.isSoldOut);
+            
+                          //show or hide
+                          if (menuToHide.includes(option?.sku ?? "-")) {
+                            option.isShow = false;
+            
+            
+                          }
+                          else {
+                            option.isShow = true;
+            
+            
+                          }
+            
+                          console.log("option.isshow:" + option.isShow);
+            
+                          //assign price from odoo
+                          if (modPrice.has(option?.sku)) {
+                            option.price = modPrice.get(option?.sku);
+                            //addDebugLog("assigning option to " + option.price);
+                            console.log("option.price:" + option.price);
+                          }
+                        }
+                      }
+                              
+                       for(var mod of (mg?.modifiers ?? []))
+                        {
+                         
+                           
+            
+                            if(menuNotAvailable?.includes(mod?.sku ?? "-"))
+                            {
+                              mod.isSoldOut = true;
+                              console.log("mod.issoldout:" + mod.isSoldOut);
+                              
+                            }
+                            else
+                            {
+                              mod.isSoldOut = false;
+                              console.log("mod.issoldout:" +mod.isSoldOut);
+                              
+                            }
+            
+                            //show or hidden
+            
+                           
+            
+                            if(menuToHide?.includes(mod?.sku ?? "-"))
+                              {
+                                mod.isShow = false;
+                                console.log("mod.isshow:" +mod.isShow);
+                                
+                              }
+                              else
+                              {
+                                mod.isShow = true;
+                                console.log("mod.isshow:" +mod.isShow);
+                                
+                              }
+                              
+                             
+            
+                            if(menuRealTime?.includes(mod?.sku ?? "-"))
+                              {
+                                mod.real_time = "true";
+                                console.log("mod.real_time:" + mod.real_time);
+                              }
+                              else
+                              {
+                                mod.real_time = "false";
+                                console.log("mod.real_time:" + mod.real_time);
+                              }
+            
+                              //assign price from odoo
+                              if(modPrice.has(mod?.sku))
+                                {
+                                  mod.price = modPrice.get(mod?.sku);
+            
+                                  console.log("mod.price:" + mod.price);
+                                  //addDebugLog("assigning mod to " + mod.price);
+                                }
+            
+                         
+                        }
+                    }
+
+
+              }    
+                //console.log(menuModel.data());
+                console.log(menuModel.title + " " + menuModel.id + " " + menuModel.menusku);
+                console.log(menuModel);
+                fireStore.collection(FirebaseDB.store).doc("superstore").collection(FirebaseDB.menu).doc(menuModel.id).set(menuModel);
+          }
+       }
+       else
+       {
+         console.log("menu is empty");
+       }
+      
+
+       
+       
+
+
+       
+
+       return;
+
+       
+       Array.from(odooMap.entries()).map(([key, menu]) => {
+        for(var odooMG of menu?.modifiergroups ?? [])
+          {
+            for(var odooM of odooMG?.modifiers ?? [])
+              {
+                if(odooM.availableStatus == "UNAVAILABLE")
+                  {
+                    menuNotAvailable.push(odooM.id);
+                    addDebugLog("UNAVAILABLE " + odooM.title + " " + odooM.id);
+                  }
+                  
+                  if(odooM.availableStatus == "HIDE")
+                    {
+                      menuToHide.push(odooM.id);
+                      
+                    addDebugLog("HIDE " + odooM.title + " " + odooM.id);
+                      //addDebugLog("HIDE" );
+                      //addDebugLog(odooM);
+                      
+                    }
+                    else
+                    {
+                      //addDebugLog("SHOW " + odooM.title + " " + odooM.id);
+                    }
+                  
+
+                  if((odooM?.real_time?.toLowerCase() ?? "") == "true")
+                    {
+                      menuRealTime.push(odooM.id);
+                    }
+
+                    //addDebugLog(odooM);
+                    modPrice.set(odooM.id, parseFloat( odooM.price ?? "0.00" ));
+              }
+          }
+
+        
+    });
+
+       //now compare odoo and foodio menu
+       for (var catStruct of menuFull) {
+        var bFound = false;
+        var index = 0;
+        var odooMenu = odooMap.get(catStruct.menu.sku);
+        if ((odooMenu != null) && (odooMenu != undefined) && (odooMenu != "" ))
+        {
+
+
+          if ((odooMenu?.id ?? "-") == (catStruct?.menu?.sku ?? "")) //index = 0
+          {
+
+            
+              catStruct.menu.isSoldOut = odooMenu?.isSoldOut ?? false; //odooMenu?.isSoldOut
+              catStruct.menu.isShow = odooMenu?.isShow ?? true;
+              catStruct.menu.discountDetail = odooMenu?.discountDetail;
+
+              
+              //check if this is vertical promo
+              var verticalPromoResult = isMenuOfVerticalPromo(odooMenu?.id);
+              if (verticalPromoResult != -999) {
+                catStruct.menu.discountDetail = getVerticalPromoIdWithSKU(odooMenu?.id) //PromoOption.vertical_promo;
+              }
+
+              //check if this is bundle discount
+              var bundleDiscountResult = isMenuOfBundleDiscount(odooMenu?.id);
+            if (bundleDiscountResult != -999) {
+              catStruct.menu.discountDetail = getBundleDiscountIdWithSKU(odooMenu?.id);
+            }
+
+
+            
+            if (odooMenu?.qty != undefined && odooMenu?.qty != "")
+            {
+              
+                catStruct.menu.qty = odooMenu?.qty ?? 0;
+               
+              
+            }
+
+            if(odooMenu?.menuprice != undefined)
+            {
+              var menuValue = parseFloat(String(odooMenu?.menuprice ?? "0.0"));
+              if (catStruct?.menu?.menuprice != menuValue)
+              {
+                catStruct.menu.menuprice = parseFloat(String(odooMenu?.menuprice ?? "0.0"));
+
+                
+              }
+            }
+
+            for(var mg of catStruct.menu?.modifiergroups ?? [])
+              {
+                 
+                //3008
+                for (var optionG of mg?.optiongroups ?? []) {
+                  for (var option of optionG?.groups ?? []) {
+                    if (menuNotAvailable.includes(option?.sku ?? "-")) {
+                      option.isSoldOut = true;
+
+
+                    }
+                    else {
+                      option.isSoldOut = false;
+
+
+                    }
+
+                    //show or hide
+                    if (menuToHide.includes(option?.sku ?? "-")) {
+                      option.isShow = false;
+
+
+                    }
+                    else {
+                      option.isShow = true;
+
+
+                    }
+
+
+                    //assign price from odoo
+                    if (modPrice.has(option?.sku)) {
+                      option.price = modPrice.get(option?.sku);
+                      //addDebugLog("assigning option to " + option.price);
+                    }
+                  }
+                }
+                        
+                 for(var mod of (mg?.modifiers ?? []))
+                  {
+                   
+                     
+
+                      if(menuNotAvailable?.includes(mod?.sku ?? "-"))
+                      {
+                        mod.isSoldOut = true;
+                        
+                      }
+                      else
+                      {
+                        mod.isSoldOut = false;
+                        
+                      }
+
+                      //show or hidden
+
+                     
+
+                      if(menuToHide?.includes(mod?.sku ?? "-"))
+                        {
+                          mod.isShow = false;
+                          
+                        }
+                        else
+                        {
+                          mod.isShow = true;
+                          
+                        }
+                        
+                        if (gModifierToHide.includes(mod?.id ?? "-")) {
+                         mod.isShow = false;
+                        }
+
+
+                      if(menuRealTime?.includes(mod?.sku ?? "-"))
+                        {
+                          mod.real_time = "true";
+                        }
+                        else
+                        {
+                          mod.real_time = "false";
+                        }
+
+                        //assign price from odoo
+                        if(modPrice.has(mod?.sku))
+                          {
+                            mod.price = modPrice.get(mod?.sku);
+
+                            //addDebugLog("assigning mod to " + mod.price);
+                          }
+
+                   
+                  }
+              }
+
+           
+           
+          }
+          else {
+           
+          }
+        }
+        else
+        {
+         
+        }
+
+     
+
+      }
+      
+
+
     }
 
    async setKioskReceiptFooter(req,res)
@@ -544,6 +994,7 @@ class DemoOdooRouter {
 
       let data = JSON.stringify({
         // "db": "GS_ERP_P1_GOLIVE_FUGU_20_JULY_2022",
+        "db": "GS_ERP_P1_GOLIVE_FUGU_20_JULY_2022",
         "login": "kiosk",
         "password": "Ls$Mr4k;ZTWwQ}9Ppc5/Gu"
       });
@@ -614,10 +1065,6 @@ class DemoOdooRouter {
       }
     }
 
-
-     
-    
-    
     async setOrder(req,res) 
     {
 
@@ -637,8 +1084,12 @@ class DemoOdooRouter {
 
       //const storeRef = await fireStore.collection("store").doc("S_5aca69dd-e964-45ea-ae6d-e1061e28f737");
       const orderRef = await fireStore.collection("odoo").doc(storeid).collection("order").doc(orderid);
-     
       const doc = await orderRef.get();
+      //console.log(doc.data());
+      if(doc?.data() == null || doc?.data() == undefined)
+      {
+        return res.status(404).json({ error: orderid + ' from ' + storeid + ' not found' });
+      }
 
       var orderModel = new OrderModel(doc.data());
       //orderModel.toOdooOrder();
@@ -717,7 +1168,7 @@ let config = {
   headers: { 
     'Content-Type': 'application/json', 
     'Authorization': 'Bearer ' + token, 
-    'Cookie': 'session_id=f3892e4827051f5315646787eb1acf6acaade537'
+   
   },
   data : data2
 };
@@ -726,16 +1177,162 @@ axios.request(config)
 .then((response) => {
   
   console.log(JSON.stringify(response.data));
+  var orderDOC = doc.data();
+  orderDOC.odoo_response = JSON.stringify(response.data);
+  fireStore.collection("odoo_done").doc(storeid).collection("order").doc(orderDOC.id).set((orderDOC));
+  fireStore.collection("odoo").doc(storeid).collection("order").doc(orderDOC.id).delete();
   res.status(200).json(response.data );
   
 })
 .catch((error) => {
   console.log("Error: " + orderModel.order_id);
   console.log(error);
+  //var orderDOC = doc.data();
+  //orderDOC.odoo_response = error.toString();
+  //fireStore.collection("odoo_done").doc(storeid).collection("order").doc(orderDOC.id).set((orderDOC));
+ 
   res.status(401).json({ error: error });
 });
 
 }
+
+// async repostOrder(req,res) 
+// {
+
+//   const { orderid, storeid } = req.body;
+
+//   if(orderid == '')
+//   {
+//        res.status(401).json({ error: 'Invalid order id provided' });
+//        return;
+//   }
+
+//   if(storeid == '')
+//   {
+//        res.status(401).json({ error: 'Invalid store id provided' });
+//        return;
+//   }
+
+//   //const storeRef = await fireStore.collection("store").doc("S_5aca69dd-e964-45ea-ae6d-e1061e28f737");
+//   const orderRef = await fireStore.collection("kiosk_recover").doc(orderid);
+//   const doc = await orderRef.get();
+//   //console.log(doc.data());
+//   if(doc?.data() == null || doc?.data() == undefined)
+//   {
+//     return res.status(404).json({ error: orderid + ' from ' + storeid + ' not found' });
+//   }
+
+//   //var foodioModel = new OrderModel(doc.data());
+
+  
+//   var foodioModel = new OrderModel(doc.data());
+//   var orderModel = new OdooOrderModel(foodioModel);
+
+//   console.log(orderModel);
+
+//   //orderModel.toOdooOrder();
+//   const authHeader = req.headers['authorization'];
+
+//   if (!authHeader) {
+//        return res.status(401).json({ error: 'Authorization header missing' });
+//   }
+
+//   const authHeaderParts = authHeader.split(' ');
+
+//       if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+//         return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+//       }
+
+//       const token = authHeaderParts[1]; // Extract the token
+
+//       var orderNumber = orderModel.order_id;
+//       orderModel.order_id = "ZEAL_" + storeid + "_" + orderNumber;
+//       //orderModel.short_order_number =  storeid + "_" + orderNumber;
+//        orderModel.store_merchant_code = storeid;      
+
+       
+
+// let data2 = JSON.stringify(orderModel) ;   
+ 
+
+// //console.log("data:");
+// console.log(data2);
+
+// //   "order_id": "ZEAL_TRX_000001",
+// //   "short_order_number": "TRX-00001",
+// //   "store_merchant_code": "TRX",
+// //   "order_datetime": "2024-03-31T18:00:00.000Z",
+// //   "member_code": "31BRMUo5pVJjPGyIBZjneDIbQ",
+// //   "remark": "Request plastic bag and give more tissue",
+// //   "items": [
+// //     {
+// //       "id": "ITEM_2953",
+// //       "quantity": 1,
+// //       "remark": "",
+// //       "price": 9.5,
+// //       "coupon_code": "",
+// //       "discount_id": "",
+// //       "discount_amount": "",
+// //       "modifiers": [
+// //         {
+// //           "id": "MOD_1132",
+// //           "price": 0,
+// //           "quantity": 1
+// //         },
+// //         {
+// //           "id": "MOD_7771",
+// //           "price": 1.5,
+// //           "quantity": 1
+// //         }
+// //       ]
+// //     }
+// //   ],
+// //   "bill_discount_id": "",
+// //   "bill_discount_amount": "",
+// //   "customer_payment": 11,
+// //   "gateway_payment": "",
+// //   "payment_type": "Credit Card",
+// //   "payment_reference": "CIMB891021313",
+// //   "subtotal": 11,
+// //   "discount_total": "",
+// //   "grand_total": 11,
+// //   "mode": "dine_in"
+// // });
+
+// let config = {
+// method: 'post',
+// maxBodyLength: Infinity,
+// url: 'https://staging.gspos.odoo.my/api/kiosks/order',
+// headers: { 
+// 'Content-Type': 'application/json', 
+// 'Authorization': 'Bearer ' + token, 
+
+// },
+// data : data2
+// };
+
+// axios.request(config)
+// .then((response) => {
+
+// console.log(JSON.stringify(response.data));
+// //var orderDOC = doc.data();
+// //orderDOC.odoo_response = JSON.stringify(response.data);
+// //fireStore.collection("odoo_done").doc(storeid).collection("order").doc(orderDOC.id).set((orderDOC));
+// //fireStore.collection("odoo").doc(storeid).collection("order").doc(orderDOC.id).delete();
+// res.status(200).json(response.data );
+
+// })
+// .catch((error) => {
+// console.log("Error: " + orderModel.order_id);
+// console.log(error);
+// //var orderDOC = doc.data();
+// //orderDOC.odoo_response = error.toString();
+// //fireStore.collection("odoo_done").doc(storeid).collection("order").doc(orderDOC.id).set((orderDOC));
+
+// res.status(401).json({ error: error });
+// });
+
+// }
 
     syncMenu(req, res) 
     {
@@ -790,6 +1387,60 @@ axios.request(config)
                 res.status(401).json({ error: ex.toString() });
           }
         }
+
+        syncCall(req, res) 
+        {
+              //const { token,storeid } = req.body;
+               try{
+    
+              const authHeader = req.headers['authorization'];
+    
+               if (!authHeader) {
+                    return res.status(401).json({ error: 'Authorization header missing' });
+               }
+    
+               const authHeaderParts = authHeader.split(' ');
+    
+                   if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+                     return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+                   }
+    
+                   const token = authHeaderParts[1]; // Extract the token
+    
+              //const token = authHeader.split(' ')[1]; // Assuming "Bearer <token>", split by space and get the token
+              const {storeid, initial } = req.body;
+              console.log("syncall:" + storeid + " " + initial);
+    
+              // Check if the token matches the valid token (replace this with your token validation logic)
+              if(storeid != "")
+              {
+                  if (token == this.generateEncryptedToken()) {
+    
+                    const currentDate = new Date();
+                    const formattedDate = currentDate.toLocaleString();
+    
+                    const syncRef = fireStore.collection("odoo").doc(storeid).collection("synccall").doc("99" + initial);
+                    syncRef.set({ message: "demo trigger", datatime: formattedDate  });
+
+                    res.json({ message: 'Sync called with ' + initial });
+    
+                    
+    
+                  } else {
+                    res.status(401).json({ error: 'Invalid token' });
+                  }
+              }
+              else
+              {
+                    res.status(401).json({ error: 'Invalid store' });
+              }
+              }
+              catch(ex)
+              {
+                    res.status(401).json({ error: ex.toString() });
+              }
+            }
+    
 
       //SECTION Feie related
 
@@ -944,7 +1595,7 @@ axios.request(config)
       async  savePromoToFirestore(promo) {
         if((promo?.discount_id ?? "") != "")
           {
-        await fireStore.collection('odoopromo').doc(promo?.discount_id).set(promo.toFirestore());
+        await fireStore.collection('odoopromo_demo').doc(promo?.discount_id).set(promo.toFirestore());
         console.log('Promo saved to Firestore');
           }
       }
@@ -993,7 +1644,7 @@ axios.request(config)
 
             console.log(promo);
             
-             res.json({ message: "done" });
+             res.json({ message: promo.discount_id + " created" });
           }
           catch(ex)
           {

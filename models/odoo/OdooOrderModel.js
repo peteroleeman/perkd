@@ -10,22 +10,24 @@ class OdooOrderModel {
         // If props is not an instance of OrderModel, create a new instance
         let orderModel = props instanceof OrderModel ? props : new OrderModel(props);
 
+        //console.log(orderModel);
+
         // Assign properties
         this.id = orderModel.id;
         this.remark = "";
         this.bill_discount_amount = "";
         this.order_id = orderModel.orderid;
         this.items = "";
-        this.customer_payment = orderModel.totalpaid.toString();
+        this.customer_payment = orderModel.totalpaid;
         this.bill_discount_id = "";
-        this.grand_total = orderModel.totalprice.toString();
+        this.grand_total = orderModel.totalprice;
         this.mode = "dine_in";
         this.gateway_payment = "";
         this.vdiscount_total = "";
         this.store_merchant_code = "MDV1";
         this.short_order_number = orderModel.orderid;
         this.member_code = "";
-        this.subtotal = orderModel.subtotal.toString();
+        this.subtotal = "" + orderModel.subtotal;
         this.payment_reference = "";
         this.order_datetime = orderModel.orderdatetime;
         this.payment_type = "Credit Card";
@@ -37,7 +39,7 @@ class OdooOrderModel {
             var odooItemModel = new OdooOrderItemModel(itemModel);
 
             console.log("getDiscountid with " + odooItemModel.id);
-            const discountId = getDiscountId(odooItemModel.id);
+            const discountId = this.getDiscountId(odooItemModel.id);
             console.log("getDiscountid with result is " + discountId);
             if(discountId)
                 {
@@ -77,35 +79,39 @@ class OdooOrderModel {
 
 
     //Method to check for discount id for limited time
+    //Method to check for discount id for limited time
     getDiscountId(itemId) {
 
-        const discounts = [
-          {
-            discountId: "RP1683",
-            applicableItems: [
-              "ITEM_9246",
-              "ITEM_9247",
-              "ITEM_9243",
-              "ITEM_9244",
-              "ITEM_9022"
-            ]
-          },
-          {
-            discountId: "RP1684",
-            applicableItems: [
-              "ITEM_9650",
-              "ITEM_9414"
-            ]
-          }
-        ];
-  
-        for (const discount of discounts) {
-          if (discount.applicableItems.includes(itemId)) {
-            return discount.discountId;
-          }
+      const discounts = [
+        // {
+        //   discountId: "RL1D1679",
+        //   applicableItems: [
+        //     "ITEM_9246",
+        //     "ITEM_9247",
+        //     "ITEM_9243",
+        //     "ITEM_9244",
+        //     "ITEM_9022"
+        //   ]
+        // },
+        
+        {
+          discountId: "RPD1681",
+          applicableItems: [
+            "ITEM_9688",
+            "ITEM_9689",
+            "ITEM_9690",
+            "ITEM_9691"
+          ]
         }
-        return null; // Return null if the item is not part of any discount list
+      ];
+
+      for (const discount of discounts) {
+        if (discount.applicableItems.includes(itemId)) {
+          return discount.discountId;
+        }
       }
+      return null; // Return null if the item is not part of any discount list
+    }
   
 
     // Method to get the JSON structure output for the print function

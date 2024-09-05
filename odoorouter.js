@@ -108,7 +108,7 @@ class OdooRouter {
 
         //https://demo-c6qevkp34a-uc.a.run.app/odgetmenu?storeid=TRX
         const url = 'https://demo-c6qevkp34a-uc.a.run.app/odgetmenu?storeid=' + storeId;
-        console.log(url);
+        //console.log(url);
 
         axios.get(url)
           .then(response => {
@@ -174,7 +174,7 @@ class OdooRouter {
 
           console.log(promo);
           
-           res.json({ message: "done" });
+          res.json({ message: promo.discount_id + " created" });
         }
         catch(ex)
         {
@@ -185,6 +185,8 @@ class OdooRouter {
 
    async setKioskReceiptFooter(req,res)
     {
+
+      console.log("setKioskReceiptFooter");
       try{
 
         const authHeader = req.headers['authorization'];
@@ -234,6 +236,7 @@ class OdooRouter {
     voidOrder(req,res)
     {
 
+      console.log("voidOrder");
       const authHeader = req.headers['authorization'];
 
       if (!authHeader) {
@@ -776,10 +779,15 @@ class OdooRouter {
            return;
       }
 
-      const storeRef = await fireStore.collection("store").doc("S_5aca69dd-e964-45ea-ae6d-e1061e28f737");
+      //const storeRef = await fireStore.collection("store").doc("S_5aca69dd-e964-45ea-ae6d-e1061e28f737");
       const orderRef = await fireStore.collection("odoo").doc(storeid).collection("order").doc(orderid);
+      //const orderDoneRef = fireStore.collection("odoo_done").doc(storeid).collection("order").doc(orderid);
      
       const doc = await orderRef.get();
+      if(doc?.data() == null || doc?.data() == undefined)
+        {
+          return res.status(404).json({ error: orderid + ' from ' + storeid + ' not found' });
+        }
 
       var orderModel = new OrderModel(doc.data());
       //orderModel.toOdooOrder();
@@ -867,6 +875,12 @@ axios.request(config)
 .then((response) => {
   
   console.log(JSON.stringify(response.data));
+
+  var orderDOC = doc.data();
+  orderDOC.odoo_response = JSON.stringify(response.data);
+  fireStore.collection("odoo_done").doc(storeid).collection("order").doc(orderDOC.id).set((orderDOC));
+  fireStore.collection("odoo").doc(storeid).collection("order").doc(orderDOC.id).delete();
+
   res.status(200).json(response.data );
   
 })
@@ -906,7 +920,7 @@ axios.request(config)
           {
               if (token == this.generateEncryptedToken()) {
 
-                console.log("about to triggerMenuSync");
+                //console.log("about to triggerMenuSync");
                 this.triggerMenuSync(storeid);
 
                 res.json({ message: 'Sync done with ' + storeid });

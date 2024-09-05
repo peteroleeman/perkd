@@ -17,7 +17,7 @@ const {
 
 class GKashRouter {
 
-  VERSION = "v1.13";
+
 
   constructor() {
     this.router = express.Router();
@@ -30,7 +30,7 @@ class GKashRouter {
   initializeRoutes() {
 
     this.router.get('/about', function(req, res) {
-     res.json({ message: `Endpoint for GKash integration ${this.VERSION}`});
+     res.json({ message: `Endpoint for GKash integration v1.13`});
     });
 
     // this.router.get('/return', function(req, res) {
@@ -44,6 +44,38 @@ class GKashRouter {
      this.router.post('/return', this.paymentReturn.bind(this));
      this.router.post('/callback', this.paymentResult.bind(this));
     this.router.post('/initpayment', this.initPayment.bind(this));
+    this.router.post('/createstore', this.createStore.bind(this));
+
+  }
+
+
+  createStore(req, res){
+   
+      // Validate the request body
+      if (!req.body) {
+              res.status(400).json({ error: 'Request body is missing or empty' });
+              return;
+      }
+
+      const requiredFields = ['email', 'password', 'mobile_number', 'title', 'address', 'cid', 'tid', 'signature'];
+      for (const field of requiredFields) {
+              if (!(field in req.body)) {
+                  res.status(400).json({ error: `Missing required field: ${field}` });
+                  return;
+              }
+      }
+
+      try{
+
+         const { email, password, mobile_number, title, address, cid, tid, signature } = req.body;
+
+         res.status(200).json({ message: title + " created" });
+      }
+      catch(ex)
+      {
+          console.log(ex);
+          res.status(401).json({ error: ex });
+      }
 
   }
 

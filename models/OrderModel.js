@@ -43,15 +43,15 @@ class OrderModel {
 
 
         let itemList = [];
-        for (let item of props.items) {
+        for (let item of props?.items ?? []) {
            
-            console.log("getDiscountid with " + item.id);
+            //console.log("getDiscountid with " + item.id);
             const discountId = this.getDiscountId(item.id);
-            console.log("getDiscountid with result is " + discountId);
+            //console.log("getDiscountid with result is " + discountId);
             if(discountId)
                 {
                     item.discount_id = discountId;
-                    console.log("done assign getDiscountid with result is " + discountId);
+                    //console.log("done assign getDiscountid with result is " + discountId);
                 }
 
             itemList.push(item);
@@ -211,16 +211,16 @@ class OrderModel {
     getDiscountId(itemId) {
 
         const discounts = [
-          {
-            discountId: "RL1D1679",
-            applicableItems: [
-              "ITEM_9246",
-              "ITEM_9247",
-              "ITEM_9243",
-              "ITEM_9244",
-              "ITEM_9022"
-            ]
-          },
+          // {
+          //   discountId: "RL1D1679",
+          //   applicableItems: [
+          //     "ITEM_9246",
+          //     "ITEM_9247",
+          //     "ITEM_9243",
+          //     "ITEM_9244",
+          //     "ITEM_9022"
+          //   ]
+          // },
           
           {
             discountId: "RPD1681",

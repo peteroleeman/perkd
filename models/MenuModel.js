@@ -147,7 +147,7 @@ class MenuModel {
         this.isSoldOut = props.issoldout;
         this.isWeight = props.isweight;
         this.discount = props.discount;
-        this.discountDetail = props.discountdetail;
+        this.discountDetail = props?.discountdetail ?? "";
         this.subMenu1Title = props.submenu1title;
         this.subMenu2Title = props.submenu2title;
         this.subMenu3Title = props.submenu3title;
