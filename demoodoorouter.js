@@ -29,7 +29,13 @@ class DemoOdooRouter {
   initializeRoutes() {
 
     this.router.get('/about', function(req, res) {
-     res.json({ message: 'Endpoint for Stagging Odoo integration v1.29'});
+
+      const currentDateTime = new Date();
+      const currentDay = currentDateTime.getDate().toString();
+      const currentHour = currentDateTime.getHours();
+      const currentMinute = currentDateTime.getMinutes();
+
+     res.json({ message: "Day: "+ currentDay + " "  + currentHour + ":" + currentMinute + '.Endpoint for Stagging Odoo integration v1.29'});
     });
 
     this.router.post('/gettoken', this.getToken.bind(this));
