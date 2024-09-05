@@ -10,6 +10,8 @@ const { Console } = require('console');
 const OdooOrderModel = require('./models/odoo/OdooOrderModel');
 const MenuModel = require('./models/MenuModel');
 const { default: CatModel } = require('./models/CatModel');
+const { PromoManager } = require('./util/promo_manager');
+const { addDebugLog } = require('./util/util_log');
 const fireStore = firebase.firestore();
 
 /*!SECTION
@@ -27,13 +29,15 @@ class DemoOdooRouter {
   initializeRoutes() {
 
     this.router.get('/about', function(req, res) {
-     res.json({ message: 'Endpoint for Stagging Odoo integration v1.28'});
+     res.json({ message: 'Endpoint for Stagging Odoo integration v1.29'});
     });
 
     this.router.post('/gettoken', this.getToken.bind(this));
     this.router.post('/checktoken', this.checkToken.bind(this));
     this.router.post('/syncmenu', this.syncMenu.bind(this));
     this.router.post('/syncodoo', this.triggerSyncOdoo.bind(this));
+    this.router.post('/syncpromo', this.triggerSyncPromo.bind(this));
+    
     this.router.post('/synccall', this.syncCall.bind(this));
     this.router.post('/ovoidorder', this.voidOrder.bind(this));
     this.router.post('/oquerycoupon', this.queryCoupon.bind(this));
@@ -112,6 +116,29 @@ class DemoOdooRouter {
           });
     }
 
+    async triggerSyncPromo()
+    {
+      var promoList = [];
+      var odooPromotCollectionRef = fireStore.collection("odoopromo");
+      var promoResult = await odooPromotCollectionRef.get();
+      if(!promoResult.empty)
+        {
+        for (var doc of promoResult.docs)
+          {
+            const promoMain = new PromoMain(doc.data());
+            promoList.push(promoMain);
+          }
+        }
+
+        let promoManager = new PromoManager();
+        promoManager.setPromoList(promoList);
+        promoManager.generatePromotion();
+
+        
+        addDebugLog(promoList);
+
+    }
+
     async triggerSyncOdoo() 
     {
 
@@ -125,6 +152,26 @@ class DemoOdooRouter {
         todayOrder: "today_order"
       }
 
+      //promo list
+      var promoList = [];
+      var odooPromotCollectionRef = fireStore.collection("odoopromo");
+      var promoResult = await odooPromotCollectionRef.get();
+      if (!promoResult.empty) {
+        for (var doc of promoResult.docs) {
+          const promoMain = new PromoMain(doc.data());
+          promoList.push(promoMain);
+        }
+      }
+
+      let promoManager = new PromoManager();
+      promoManager.setPromoList(promoList);
+      promoManager.generatePromotion();
+
+
+      addDebugLog(promoList);
+
+
+      //menu list
       
       var menuFull = [];
       var odooMap = new Map();
@@ -201,11 +248,49 @@ class DemoOdooRouter {
              
               if((menuModel?.menusku ?? "") != "")
               {
+                 //handle the promotion
+                var verticalPromoResult = promoManager.isMenuOfVerticalPromo(menuModel?.menusku ?? "");
+                if (verticalPromoResult != -999) {
+                  //addDebugLog("**** SET TO VERTICAL **********");
+                  menuModel.discountDetail = promoManager.getVerticalPromoIdWithSKU(menuModel?.menusku ?? "");//PromoOption.vertical_promo;
+                  //addDebugLog(menu.discountDetail);
+                }
+
+                //check if this is bundle discount
+                var bundleDiscountResult = promoManager.isMenuOfBundleDiscount(menuModel?.menusku ?? "");
+                if (bundleDiscountResult != -999) {
+                  //addDebugLog("**** SET TO BUNDLE ********** with " + menu?.sku ?? "");
+                  var discountIdFound = promoManager.getBundleDiscountIdWithSKU(menuModel?.menusku ?? "");
+                  //addDebugLog("discount id found " + discountIdFound);
+                  menuModel.discountDetail = discountIdFound;
+                  //addDebugLog("after set");
+                  //addDebugLog(menu);
+
+                }
+
+                if (promoManager.isMenuOfItemDiscount(menuModel?.menusku ?? "") == true) {
+                  //addDebugLog("gUsePromoManager TRUE");
+                  var result = promoManager.getMenuOfItemDiscount(menuModel?.menusku ?? "", menuModel?.menuprice);
+                  //addDebugLog("promoManager.isMenuOfItemDiscount menu sku " + menu.sku);
+                  //addDebugLog(result);
+                  if (result != "") {
+                    menuModel.discountDetail = result.id;
+                    menuModel.discountTitle = promoManager.getDiscountDetail(result.id);
+
+                    //addDebugLog("**** SET TO ITEM DISCOUNT ********** " + menu.sku);
+                    //addDebugLog(menu.discountDetail);
+                  }
+                  //addDebugLog(result);
+                }
+
+
+                 //handle the odoo
+
                  var odooMenu = odooMap.get(menuModel.menusku);
                  
                  menuModel.isSoldOut = odooMenu?.isSoldOut ?? false; //odooMenu?.isSoldOut
                  menuModel.isShow = odooMenu?.isShow ?? true;
-                 menuModel.discountDetail = odooMenu?.discountDetail ?? "";
+                 //menuModel.discountDetail = odooMenu?.discountDetail ?? "";
 
                  if (odooMenu?.qty != undefined && odooMenu?.qty != "")
                   {
