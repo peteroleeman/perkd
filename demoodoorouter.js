@@ -35,7 +35,7 @@ class DemoOdooRouter {
       const currentHour = currentDateTime.getHours();
       const currentMinute = currentDateTime.getMinutes();
 
-     res.json({ message: "Day: "+ currentDay + " "  + currentHour + ":" + currentMinute + '.Endpoint for Stagging Odoo integration v1.29'});
+     res.json({ message: "Day: "+ currentDay + " "  + currentHour + ":" + currentMinute + '.Endpoint for Stagging Odoo integration v1.30'});
     });
 
     this.router.post('/gettoken', this.getToken.bind(this));
@@ -144,6 +144,23 @@ class DemoOdooRouter {
         addDebugLog(promoList);
 
     }
+
+
+    async  writeWithRetry(docRef,data, retries = 5) {
+      for (let i = 0; i < retries; i++) {
+          try {
+              await docRef.set(data);
+              return; // Success
+          } catch (error) {
+              if (error.code === 'resource-exhausted' && i < retries - 1) {
+                  const backoffTime = Math.pow(2, i) * 100; // Exponential backoff
+                  await new Promise(resolve => setTimeout(resolve, backoffTime));
+              } else {
+                  throw error; // Rethrow if not recoverable
+              }
+          }
+      }
+  }
 
     async triggerSyncOdoo() 
     {
@@ -259,7 +276,9 @@ class DemoOdooRouter {
                 if (verticalPromoResult != -999) {
                   //addDebugLog("**** SET TO VERTICAL **********");
                   menuModel.discountDetail = promoManager.getVerticalPromoIdWithSKU(menuModel?.menusku ?? "");//PromoOption.vertical_promo;
+                  menuModel.discountTitle = promoManager.getVerticalPromoNameWithSKU(menuModel?.menusku ?? "");
                   //addDebugLog(menu.discountDetail);
+                  addDebugLog("************" + menuModel.discountDetail + " " + verticalPromoResult.toString());
                 }
 
                 //check if this is bundle discount
@@ -269,8 +288,10 @@ class DemoOdooRouter {
                   var discountIdFound = promoManager.getBundleDiscountIdWithSKU(menuModel?.menusku ?? "");
                   //addDebugLog("discount id found " + discountIdFound);
                   menuModel.discountDetail = discountIdFound;
+                  menuModel.discountTitle = promoManager.getBundleDiscountDescriptionWithSKU(menuModel?.menusku ?? "");
                   //addDebugLog("after set");
                   //addDebugLog(menu);
+                  addDebugLog("************" + menuModel.discountDetail  + " " + verticalPromoResult.toString());
 
                 }
 
@@ -283,6 +304,7 @@ class DemoOdooRouter {
                     menuModel.discountDetail = result.id;
                     menuModel.discountTitle = promoManager.getDiscountDetail(result.id);
 
+                    addDebugLog("************" + menuModel.discountDetail  + " " + verticalPromoResult.toString());
                     //addDebugLog("**** SET TO ITEM DISCOUNT ********** " + menu.sku);
                     //addDebugLog(menu.discountDetail);
                   }
@@ -424,7 +446,9 @@ class DemoOdooRouter {
                 //console.log(menuModel.data());
                 console.log(menuModel.title + " " + menuModel.id + " " + menuModel.menusku);
                 console.log(menuModel);
-                fireStore.collection(FirebaseDB.store).doc("superstore").collection(FirebaseDB.menu).doc(menuModel.id).set(menuModel);
+                //await fireStore.collection(FirebaseDB.store).doc("superstore").collection(FirebaseDB.menu).doc(menuModel.id).set(menuModel);
+
+               await this.writeWithRetry(fireStore.collection(FirebaseDB.store).doc("S_2dc7ad18-4f9d-40cf-9fac-fe8324f82a74").collection(FirebaseDB.menu).doc(menuModel.id), menuModel);
           }
        }
        else
@@ -438,7 +462,7 @@ class DemoOdooRouter {
 
 
        
-
+      console.log("sync done");
        return;
 
        

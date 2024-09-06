@@ -189,6 +189,15 @@ class PromoManager {
     return "";
 }
 
+getBundleDiscountDescriptionWithSKU(menuSKU) {
+    for (let i = 0; i < Promo_BundleDisount.length; i++) {
+        if (Promo_BundleDisount[i].sku == menuSKU) {
+            return Promo_BundleDisount[i].name;
+       }
+   }
+   return "";
+}
+
 
 isMenuOfBundleDiscount(menuSKU) {
     for (let i = 0; i < Promo_BundleDisount.length; i++) {
