@@ -35,7 +35,7 @@ class DemoOdooRouter {
       const currentHour = currentDateTime.getHours();
       const currentMinute = currentDateTime.getMinutes();
 
-     res.json({ message: "Day: "+ currentDay + " "  + currentHour + ":" + currentMinute + '.Endpoint for Stagging Odoo integration v1.30'});
+     res.json({ message: "Day: "+ currentDay + " "  + currentHour + ":" + currentMinute + '.Endpoint for Stagging Odoo integration v1.31'});
     });
 
     this.router.post('/gettoken', this.getToken.bind(this));
@@ -55,7 +55,7 @@ class DemoOdooRouter {
 
     this.router.post("/setkioskfooter", this.setKioskReceiptFooter.bind(this));
     this.router.post('/setorder', this.setOrder.bind(this));
-    //this.router.post('/repostorder', this.repostOrder.bind(this));
+    this.router.post('/repostorder', this.repostOrder.bind(this));
 
     //promo
     this.router.post("/promo", this.handlePromo.bind(this) );
@@ -1311,6 +1311,93 @@ axios.request(config)
 
 }
 
+
+async repostOrder(req,res) 
+{
+
+  const { orderid, storeid } = req.body;
+
+  if(orderid == '')
+  {
+       res.status(401).json({ error: 'Invalid order id provided' });
+       return;
+  }
+
+  if(storeid == '')
+  {
+       res.status(401).json({ error: 'Invalid store id provided' });
+       return;
+  }
+
+  //const storeRef = await fireStore.collection("store").doc("S_5aca69dd-e964-45ea-ae6d-e1061e28f737");
+  const orderRef = await fireStore.collection("kiosk_recover").doc(orderid);
+  const doc = await orderRef.get();
+  //console.log(doc.data());
+  if(doc?.data() == null || doc?.data() == undefined)
+  {
+    return res.status(404).json({ error: orderid + ' from ' + storeid + ' not found' });
+  }
+
+  var orderModel = new OrderModel(doc.data());
+  //orderModel.toOdooOrder();
+  const authHeader = req.headers['authorization'];
+
+  if (!authHeader) {
+       return res.status(401).json({ error: 'Authorization header missing' });
+  }
+
+  const authHeaderParts = authHeader.split(' ');
+
+      if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+        return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+      }
+
+      const token = authHeaderParts[1]; // Extract the token
+
+      var orderNumber = orderModel.order_id;
+      orderModel.order_id = "ZEAL_" + storeid + "_" + orderNumber;
+      //orderModel.short_order_number =  storeid + "_" + orderNumber;
+       orderModel.store_merchant_code = storeid;      
+
+       
+
+let data2 = JSON.stringify(orderModel) ;   
+ 
+let config = {
+method: 'post',
+maxBodyLength: Infinity,
+url: 'https://staging.gspos.odoo.my/api/kiosks/order',
+headers: { 
+'Content-Type': 'application/json', 
+'Authorization': 'Bearer ' + token, 
+
+},
+data : data2
+};
+
+axios.request(config)
+.then((response) => {
+
+console.log(JSON.stringify(response.data));
+// var orderDOC = doc.data();
+// orderDOC.odoo_response = JSON.stringify(response.data);
+// fireStore.collection("odoo_done").doc(storeid).collection("order").doc(orderDOC.id).set((orderDOC));
+// fireStore.collection("odoo").doc(storeid).collection("order").doc(orderDOC.id).delete();
+res.status(200).json(response.data );
+
+})
+.catch((error) => {
+console.log("Error: " + orderModel.order_id);
+console.log(error);
+//var orderDOC = doc.data();
+//orderDOC.odoo_response = error.toString();
+//fireStore.collection("odoo_done").doc(storeid).collection("order").doc(orderDOC.id).set((orderDOC));
+
+res.status(401).json({ error: error });
+});
+
+}
+
 // async repostOrder(req,res) 
 // {
 
@@ -1759,7 +1846,7 @@ axios.request(config)
 
             console.log(promo);
             
-             res.json({ message: promo.discount_id + " created" });
+             res.json({ message: promo.discount_id + " created", discount_id: promo.discount_id });
           }
           catch(ex)
           {
