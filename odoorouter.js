@@ -28,7 +28,7 @@ class OdooRouter {
   initializeRoutes() {
 
     this.router.get('/about', function(req, res) {
-     res.json({ message: 'Endpoint for Odoo integration v1.28'});
+     res.json({ message: 'Endpoint for Odoo integration v1.29'});
     });
 
     this.router.post('/gettoken', this.getToken.bind(this));
@@ -1475,7 +1475,7 @@ res.status(401).json({ error: error });
     {
 
 
-      const filePath = './newstruct.txt';
+      const filePath = './newstructv2.txt';
 
 // Asynchronous reading and processing
 fs.readFile(filePath, 'utf8', (err, data) => {
@@ -1494,9 +1494,9 @@ fs.readFile(filePath, 'utf8', (err, data) => {
         if(docId != "")
           {
         this.saveMenuToFirestore(menu, docId).then(() => {
-          this.getMenuFromFirestore(docId).then(retrievedMenu => {
-            console.log(JSON.stringify(retrievedMenu, null, 2));
-          });
+          // this.getMenuFromFirestore(docId).then(retrievedMenu => {
+          //   console.log(JSON.stringify(retrievedMenu, null, 2));
+          // });
         });
         res.status(200).json({ message: docId + " sync completed" });
         return;
@@ -1537,7 +1537,13 @@ fs.readFile(filePath, 'utf8', (err, data) => {
     
     
     async  saveMenuToFirestore(menu, docId) {
-      await fireStore.collection('newodoo').doc(docId).set(menu.toFirestore());
+      console.log("saving menu " + docId + " to firestore");
+      for(var cat of menu.categories)
+      {
+        await fireStore.collection('newodoo').doc(docId).collection("cat").doc(cat.id).set(cat.toFirestore());
+      }
+
+      
       console.log('Menu saved to Firestore');
     }
     
@@ -1658,6 +1664,7 @@ class Item {
     this.printer_sn = data?.printer_sn ?? "";
     this.kioskId = data?.kiosk_id ?? "";
     this.description = data?.description ?? "";
+    this.name = data?.name ?? "";
     this.sequence = data?.sequence ?? "";
     this.price = data?.price ?? "";
     this.photos = data?.photos ?? "";
@@ -1671,6 +1678,7 @@ class Item {
       printer_sn : this.printer_sn,
       kiosk_id: this.kioskId,
       description: this.description,
+      name: this.name,
       sequence: this.sequence,
       price: this.price,
       photos: this.photos,
@@ -1685,6 +1693,7 @@ class Item {
       printer_sn : data.printer_sn,
       kiosk_id: data.kiosk_id,
       description: data.description,
+      name: data.name,
       sequence: data.sequence,
       price: data.price,
       photos: data.photos,
@@ -1747,6 +1756,7 @@ class Modifier {
     this.price = data?.price ?? "";
     this.photos = data?.photos ?? "";
     this.availableStatus = data?.available_status ?? "";
+    this.real_time = data?.real_time ?? "";
     this.id = data?.id ?? "";
   }
 
@@ -1758,6 +1768,7 @@ class Modifier {
       price: this.price,
       photos: this.photos,
       available_status: this.availableStatus,
+      real_time : this.real_time,
       id: this.id
     };
   }
@@ -1770,6 +1781,7 @@ class Modifier {
       price: data.price,
       photos: data.photos,
       available_status: data.available_status,
+      real_time: data.real_time,
       id: data.id
     });
   }
