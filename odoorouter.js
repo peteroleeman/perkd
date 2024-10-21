@@ -595,8 +595,7 @@ class OdooRouter {
     }
 
     getToken(req, res) {
-      // Logic to generate a token (for demonstration purposes, generating a random token here)
-     // const { endpoint,phrase } = req.body;
+
      try{
 
 
@@ -1471,62 +1470,218 @@ res.status(401).json({ error: error });
      }
 
   //odoo sync menu new structure
-    newSyncMenu (req, res)
-    {
-
-
-      const filePath = './newstructv2.txt';
-
-// Asynchronous reading and processing
-fs.readFile(filePath, 'utf8', (err, data) => {
-    if (err) {
-        console.error('Error reading file:', err);
-        return;
-    }
-
-    const parsedData = JSON.parse((data));
-    const parsedClassInstance = new ParsedClass(parsedData);
-        const innerData = parsedClassInstance.data?.getValue();
-
-        const menu = this.createMenuFromString(innerData);
-        
-        let docId = menu.storeMerchantCode;
-        if(docId != "")
-          {
-        this.saveMenuToFirestore(menu, docId).then(() => {
-          // this.getMenuFromFirestore(docId).then(retrievedMenu => {
-          //   console.log(JSON.stringify(retrievedMenu, null, 2));
-          // });
-        });
-        res.status(200).json({ message: docId + " sync completed" });
+  newSyncMenu(req,res)
+  {
+    
+    const { storeid} = req.body;
+   
+    if(storeid == '')
+      {
+        res.status(401).json({ error: 'Please provide a member code' });
         return;
       }
-      
-      res.status(401).json({message: "store merchant code appeared to be empty"});
 
-});
+
+    let data = JSON.stringify({
+     
+      "login": "kiosk",
+      "password": "Ls$Mr4k;ZTWwQ}9Ppc5/Gu"
+    });
+    
+    let config = {
+      method: 'post',
+      maxBodyLength: Infinity,
+      url: 'https://kioskstaging.gspos.odoo.my/api/auth/jsontoken',
+      headers: { 
+        'Content-Type': 'application/json'
+      },
+      data : data
+    };
+    
+    axios.request(config)
+    .then((response) => {
+      const accessToken = (response.data["access_token"]);
+      this._newSyncMenu(storeid, accessToken, req,res);
+      return;
+    })
+    .catch((error) => {
+      console.log(error);
+      res.status(401).json({ error: error });
+    });
+    
+  }
+
+    _newSyncMenu (storeid, accesstoken,req,res)
+    {
+
+      
+      // const authHeader = req.headers['authorization'];
+
+      // if (!authHeader) {
+      //      return res.status(401).json({ error: 'Authorization header missing' });
+      // }
+
+      // const authHeaderParts = authHeader.split(' ');
+
+      // if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+      //       return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+      // }
+
+      // const token = authHeaderParts[1]; // Extract the token
+
+
+      // console.log("token is " + token);
+
+      // const { storeid} = req.body;
+      // if(token == '')
+      // {
+      //   res.status(401).json({ error: 'Please provide a token' });
+      //   return;
+      // }
+
+
+      // if(storeid == '')
+      //   {
+      //     res.status(401).json({ error: 'Please provide a member code' });
+      //     return;
+      //   }
+  
+        console.log("newSyncMenu " + storeid + " with token " + accesstoken);
+  
+        let data = JSON.stringify({
+         
+          "store_merchant_code":  storeid 
+        });
+        
+        let config = {
+          method: 'post',
+          maxBodyLength: Infinity,
+          url: 'https://kioskstaging.gspos.odoo.my/api/kiosks/menu',
+          headers: { 
+            'Content-Type': 'application/json', 
+            'Authorization': 'Bearer ' + accesstoken, 
+            
+          },
+          data : data
+        };
+        
+        axios.request(config)
+        .then((response) => {
+
+              try{
+              const parsedData = JSON.parse(JSON.stringify(response.data));
+              const parsedClassInstance = new ParsedClass(parsedData);
+              const innerData = parsedClassInstance.data?.getValue();
+
+              const menu = this.createMenuFromString(innerData);
+              
+              let docId = menu.storeMerchantCode;
+              if(docId != "")
+                {
+                  this.saveMenuToFirestore(menu, docId).then(() => {
+                    // this.getMenuFromFirestore(docId).then(retrievedMenu => {
+                    //   console.log(JSON.stringify(retrievedMenu, null, 2));
+                    // });
+                    console.log(JSON.stringify(menu, null, 2));
+
+                    this.fsWriteSync(storeid, this.getCurrentDateTime());
+
+                    res.status(200).json({ message: docId + " sync completed" });
+
+
+                  });
+                 
+                  return;
+              }
+              }
+              catch(ex)
+              {
+                res.status(401).json({ error: ex.toString() });
+              }
+          //res.status(200).json(JSON.stringify(response.data));
+        })
+        .catch((error) => {
+          //console.log(error);
+          res.status(401).json({ error: error });
+        });
+  
+      
+
+      // const filePath = './newstructv2.txt';
+
+      // // Asynchronous reading and processing
+      // fs.readFile(filePath, 'utf8', (err, data) => {
+      //     if (err) {
+      //         console.error('Error reading file:', err);
+      //         return;
+      //     }
+
+      //     const parsedData = JSON.parse((data));
+      //     const parsedClassInstance = new ParsedClass(parsedData);
+      //         const innerData = parsedClassInstance.data?.getValue();
+
+      //         const menu = this.createMenuFromString(innerData);
+              
+      //         let docId = menu.storeMerchantCode;
+      //         if(docId != "")
+      //           {
+      //         this.saveMenuToFirestore(menu, docId).then(() => {
+      //           // this.getMenuFromFirestore(docId).then(retrievedMenu => {
+      //           //   console.log(JSON.stringify(retrievedMenu, null, 2));
+      //           // });
+      //         });
+      //         res.status(200).json({ message: docId + " sync completed" });
+      //         return;
+      //       }
+            
+      //       res.status(401).json({message: "store merchant code appeared to be empty"});
+
+      // });
 
     
 
-      // const menu = this.createMenuFromString(jsonString);
-      // console.log(JSON.stringify(menu, null, 2));
-
       
-
-      /*
-
-      const menu = createMenuFromString(jsonString);
-      const docId = 'exampleMenu';
-      saveMenuToFirestore(menu, docId).then(() => {
-        getMenuFromFirestore(docId).then(retrievedMenu => {
-          console.log(JSON.stringify(retrievedMenu, null, 2));
-        });
-      });
-      
-      */
-
 
     }
+
+
+
+    async fsWriteSync(storeId, formattedDate) {
+      try {
+          // Loop through 1 to 19
+          for (let i = 1; i <= 19; ++i) {
+              //console.log("Java is fun");
+  
+              // Create a reference to the document
+              const syncRef = fireStore.collection('newodoo')
+                                .doc(storeId)
+                                .collection('synccall')
+                                .doc(`99${i}`);
+  
+              // Prepare the data to be set in the document
+              const data = {
+                  msg: "triggered",
+                  last: formattedDate
+              };
+  
+              // Set the data in Firestore
+              await syncRef.set(data);
+              console.log(`${storeId} updated, time: ${formattedDate}`);
+          }
+  
+          return "DONE: Document created with message and datetime";
+      } catch (ex) {
+          console.error(ex);
+          return `ERROR: ${ex.toString()}`;
+      }
+  }
+  
+   getCurrentDateTime() {
+      const now = new Date();
+      return now.toISOString(); // Returns date in ISO format
+  }
+
+
  
      createMenuFromString(jsonString) {
       
