@@ -12,6 +12,10 @@ var app        = express();                 // define our app using express
 var bodyParser = require('body-parser');
 var OdooRouter = require('./odoorouter');
 var DemoOdooRouter = require("./demoodoorouter");
+var VendingRouter = require("./vendingrouter");
+var RHBRouter = require("./rhbrouter");
+var MyInvoisRouter = require("./myinvoisrouter");
+var TicketRouter = require("./ticketrouter");
 
 
 var {Logging} = require('@google-cloud/logging');
@@ -165,6 +169,22 @@ app.use('/odoodemo', myOdooDemo.getRouter());
 //for gkash
 const myGKash = new GKashRouter();
 app.use('/gkash', myGKash.getRouter());
+
+//for vending
+const myVending = new VendingRouter();
+app.use('/vending', myVending.getRouter());
+
+//for rhb
+const myRHB = new RHBRouter();
+app.use('/rhb', myRHB.getRouter());
+
+//for myinvois
+const myInvois = new MyInvoisRouter();
+app.use('/myinvois', myInvois.getRouter());
+
+//for ticket service
+const myTicket = new TicketRouter();
+app.use('/ticket', myTicket.getRouter());
 
 // START THE SERVER
 // =============================================================================

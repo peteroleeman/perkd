@@ -10,6 +10,7 @@ const MenuModel = require('./models/MenuModel');
 const { testString } = require('./global');
 const fs = require('fs');
 const { json } = require('body-parser');
+const { addDebugLog } = require('./util/util_log');
 const fireStore = firebase.firestore();
 
 
@@ -28,7 +29,7 @@ class OdooRouter {
   initializeRoutes() {
 
     this.router.get('/about', function(req, res) {
-     res.json({ message: 'Endpoint for Odoo integration v1.29'});
+     res.json({ message: 'Endpoint for Odoo integration v1.30'});
     });
 
     this.router.post('/gettoken', this.getToken.bind(this));
@@ -66,6 +67,9 @@ class OdooRouter {
 
      this.router.post('/kdsorderslip', this.handlePrintOrderSlipCN.bind(this));
      this.router.post('/kdsorderslipap', this.handlePrintOrderSlipJP.bind(this));
+
+     this.router.post('/kdsorderslipex', this.handlePrintOrderSlipExCN.bind(this));
+     this.router.post('/kdsorderslipexap', this.handlePrintOrderSlipExJP.bind(this));
 
      this.router.post('/kdsstatus', this.handleCheckStatusCN.bind(this));
      this.router.post('/kdsstatusap', this.handleCheckStatusJP.bind(this));
@@ -123,13 +127,76 @@ class OdooRouter {
 
 
     async  savePromoToFirestore(promo) {
+
+      const parentPromo = 'odoopromo';
+
       if((promo?.discount_id ?? "") != "")
         {
-      await fireStore.collection('odoopromo').doc(promo?.discount_id).set(promo.toFirestore());
+      await fireStore.collection(parentPromo).doc(promo?.discount_id).set(promo.toFirestore());
       console.log('Promo saved to Firestore');
         }
     }
 
+    async optimizePromoInFireStore() {
+
+      const parentPromo = 'odoopromo';
+      try {
+        // Fetch documents from the main collection
+        const results = await fireStore.collection(parentPromo).get();
+
+
+        //Iterate through each document and clear store promo first before writing in
+        for (const doc of results.docs) {
+          var promoRaw = doc.data();
+          for (var odooStore of (promoRaw?.store_merchant_code ?? []))
+            {
+              const existingPromoDocs = await fireStore.collection(parentPromo)
+              .doc(odooStore)
+              .collection('promo')
+              .get();
+               // Delete existing promo documents
+                const deletePromises = existingPromoDocs.docs.map(async (promoDoc) => {
+                  await promoDoc.ref.delete();
+                });
+        
+                // Wait for all deletions to complete
+                await Promise.all(deletePromises);
+            }
+        }
+
+    
+        // Iterate through each document
+        for (const doc of results.docs) {
+          // Get data for each document 
+          var promoRaw = doc.data();
+    
+          //addDebugLog( "prmoRaw suspend: " + promoRaw.suspend);
+          if(promoRaw.suspend == false)
+          {
+            // Check if store_merchant_code exists and is an array
+            for (var odooStore of (promoRaw?.store_merchant_code ?? [])) {
+            
+      
+              // Now add the new promo document
+              await fireStore.collection(parentPromo)
+                .doc(odooStore)
+                .collection('promo')
+                .doc(promoRaw?.discount_id) // Changed from promo to promoRaw
+                .set(promoRaw); // Set the entire promo data
+            }
+           }
+        }
+    
+        console.log('Promo collections cleared and updated successfully');
+    
+      } catch (error) {
+        console.error("Error optimizing Firestore: ", error);
+       // res.status(401).json({ error: error });
+        return;
+      }
+
+      //res.status(200).json("OK");
+    }
     async handlePromo(req, res)
     {
       
@@ -170,16 +237,16 @@ class OdooRouter {
           
 
           const promo = new PromoMain(req.body);
-          this.savePromoToFirestore(promo);
+          await this.savePromoToFirestore(promo);
 
           console.log(promo);
-          
+          await this.optimizePromoInFireStore();          
           res.json({ message: promo.discount_id + " created", discount_id: promo.discount_id });
         }
         catch(ex)
         {
             console.log(ex);
-            res.status(401).json({ error: ex });
+            res.status(400).json({ error: ex });
         }
     }
 
@@ -399,7 +466,7 @@ class OdooRouter {
       
       axios.request(config)
       .then((response) => {
-        console.log(JSON.stringify(response.data));
+        //console.log(JSON.stringify(response.data));
         res.status(200).json(JSON.stringify(response.data));
       })
       .catch((error) => {
@@ -464,7 +531,7 @@ class OdooRouter {
       
       axios.request(config)
       .then((response) => {
-        console.log(JSON.stringify(response.data));
+        //console.log(JSON.stringify(response.data));
         res.status(200).json(JSON.stringify(response.data));
       })
       .catch((error) => {
@@ -1336,6 +1403,18 @@ res.status(401).json({ error: error });
         return this.printOrderSlip(req,res,true);
       }
 
+      async handlePrintOrderSlipExCN(req,res)
+      {
+        return this.printOrderSlipEx(req,res, false);
+      }
+
+      async handlePrintOrderSlipExJP(req,res)
+      {
+        return this.printOrderSlipEx(req,res,true);
+      }
+
+     
+
       async printOrderSlip(req, res, isJP){
         const feie = new UtilFeie();
 
@@ -1387,6 +1466,69 @@ res.status(401).json({ error: error });
             let feieOrder = feie.createFeieOrderSlipFromJSON(req.body);
 
             let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderItemSlip(feieOrder, false, 1), isJP);
+            
+             res.json({ message: feieResult });
+          }
+          catch(ex)
+          {
+              console.log(ex);
+              res.status(401).json({ error: ex });
+          }
+
+      }
+
+      //type 0 is small width, 1 is large width
+      async printOrderSlipEx(req, res, isJP){
+        const feie = new UtilFeie();
+
+        
+          // Check if the token matches the valid token (replace this with your token validation logic)
+          const authHeader = req.headers['authorization'];
+
+          if (!authHeader) {
+              return res.status(401).json({ error: 'Authorization header missing' });
+           }
+           const authHeaderParts = authHeader.split(' ');
+
+           if (authHeaderParts.length !== 2 || authHeaderParts[0] !== 'Bearer') {
+                return res.status(401).json({ error: 'Invalid Authorization header format. Use Bearer token' });
+           }
+
+           const token = authHeaderParts[1]; // Extract the token
+
+          if (token == this.generateEncryptedToken()) {
+
+          } else {
+            res.status(401).json({ error: 'Invalid token' });
+            return;
+          }
+
+
+          // Validate the request body
+          if (!req.body) {
+                  res.status(400).json({ error: 'Request body is missing or empty' });
+                  return;
+          }
+
+          const requiredFields = ['sn', 'orderId', 'orderItems', 'type'];
+          for (const field of requiredFields) {
+                  if (!(field in req.body)) {
+                      res.status(400).json({ error: `Missing required field: ${field}` });
+                      return;
+                  }
+          }
+
+          if (!Array.isArray(req.body.orderItems)) {
+                  res.status(400).json({ error: 'orderItems must be an array' });
+                  return;
+          }
+
+          try{
+
+            //let feieOrder = feie.createFeieOrderFromJSON(req.body);
+            let feieOrder = feie.createFeieOrderSlipFromJSON(req.body);
+
+            let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderItemSlip(feieOrder, false, req.body.type), isJP);
             
              res.json({ message: feieResult });
           }

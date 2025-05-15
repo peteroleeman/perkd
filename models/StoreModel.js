@@ -7,6 +7,7 @@ class StoreModel extends Component {
         this.id = props.id;
         this.logo = props.logo;
         this.title = props.title;
+        this.storeCounter = data.storecounter || 0;
         this.currency = props.currency;
         this.img = props.img;
         this.initial = props.initial;
@@ -21,6 +22,8 @@ class StoreModel extends Component {
         this.shopifytoken = props.shopifytoken;
         this.soldoutimg = props.soldoutimg;
     }
+
+    
 
 }
 

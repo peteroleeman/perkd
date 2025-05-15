@@ -16,6 +16,7 @@ class OrderModel {
         this.short_order_number = props?.short_order_number ?? "";
         this.store_merchant_code = props.store_merchant_code;
         this.order_datetime  =  props.order_datetime; //moment.utc(props.order_datetime, "YYYY-MM-DD HH:mm:ss").utcOffset(0).format("YYYY-MM-DDTHH:mm:ss.SSS[Z]"); // props.order_datetime; //"2024-03-28T18:00:00.000Z";
+        this.order_ref = props?.order_ref ?? "";
         this.member_code = props?.member_code ?? "";
         this.remark = "-";
         this.bill_discount_id = props?.bill_discount_id ?? "";
@@ -150,6 +151,7 @@ class OrderModel {
         let kPaymentReference = "payment_reference";
         let kOrderDateTime = "order_datetime";
         let kPaymentType = "payment_type";
+        let kOrderRef = "order_ref";
 
         let orderMap = new Map();
 
@@ -173,6 +175,7 @@ class OrderModel {
         orderMap.set(kPaymentReference , this.payment_reference);
         orderMap.set(kOrderDateTime, this.order_datetime);
         orderMap.set(kPaymentType, "Credit Card");
+        orderMap.set(kOrderRef, this.order_ref);
         
         console.log("this.items");
         console.log(this.items);
@@ -366,7 +369,8 @@ function CreateNewOrder(storeModel, orderId) {
         ipaytransid: "", //to capture ipay transaction id
         orderitems: [], //later need to set to order items
         orderfromonline: "true",
-        onlineorderid: orderId
+        onlineorderid: orderId,
+        order_ref: ""
     })
 
 

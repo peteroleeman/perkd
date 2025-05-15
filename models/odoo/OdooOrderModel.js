@@ -31,6 +31,7 @@ class OdooOrderModel {
         this.payment_reference = "";
         this.order_datetime = orderModel.orderdatetime;
         this.payment_type = "Credit Card";
+        this.order_ref = orderModel?.order_ref ?? "";
 
         // Process order items
         let itemList = [];

@@ -35,7 +35,7 @@ class DemoOdooRouter {
       const currentHour = currentDateTime.getHours();
       const currentMinute = currentDateTime.getMinutes();
 
-     res.json({ message: "Day: "+ currentDay + " "  + currentHour + ":" + currentMinute + '.Endpoint for Stagging Odoo integration v1.32'});
+     res.json({ message: "Day: "+ currentDay + " "  + currentHour + ":" + currentMinute + '.Endpoint for Stagging Odoo integration v1.33'});
     });
 
     this.router.post('/gettoken', this.getToken.bind(this));
@@ -1975,11 +1975,70 @@ res.status(401).json({ error: error });
         console.log('Promo saved to Firestore');
           }
       }
+      async optimizePromoInFireStore() {
 
+        const parentPromo = 'odoopromo_demo';
+        try {
+          // Fetch documents from the main collection
+          const results = await fireStore.collection(parentPromo).get();
+
+
+          //Iterate through each document and clear store promo first before writing in
+          for (const doc of results.docs) {
+            var promoRaw = doc.data();
+            for (var odooStore of (promoRaw?.store_merchant_code ?? []))
+              {
+                const existingPromoDocs = await fireStore.collection(parentPromo)
+                .doc(odooStore)
+                .collection('promo')
+                .get();
+                 // Delete existing promo documents
+                  const deletePromises = existingPromoDocs.docs.map(async (promoDoc) => {
+                    await promoDoc.ref.delete();
+                  });
+          
+                  // Wait for all deletions to complete
+                  await Promise.all(deletePromises);
+              }
+          }
+
+      
+          // Iterate through each document
+          for (const doc of results.docs) {
+            // Get data for each document 
+            var promoRaw = doc.data();
+      
+            addDebugLog( "prmoRaw suspend: " + promoRaw.suspend);
+            if(promoRaw.suspend == false)
+            {
+              // Check if store_merchant_code exists and is an array
+              for (var odooStore of (promoRaw?.store_merchant_code ?? [])) {
+              
+        
+                // Now add the new promo document
+                await fireStore.collection(parentPromo)
+                  .doc(odooStore)
+                  .collection('promo')
+                  .doc(promoRaw?.discount_id) // Changed from promo to promoRaw
+                  .set(promoRaw); // Set the entire promo data
+              }
+             }
+          }
+      
+          console.log('Promo collections cleared and updated successfully');
+      
+        } catch (error) {
+          console.error("Error optimizing Firestore: ", error);
+          //res.status(401).json({ error: error });
+          return;
+        }
+
+       // res.status(200).json("OK");
+      }
       async handlePromo(req, res)
       {
         
-
+          console.log("handle promo");
         
           // Check if the token matches the valid token (replace this with your token validation logic)
           const authHeader = req.headers['authorization'];
@@ -1994,9 +2053,10 @@ res.status(401).json({ error: error });
            }
 
            const token = authHeaderParts[1]; // Extract the token
-
+            //console.log(token);
+            //console.log(this.generateEncryptedToken());
           if (token == this.generateEncryptedToken()) {
-
+           
           } else {
             res.status(401).json({ error: 'Invalid token' });
             return;
@@ -2016,10 +2076,11 @@ res.status(401).json({ error: error });
             
 
             const promo = new PromoMain(req.body);
-            this.savePromoToFirestore(promo);
+            await this.savePromoToFirestore(promo);
 
             console.log(promo);
-            
+            await this.optimizePromoInFireStore();
+            console.log({ message: promo.discount_id + " created", discount_id: promo.discount_id })
              res.json({ message: promo.discount_id + " created", discount_id: promo.discount_id });
           }
           catch(ex)
