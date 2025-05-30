@@ -16,6 +16,7 @@ var VendingRouter = require("./vendingrouter");
 var RHBRouter = require("./rhbrouter");
 var MyInvoisRouter = require("./myinvoisrouter");
 var TicketRouter = require("./ticketrouter");
+var PosRouter = require('./posrouter');
 
 
 var {Logging} = require('@google-cloud/logging');
@@ -185,6 +186,9 @@ app.use('/myinvois', myInvois.getRouter());
 //for ticket service
 const myTicket = new TicketRouter();
 app.use('/ticket', myTicket.getRouter());
+
+const posRouter = new PosRouter();
+app.use('/pos', posRouter.getRouter());
 
 // START THE SERVER
 // =============================================================================

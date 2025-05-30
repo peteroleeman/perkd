@@ -1,0 +1,101 @@
+# Vending API Documentation
+
+## Overview
+This document describes how to test the vending machine membership endpoints using Postman.
+
+## Base URL 
+https://api.foodio.online/vending
+
+## How to test the Endpoints
+1. Open Postman
+2. Create a new POST request
+3. Enter URL: `http://your-server-url/endpoint`
+4. Set request body to raw JSON:
+
+## Check Membership
+POST http://your-server/vending/checkmembership
+
+Body (raw JSON):
+{
+    "membership": "U2FsdGVkX19YourEncryptedString"  
+}
+
+Example response (success):
+{
+    "isValid": true,
+    "message": "Valid user",
+    "phoneNumber": "1234567890",
+    "userData": {
+        // All user data from Firestore
+        "name": "John Doe",
+        "phoneNumber": "1234567890",
+        "email": "john@example.com",
+        // ... other fields
+    }
+}
+
+Example response (failure):
+{
+    "isValid": false,
+    "message": "User not found"
+}
+
+## Redeem Voucher
+
+POST http://your-server/vending/redeemvoucher
+
+Body (raw JSON):
+{
+    "membership": "U2FsdGVkX19YourEncryptedString"  
+}
+
+Example response (success - first time redeeming):
+{
+    "success": true,
+    "message": "Voucher successfully redeemed",
+    "phoneNumber": "1234567890",
+    "voucherData": {
+        "phoneNumber": "1234567890",
+        "redeemDate": "2024-03-21T10:30:00.000Z",
+        "status": "ACTIVE",
+        "type": "New member",
+        "createdAt": "2024-03-21T10:30:00.000Z",
+        "updatedAt": "2024-03-21T10:30:00.000Z"
+    }
+}
+
+Example response (failure - already redeemed):
+{
+    "success": false,
+    "message": "Voucher already redeemed",
+    "phoneNumber": "1234567890"
+}
+
+## Check Voucher Status
+
+POST http://your-server/vending/checkvoucher
+
+Body (raw JSON):
+{
+    "membership": "U2FsdGVkX19YourEncryptedString"  
+}
+
+Example response (success - voucher available):
+{
+    "valid": true,
+    "message": "Voucher still available",
+    "phoneNumber": "1234567890"
+}
+
+Example response (failure - already redeemed):
+{
+    "valid": false,
+    "message": "Voucher already redeemed",
+    "phoneNumber": "1234567890"
+}
+
+Example response (error):
+{
+    "error": "Error checking voucher",
+    "details": "error message details"
+}

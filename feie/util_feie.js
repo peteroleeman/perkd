@@ -319,7 +319,54 @@ class UtilFeie
     // Handle state update if needed
 }
 
+    /**
+     * Print label message to Feie printer
+     * @param {string} printerSN - Printer serial number
+     * @param {string} content - Label content with TEXT tags
+     * @param {number} times - Number of copies to print
+     * @param {boolean} isJP - Whether to use Japanese API
+     * @returns {Promise<string>} - Result message
+     */
+    async printLabel(printerSN, content, times = 1, isJP = false) {
+      const USER = "fcey@me.com";
+      const UKEY = "rVN3AhIH27JbJkEU";
+      let SN = printerSN;
+     
+      console.log("Printing label to printer SN:" + printerSN);
+  
+      const timeStamp = Math.floor(Date.now() / 1000).toString();
+      const bytes = Buffer.from(`${USER}${UKEY}${timeStamp}`, 'utf-8');
+      const SIG = crypto.createHash('sha1').update(bytes).digest('hex');
+  
+      // Select API URL based on region
+      var url = 'http://api.feieyun.cn/Api/Open/';
+      if(isJP) {
+        url = 'http://api.jp.feieyun.com/Api/Open/';
+      }
 
+      const headers = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      };
+  
+      const bodyContent = {
+        user: USER,
+        stime: timeStamp,
+        sig: SIG,
+        apiname: "Open_printLabelMsg", // Label printing API
+        sn: SN,
+        content: content,
+        times: times.toString(),
+      };
+  
+      try {
+        const response = await axios.post(url, bodyContent, { headers });
+        console.log("Label printing response:", JSON.stringify(response.data));
+        return JSON.stringify(response.data);
+      } catch (error) {
+        console.error(`Error printing label: ${error.message}`);
+        return `Error : ${error.message}`;
+      }
+    }
 
     async  printFeie(contentList) {
 
@@ -756,6 +803,159 @@ class UtilFeie
   }
 
   //SECTION print function
+  printOrderItemSlipPOS(orderModel, bReprint = false, type = 0) {
+    //console.log(orderModel);
+
+    const receipt = [];
+    // const now = new Date();
+    // const dateFormatter = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' });
+    // const timeFormatter = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit' });
+    
+    // const currentDate = dateFormatter.format(now);
+    // const currentTime = timeFormatter.format(now);
+
+    // const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'short' });
+
+    let keyLen = 16 + 14;
+    let valueLen = 2;
+
+    if (type === 1) {
+      keyLen = 24 + 22;
+      valueLen = 2;
+    }
+
+    const dualTable = new ReceiptDualTable();
+    const line = new ReceiptLine();
+    line.init(keyLen + valueLen);
+    dualTable.init(keyLen, valueLen);
+
+    if (bReprint === true) {
+      line.addText(ReceiptFormat.setCenterBIG("*DUPLICATE*"));
+    }
+
+    let orderId = orderModel?.orderId ?? "";
+    let tableId = orderModel?.orderId ?? "";
+    line.addText(ReceiptFormat.setCenter(`${tableId}` + `${orderId}`));
+    line.addText("<BR>");
+   
+    line.addText(  ReceiptFormat.setCenterBIG(`(${orderModel.orderMode})`));
+    line.addText("<BR>");
+    line.addText(ReceiptFormat.setCenter(`${orderModel.dateTime}`));
+    line.addText("<BR>");
+    line.addText(
+    ReceiptFormat.setBold("**" + orderModel.storeTitle + "<BR>"));
+    line.addText(orderModel?.remark ?? "");
+    line.addText("<BR>");
+
+
+    line.addLine("-");
+
+    for (const lineText of line.getReceipt()) {
+      receipt.push(lineText);
+    }
+
+    // dualTable.refresh();
+    // dualTable.addKey(`${orderModel?.orderId}`);
+    // dualTable.addValue(orderModel?.mobileAssignedTable || "-");
+
+    // for (const lineText of dualTable.getReceipt()) {
+    //   receipt.push(lineText);
+    // }
+
+    let qty = 0;
+    let title = "";
+    let modInfo = "";
+   
+    for (const orderItem of orderModel.orderItems) {
+      qty = orderItem.qty;
+      title = orderItem.title;
+
+      dualTable.refresh();
+      dualTable.addKey(`${title}`);
+      dualTable.addValue(`${qty}` || "-");
+
+      for (const lineText of dualTable.getReceipt()) {
+        receipt.push(lineText);
+      }
+
+
+      if (orderItem?.modInfo !== "" && orderItem?.modInfo !== "null"  && orderItem?.modInfo !== undefined) {
+        //modInfo = (`S:${orderItem.modInfo}<BR>`);
+         for(const mod of orderItem.modInfo)
+         {
+            let modTitle = mod.title;
+            let modQty = mod.qty;
+
+            dualTable.refresh();
+            dualTable.addKey(`  ${modTitle}`);
+            if(modQty > 1)
+            {
+            dualTable.addBoldValue(`${modQty}`);
+            }
+            else
+            {
+              dualTable.addValue(`${modQty}`);
+            }
+
+            for (const lineText of dualTable.getReceipt()) {
+              receipt.push(lineText);
+            }
+
+            
+
+         }
+
+      }
+      
+
+     
+      line.refresh();
+      line.addLine("-");
+      for (const lineText of line.getReceipt()) 
+      {
+         receipt.push(lineText);
+      }
+
+    }
+
+    
+
+    // line.addText(ReceiptFormat.setBIG(title) + "<BR>");
+    // line.addText(
+    //   ReceiptFormat.setRightAlign(`<B>${totalQty}</B>`));
+
+    // if (modInfo !== "" && modInfo !== "null") {
+    //   line.addText(`${modInfo}<BR>`);
+    // }
+
+    // if (menu1 !== "") {
+    //   line.addText(`${menu1}<BR>`);
+    // }
+    // if (menu2 !== "") {
+    //   line.addText(`${menu2}<BR>`);
+    // }
+    // if (menu3 !== "") {
+    //   line.addText(`${menu3}<BR>`);
+    // }
+    // if (menu4 !== "") {
+    //   line.addText(`${menu4}<BR>`);
+    // }
+    // if (menu5 !== "") {
+    //   line.addText(`${menu5}<BR>`);
+    // }
+
+    // line.addText("<BR>");
+    // line.addText(`${orderModel?.name}<BR>`);
+    // line.addText(orderModel?.userPhoneNumber || "-");
+
+    // for (const lineText of line.getReceipt()) {
+    //   receipt.push(lineText);
+    // }
+
+    //console.log("Feie order slip printed");
+    return receipt;
+  }
+
   printOrderItemSlip(orderModel, bReprint = false, type = 0) {
         //console.log(orderModel);
 
@@ -1416,7 +1616,9 @@ class feieOrderItem {
 
 class FeieOrderSlip {
   constructor(orderDetails) {
+
     this.dateTime = orderDetails.dateTime || '';
+    this.table = orderDetails.table || '';
     this.printerName = orderDetails.printerName || '';
     this.sn = orderDetails.sn || '';
     this.orderId = orderDetails.orderId || '';
