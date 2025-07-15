@@ -12,6 +12,40 @@ class MyInvoisRouter {
   constructor() {
     this.router = express.Router();
     this.initializeRoutes();
+    this.bigquery = this.initializeBigQuery();
+  }
+
+  /**
+   * Initialize BigQuery client with proper authentication
+   */
+  initializeBigQuery() {
+    try {
+      // Option 1: Use environment variable for service account key (recommended)
+      if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+        return new BigQuery({
+          projectId: 'foodio-ab3b2',
+          keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS
+        });
+      }
+      
+      // Option 2: Use service account key from environment variable (JSON string)
+      if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+        const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+        return new BigQuery({
+          projectId: 'foodio-ab3b2',
+          credentials: credentials
+        });
+      }
+      
+      // Option 3: Use Application Default Credentials (for Cloud Run/GCE)
+      return new BigQuery({
+        projectId: 'foodio-ab3b2'
+      });
+      
+    } catch (error) {
+      console.error('Error initializing BigQuery client:', error);
+      throw error;
+    }
   }
 
   initializeRoutes() {
@@ -32,6 +66,7 @@ class MyInvoisRouter {
     this.router.post('/validateandupdateinvoice', this.validateAndUpdateInvoiceEndpoint.bind(this));
     this.router.post('/deletebigqueryrecord', this.deleteBigQueryRecordEndpoint.bind(this));
     this.router.post('/deleteallstoreentries', this.deleteAllStoreEntriesEndpoint.bind(this));
+    this.router.post('/queryconsolidateddata', this.queryConsolidatedDataEndpoint.bind(this));
   }
 
   about(req, res) {
@@ -299,27 +334,6 @@ class MyInvoisRouter {
       const offset = parseInt(req.body.offset) || 0; // Default to starting from the beginning
       const storeid = req.body.storeid || null; // Get the storeId filter
       
-      // Hardcoded credentials
-      const credentials = {
-        "type": "service_account",
-        "project_id": "foodio-ab3b2",
-        "private_key_id": "783981daf70c7577f7b29cdaccbacbdfd3dfcbe2",
-        "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQChX45UDg90ghjQ\nU+YDKVEzYWU08z5zBcbtcFN8RK+73p6mkURlhFsayxUH5SVY8u/92rKBe4OMSwZy\nXiQf9Mixr0NlTn3tr5XpK8Gq1GkHXc0LH8njcz82ZEu+d0jys6w/GBqLfOOI7HPc\n1USMNAqOFx0gOYGS/vNuXI/IP4OftJoy60Q84VWd0yBFwOpediA8UpJLVWUKZ/ha\nJ09eBNwfjpUv2hE2RVrhZ1RVKztBNTkdBlpjxXMLQQ9l2Zh4BLr5oRhNiibeE3tL\nvGNEHbqpWE70L/E+psKZ+PpmZWI3DjAdyr1MXFkmB4evVZ1i/DKh0TVcg/vnQgnt\nPJekuLV1AgMBAAECggEAH8oxwShF7idE2SF2AfBtQShyJhS3HDSqpBLJN4VWczWf\nXmPmq/L/eY9BNN101omBMqqXGL/qwcPz4KrgBfWUZcCHj9j/IMhCyXznuY3/pMZb\nQtI/1NFaxg3LCBn6omk3yPQoIot3TX17M6lFyDLmU2iFQdhiSMF11itg3ct5VAgR\nUzLb7QSnyPFez0j3sIsNRtwXvQXfgjcyvvwEWZTb+rd8jZ48n5XNlUYEK2JJmjc+\nZRe3QmnVPhevjirtZpik3cDbUKsXQY8HlGTQlOEEeDvnGBtgcDzuzNGpqWG33nFr\nDdKo8ryioLcmlkVjEElsrCtSaHYLm/oAxoRhOsZNbwKBgQDXZXfsxvjO35wmnsau\nIHdcq1++xhwHj+P88MRq9va2H8JY/GESQFgehCbgiLqBTPBFSEaKpNsQ3INyrUcl\nl8E9BJahpMXE8NS41+UKdPWMvoT1TnSeGFtQMIWm5381RZPhYQ/MSoV80VVPc8pN\nB6GZqt/purbenOp7hbzsbElk8wKBgQC/yw66TL33ucepPkklBbxrlmTmRrOb9Rpn\nfrT8nxtxRJWruegDQdKugeIv77oBCloO3GkxNja9wOkGQ0ZnYn+alQZ5//nkYKm+\nRSgFXZ160YG35MIa+OYwtssl/NghvJ5MBBHx5sqHoo71QJxo3KDNYVgYr6mZf2lg\nm/Zy0HY19wKBgFOl8SO/xaI5Tp/k6012CESxvPYOY5ZAOA7jxbOwgvEJdmUuZdg7\nqrz3H031a1CJe4m8XsC68uQibt3bExUzUPUMUh8mKTOpP0MlfKpJ744f8ux88mbv\nGI8UuOKvZkRe5+YP1p3ElwB5HwNC+V5ex1Aw/tH7E8dx8tHThyHdj8cnAoGBALAZ\nM4afG/WvIMImrGZP4/cs+avt0tAptnq8flVNiZbwkDRC1+LVtyn/m7zD8hcueA4Z\nFoTW8GA+Fjdn4ebfK6a1mmK+Q6YLkw9e1CZJFGVGpEJCym6VhlXIILLae2BOnVHS\nkt93NxJekcBh+LrXiNXKwWa5M5H6yLipuxkkisV1AoGAamEj4hEH6H+XlAGP4dzP\nrvD7itMwg9/RxXaakP7JGgeUiCOedFhz5p/GtdjyeE/Gnqo5XPGMZUdOPjq79Ld1\n2BkO5chQkoJrZj7tu3Aozf9Xc5E9lAkmL6ISk3K8RSfgWJTOKSz7IjW92oUM/ros\n8Pq6ipW5jCmnrdJskQf0IZo=\n-----END PRIVATE KEY-----\n",
-        "client_email": "bigquery-writer@foodio-ab3b2.iam.gserviceaccount.com",
-        "client_id": "109208958086189621894",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/bigquery-writer%40foodio-ab3b2.iam.gserviceaccount.com",
-        "universe_domain": "googleapis.com"
-      };
-
-      // Create BigQuery client with hardcoded credentials
-      const bigquery = new BigQuery({
-        projectId: 'foodio-ab3b2',
-        credentials: credentials
-      });
-
       // Build the WHERE clause for storeId filtering
       let whereClause = 'WHERE operation != \'DELETE\'';
       if (storeid) {
@@ -345,7 +359,7 @@ class MyInvoisRouter {
           ${whereClause}
         `;
         
-        const [countRows] = await bigquery.query({ query: countQuery });
+        const [countRows] = await this.bigquery.query({ query: countQuery });
         totalCount = countRows[0].total_count;
       }
 
@@ -357,7 +371,7 @@ class MyInvoisRouter {
       };
 
       // Run the main query
-      const [rows] = await bigquery.query(options);
+      const [rows] = await this.bigquery.query(options);
 
       console.log(`Successfully queried BigQuery, retrieved ${rows.length} rows (offset: ${offset}, limit: ${limit}${storeid ? ', filtered by storeId: ' + storeid : ''})`);
 
@@ -396,27 +410,6 @@ class MyInvoisRouter {
       const offset = parseInt(req.body.offset) || 0; // Default to starting from the beginning
       const storeid = req.body.storeid || null; // Get the storeId filter
       
-      // Hardcoded credentials
-      const credentials = {
-        "type": "service_account",
-        "project_id": "foodio-ab3b2",
-        "private_key_id": "783981daf70c7577f7b29cdaccbacbdfd3dfcbe2",
-        "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQChX45UDg90ghjQ\nU+YDKVEzYWU08z5zBcbtcFN8RK+73p6mkURlhFsayxUH5SVY8u/92rKBe4OMSwZy\nXiQf9Mixr0NlTn3tr5XpK8Gq1GkHXc0LH8njcz82ZEu+d0jys6w/GBqLfOOI7HPc\n1USMNAqOFx0gOYGS/vNuXI/IP4OftJoy60Q84VWd0yBFwOpediA8UpJLVWUKZ/ha\nJ09eBNwfjpUv2hE2RVrhZ1RVKztBNTkdBlpjxXMLQQ9l2Zh4BLr5oRhNiibeE3tL\nvGNEHbqpWE70L/E+psKZ+PpmZWI3DjAdyr1MXFkmB4evVZ1i/DKh0TVcg/vnQgnt\nPJekuLV1AgMBAAECggEAH8oxwShF7idE2SF2AfBtQShyJhS3HDSqpBLJN4VWczWf\nXmPmq/L/eY9BNN101omBMqqXGL/qwcPz4KrgBfWUZcCHj9j/IMhCyXznuY3/pMZb\nQtI/1NFaxg3LCBn6omk3yPQoIot3TX17M6lFyDLmU2iFQdhiSMF11itg3ct5VAgR\nUzLb7QSnyPFez0j3sIsNRtwXvQXfgjcyvvwEWZTb+rd8jZ48n5XNlUYEK2JJmjc+\nZRe3QmnVPhevjirtZpik3cDbUKsXQY8HlGTQlOEEeDvnGBtgcDzuzNGpqWG33nFr\nDdKo8ryioLcmlkVjEElsrCtSaHYLm/oAxoRhOsZNbwKBgQDXZXfsxvjO35wmnsau\nIHdcq1++xhwHj+P88MRq9va2H8JY/GESQFgehCbgiLqBTPBFSEaKpNsQ3INyrUcl\nl8E9BJahpMXE8NS41+UKdPWMvoT1TnSeGFtQMIWm5381RZPhYQ/MSoV80VVPc8pN\nB6GZqt/purbenOp7hbzsbElk8wKBgQC/yw66TL33ucepPkklBbxrlmTmRrOb9Rpn\nfrT8nxtxRJWruegDQdKugeIv77oBCloO3GkxNja9wOkGQ0ZnYn+alQZ5//nkYKm+\nRSgFXZ160YG35MIa+OYwtssl/NghvJ5MBBHx5sqHoo71QJxo3KDNYVgYr6mZf2lg\nm/Zy0HY19wKBgFOl8SO/xaI5Tp/k6012CESxvPYOY5ZAOA7jxbOwgvEJdmUuZdg7\nqrz3H031a1CJe4m8XsC68uQibt3bExUzUPUMUh8mKTOpP0MlfKpJ744f8ux88mbv\nGI8UuOKvZkRe5+YP1p3ElwB5HwNC+V5ex1Aw/tH7E8dx8tHThyHdj8cnAoGBALAZ\nM4afG/WvIMImrGZP4/cs+avt0tAptnq8flVNiZbwkDRC1+LVtyn/m7zD8hcueA4Z\nFoTW8GA+Fjdn4ebfK6a1mmK+Q6YLkw9e1CZJFGVGpEJCym6VhlXIILLae2BOnVHS\nkt93NxJekcBh+LrXiNXKwWa5M5H6yLipuxkkisV1AoGAamEj4hEH6H+XlAGP4dzP\nrvD7itMwg9/RxXaakP7JGgeUiCOedFhz5p/GtdjyeE/Gnqo5XPGMZUdOPjq79Ld1\n2BkO5chQkoJrZj7tu3Aozf9Xc5E9lAkmL6ISk3K8RSfgWJTOKSz7IjW92oUM/ros\n8Pq6ipW5jCmnrdJskQf0IZo=\n-----END PRIVATE KEY-----\n",
-        "client_email": "bigquery-writer@foodio-ab3b2.iam.gserviceaccount.com",
-        "client_id": "109208958086189621894",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/bigquery-writer%40foodio-ab3b2.iam.gserviceaccount.com",
-        "universe_domain": "googleapis.com"
-      };
-
-      // Create BigQuery client with hardcoded credentials
-      const bigquery = new BigQuery({
-        projectId: 'foodio-ab3b2',
-        credentials: credentials
-      });
-
       // Build the WHERE clause for storeId filtering
       let whereClause = 'WHERE operation != \'DELETE\'';
       if (storeid) {
@@ -458,7 +451,7 @@ class MyInvoisRouter {
           FROM UniqueDocuments
         `;
         
-        const [countRows] = await bigquery.query({ query: countQuery });
+        const [countRows] = await this.bigquery.query({ query: countQuery });
         totalCount = countRows[0].total_count;
       }
 
@@ -470,7 +463,7 @@ class MyInvoisRouter {
       };
 
       // Run the main query
-      const [rows] = await bigquery.query(options);
+      const [rows] = await this.bigquery.query(options);
 
       // Parse the data field for each row (it's stored as a JSON string)
       const parsedData = rows.map(row => {
@@ -654,36 +647,27 @@ class MyInvoisRouter {
           message: 'Missing required parameter: storeid'
         });
       }
-      
-      // Hardcoded credentials for BigQuery
-      const credentials = {
-        "type": "service_account",
-        "project_id": "foodio-ab3b2",
-        "private_key_id": "783981daf70c7577f7b29cdaccbacbdfd3dfcbe2",
-        "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQChX45UDg90ghjQ\nU+YDKVEzYWU08z5zBcbtcFN8RK+73p6mkURlhFsayxUH5SVY8u/92rKBe4OMSwZy\nXiQf9Mixr0NlTn3tr5XpK8Gq1GkHXc0LH8njcz82ZEu+d0jys6w/GBqLfOOI7HPc\n1USMNAqOFx0gOYGS/vNuXI/IP4OftJoy60Q84VWd0yBFwOpediA8UpJLVWUKZ/ha\nJ09eBNwfjpUv2hE2RVrhZ1RVKztBNTkdBlpjxXMLQQ9l2Zh4BLr5oRhNiibeE3tL\nvGNEHbqpWE70L/E+psKZ+PpmZWI3DjAdyr1MXFkmB4evVZ1i/DKh0TVcg/vnQgnt\nPJekuLV1AgMBAAECggEAH8oxwShF7idE2SF2AfBtQShyJhS3HDSqpBLJN4VWczWf\nXmPmq/L/eY9BNN101omBMqqXGL/qwcPz4KrgBfWUZcCHj9j/IMhCyXznuY3/pMZb\nQtI/1NFaxg3LCBn6omk3yPQoIot3TX17M6lFyDLmU2iFQdhiSMF11itg3ct5VAgR\nUzLb7QSnyPFez0j3sIsNRtwXvQXfgjcyvvwEWZTb+rd8jZ48n5XNlUYEK2JJmjc+\nZRe3QmnVPhevjirtZpik3cDbUKsXQY8HlGTQlOEEeDvnGBtgcDzuzNGpqWG33nFr\nDdKo8ryioLcmlkVjEElsrCtSaHYLm/oAxoRhOsZNbwKBgQDXZXfsxvjO35wmnsau\nIHdcq1++xhwHj+P88MRq9va2H8JY/GESQFgehCbgiLqBTPBFSEaKpNsQ3INyrUcl\nl8E9BJahpMXE8NS41+UKdPWMvoT1TnSeGFtQMIWm5381RZPhYQ/MSoV80VVPc8pN\nB6GZqt/purbenOp7hbzsbElk8wKBgQC/yw66TL33ucepPkklBbxrlmTmRrOb9Rpn\nfrT8nxtxRJWruegDQdKugeIv77oBCloO3GkxNja9wOkGQ0ZnYn+alQZ5//nkYKm+\nRSgFXZ160YG35MIa+OYwtssl/NghvJ5MBBHx5sqHoo71QJxo3KDNYVgYr6mZf2lg\nm/Zy0HY19wKBgFOl8SO/xaI5Tp/k6012CESxvPYOY5ZAOA7jxbOwgvEJdmUuZdg7\nqrz3H031a1CJe4m8XsC68uQibt3bExUzUPUMUh8mKTOpP0MlfKpJ744f8ux88mbv\nGI8UuOKvZkRe5+YP1p3ElwB5HwNC+V5ex1Aw/tH7E8dx8tHThyHdj8cnAoGBALAZ\nM4afG/WvIMImrGZP4/cs+avt0tAptnq8flVNiZbwkDRC1+LVtyn/m7zD8hcueA4Z\nFoTW8GA+Fjdn4ebfK6a1mmK+Q6YLkw9e1CZJFGVGpEJCym6VhlXIILLae2BOnVHS\nkt93NxJekcBh+LrXiNXKwWa5M5H6yLipuxkkisV1AoGAamEj4hEH6H+XlAGP4dzP\nrvD7itMwg9/RxXaakP7JGgeUiCOedFhz5p/GtdjyeE/Gnqo5XPGMZUdOPjq79Ld1\n2BkO5chQkoJrZj7tu3Aozf9Xc5E9lAkmL6ISk3K8RSfgWJTOKSz7IjW92oUM/ros\n8Pq6ipW5jCmnrdJskQf0IZo=\n-----END PRIVATE KEY-----\n",
-        "client_email": "bigquery-writer@foodio-ab3b2.iam.gserviceaccount.com",
-        "client_id": "109208958086189621894",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/bigquery-writer%40foodio-ab3b2.iam.gserviceaccount.com",
-        "universe_domain": "googleapis.com"
-      };
-
-      // Create BigQuery client with hardcoded credentials
-      const bigquery = new BigQuery({
-        projectId: 'foodio-ab3b2',
-        credentials: credentials
-      });
 
       // Build query with filtering by storeId
-      const query = `
-        SELECT document_id, data
-        FROM \`foodio-ab3b2.firestore_myinvois.myinvois_raw_latest\`
-        WHERE operation != 'DELETE' AND document_name LIKE '%/myinvois/${storeid}/%'
+      // const query = `
+      //   SELECT document_id, data
+      //   FROM \`foodio-ab3b2.firestore_myinvois.myinvois_raw_latest\`
+      //   WHERE operation != 'DELETE' AND document_name LIKE '%/myinvois/${storeid}/%'
         
-      `;
+      // `;
 
+      const query = `
+      SELECT document_id, data, timestamp
+      FROM \`foodio-ab3b2.firestore_myinvois.myinvois_raw_latest\`
+      WHERE operation != 'DELETE' 
+        AND document_name LIKE '%/myinvois/${storeid}/%'
+        AND EXTRACT(YEAR FROM DATETIME(TIMESTAMP(timestamp), "Asia/Kuala_Lumpur")) = 
+            EXTRACT(YEAR FROM DATE_SUB(CURRENT_DATE("Asia/Kuala_Lumpur"), INTERVAL 1 MONTH))
+        AND EXTRACT(MONTH FROM DATETIME(TIMESTAMP(timestamp), "Asia/Kuala_Lumpur")) = 
+            EXTRACT(MONTH FROM DATE_SUB(CURRENT_DATE("Asia/Kuala_Lumpur"), INTERVAL 1 MONTH))
+      ORDER BY timestamp DESC
+    `;
+    
       // Set query options
       const options = {
         query: query,
@@ -692,7 +676,7 @@ class MyInvoisRouter {
       };
 
       // Run the main query
-      const [rows] = await bigquery.query(options);
+      const [rows] = await this.bigquery.query(options);
       console.log(`Retrieved ${rows.length} rows for consolidated report`);
 
       // Initialize variables for totals
@@ -2626,6 +2610,143 @@ class MyInvoisRouter {
         message: 'Failed to delete store entries from BigQuery',
         error: error.message,
         storeId: req.body.storeId
+      });
+    }
+  }
+
+  /**
+   * Query all consolidated data for report submission
+   * Returns raw data from BigQuery filtered by store and previous month (Malaysia time)
+   */
+  async queryConsolidatedDataEndpoint(req, res) {
+    try {
+      // Extract parameters from request body
+      const { storeid } = req.body;
+      
+      if (!storeid) {
+        return res.status(400).json({
+          success: false,
+          message: 'Missing required parameter: storeid'
+        });
+      }
+
+      // Build query with filtering by storeId and previous month in Malaysia time
+      const query = `
+        SELECT document_id, data, timestamp
+        FROM \`foodio-ab3b2.firestore_myinvois.myinvois_raw_latest\`
+        WHERE operation != 'DELETE' 
+          AND document_name LIKE '%/myinvois/${storeid}/%'
+          AND EXTRACT(YEAR FROM DATETIME(TIMESTAMP(timestamp), "Asia/Kuala_Lumpur")) = 
+              EXTRACT(YEAR FROM DATE_SUB(CURRENT_DATE("Asia/Kuala_Lumpur"), INTERVAL 1 MONTH))
+          AND EXTRACT(MONTH FROM DATETIME(TIMESTAMP(timestamp), "Asia/Kuala_Lumpur")) = 
+              EXTRACT(MONTH FROM DATE_SUB(CURRENT_DATE("Asia/Kuala_Lumpur"), INTERVAL 1 MONTH))
+        ORDER BY timestamp DESC
+      `;
+
+      // Set query options
+      const options = {
+        query: query,
+        location: 'US',
+        useQueryCache: true
+      };
+
+      console.log(`Querying consolidated data for store: ${storeid}`);
+      console.log(`Query: ${query}`);
+
+      // Execute the query
+      const [rows] = await this.bigquery.query(options);
+      console.log(`Retrieved ${rows.length} records for consolidated data query`);
+
+      // Process raw data into structured format
+      const consolidatedData = [];
+      let totalRecords = 0;
+      let processedRecords = 0;
+      let errorRecords = 0;
+
+      for (const row of rows) {
+        totalRecords++;
+        try {
+          // Parse the JSON data
+          const parsedData = JSON.parse(row.data);
+          
+          // Add structured record with metadata
+          consolidatedData.push({
+            document_id: row.document_id,
+            timestamp: row.timestamp,
+            order_data: parsedData,
+            // Extract key order information for quick reference
+            order_summary: {
+              order_id: parsedData.orderid || parsedData.id,
+              total_price: parseFloat(parsedData.totalprice || 0),
+              payment_type: parsedData.paymenttype,
+              order_datetime: parsedData.orderdatetime,
+              store_id: parsedData.storeid,
+              total_paid: parseFloat(parsedData.totalpaid || 0),
+              epay_amount: parseFloat(parsedData.epayamount || 0),
+              tax: parseFloat(parsedData.tax || 0),
+              service_charge: parseFloat(parsedData.servicecharge || 0),
+              total_discount: parseFloat(parsedData.totaldiscount || 0)
+            }
+          });
+          
+          processedRecords++;
+        } catch (parseError) {
+          console.error(`Error parsing data for document ${row.document_id}:`, parseError);
+          errorRecords++;
+          
+          // Still include the record but mark it as having parse errors
+          consolidatedData.push({
+            document_id: row.document_id,
+            timestamp: row.timestamp,
+            raw_data: row.data,
+            parse_error: parseError.message,
+            order_summary: null
+          });
+        }
+      }
+
+      // Calculate summary statistics
+      const totalAmount = consolidatedData
+        .filter(record => record.order_summary)
+        .reduce((sum, record) => sum + record.order_summary.total_price, 0);
+
+      const totalTax = consolidatedData
+        .filter(record => record.order_summary)
+        .reduce((sum, record) => sum + record.order_summary.tax, 0);
+
+      const totalServiceCharge = consolidatedData
+        .filter(record => record.order_summary)
+        .reduce((sum, record) => sum + record.order_summary.service_charge, 0);
+
+      // Return comprehensive response
+      return res.status(200).json({
+        success: true,
+        message: 'Consolidated data retrieved successfully',
+        query_info: {
+          store_id: storeid,
+          query_period: 'Previous Month (Malaysia Time)',
+          query_timestamp: new Date().toISOString(),
+          total_records: totalRecords,
+          processed_records: processedRecords,
+          error_records: errorRecords
+        },
+        summary_statistics: {
+          total_amount: parseFloat(totalAmount.toFixed(2)),
+          total_tax: parseFloat(totalTax.toFixed(2)),
+          total_service_charge: parseFloat(totalServiceCharge.toFixed(2)),
+          average_order_value: processedRecords > 0 ? parseFloat((totalAmount / processedRecords).toFixed(2)) : 0
+        },
+        data: consolidatedData
+      });
+
+    } catch (error) {
+      console.error('Error querying consolidated data:', error);
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to query consolidated data',
+        error: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
       });
     }
   }

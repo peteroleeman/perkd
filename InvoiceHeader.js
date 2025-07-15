@@ -28,6 +28,8 @@ class InvoiceHeader {
     supplierTelephone = "+60124508261",
     supplierEmail = "general.ams@supplier.com",
     supplierCompanyID = "",
+    supplierSSTRegistrationNo = "NA",
+    supplierTourismTaxNo = "NA",
     // Customer defaults
     customerTIN = "C2584563200",
     customerBRN = "201901234567",
@@ -79,6 +81,8 @@ class InvoiceHeader {
     this.supplierTelephone = supplierTelephone;
     this.supplierEmail = supplierEmail;
     this.supplierCompanyID = supplierCompanyID;
+    this.supplierSSTRegistrationNo = supplierSSTRegistrationNo;
+    this.supplierTourismTaxNo = supplierTourismTaxNo;
     
     // Customer info
     this.customerTIN = customerTIN;
@@ -167,9 +171,11 @@ class InvoiceHeader {
     <cac:PartyIdentification>
       <cbc:ID schemeID="TIN">${this.supplierTIN}</cbc:ID>
     </cac:PartyIdentification>
-    <cac:PartyIdentification>
-      <cbc:ID schemeID="NRIC">${this.supplierNRIC}</cbc:ID>
-    </cac:PartyIdentification>
+     
+       ${this.supplierNRIC && this.supplierNRIC.trim() !== '' ? `<cac:PartyIdentification><cbc:ID schemeID="NRIC">${this.supplierNRIC}</cbc:ID></cac:PartyIdentification>` : ''}
+      ${this.supplierCompanyID && this.supplierCompanyID.trim() !== '' ? `<cac:PartyIdentification><cbc:ID schemeID="BRN">${this.supplierCompanyID}</cbc:ID></cac:PartyIdentification>` : ''}
+      ${this.supplierSSTRegistrationNo && this.supplierSSTRegistrationNo !== 'NA' ? `<cac:PartyIdentification><cbc:ID schemeID="SST">${this.supplierSSTRegistrationNo}</cbc:ID></cac:PartyIdentification>` : ''}
+      ${this.supplierTourismTaxNo && this.supplierTourismTaxNo !== 'NA' ? `<cac:PartyIdentification><cbc:ID schemeID="TTX">${this.supplierTourismTaxNo}</cbc:ID></cac:PartyIdentification>` : ''}
     <cac:PostalAddress>
       <cbc:CityName>${this.supplierCity}</cbc:CityName>
       <cbc:PostalZone>${this.supplierPostalZone}</cbc:PostalZone>

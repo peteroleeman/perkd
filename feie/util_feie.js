@@ -834,8 +834,8 @@ class UtilFeie
     }
 
     let orderId = orderModel?.orderId ?? "";
-    let tableId = orderModel?.orderId ?? "";
-    line.addText(ReceiptFormat.setCenter(`${tableId}` + `${orderId}`));
+    let tableId = orderModel?.table ?? "";
+    line.addText(ReceiptFormat.setCenter(`${tableId}` + `  ${orderId}`));
     line.addText("<BR>");
    
     line.addText(  ReceiptFormat.setCenterBIG(`(${orderModel.orderMode})`));

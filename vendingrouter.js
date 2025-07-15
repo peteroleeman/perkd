@@ -38,6 +38,8 @@ class VendingRouter {
     this.router.post('/createorder', this.handleCreateOrder.bind(this));
     this.router.post('/checkorder', this.handleCheckOrder.bind(this));
     this.router.post('/payment/callback', this.handlePaymentCallback.bind(this));
+    this.router.post('/pickup', this.handlePickup.bind(this));
+    this.router.post('/pickupsuccess', this.handlePickupSuccess.bind(this));
 
   }
 
@@ -586,7 +588,13 @@ class VendingRouter {
       });
 
       // Return the response from the external API
-      return res.status(200).json(response.data);
+      //return res.status(200).json(response.data);
+
+      return res.status(200).json({
+                success: true,
+                message: response.data || '',
+                error: ""
+              });
 
     } catch (error) {
       console.error('Error in login:', error);
@@ -830,11 +838,12 @@ class VendingRouter {
         currency,
         device_number,
         list,
-        merchant_id
+        merchant_id,
+        remark
       } = order_details;
 
       // Validate required parameters
-      if (!amount || !currency || !device_number || !list || !merchant_id) {
+      if ( !currency || !device_number || !list || !merchant_id) {
         return res.status(400).json({
           success: false,
           message: 'Missing required parameters in order_details. Please provide amount, currency, device_number, list, and merchant_id'
@@ -875,7 +884,8 @@ class VendingRouter {
           currency,
           device_number,
           list,
-          merchant_id
+          merchant_id,
+          remark
         }
       });
 
@@ -944,7 +954,12 @@ class VendingRouter {
       });
 
       // Return the response from the external API
-      return res.status(200).json(response.data);
+      //return res.status(200).json(response.data);
+       return res.status(200).json({
+                  success: true,
+                  message: response.data,
+                  error: ""
+                });
 
     } catch (error) {
       console.error('Error checking order:', error);
@@ -1070,6 +1085,167 @@ class VendingRouter {
       return res.status(500).json({
         success: false,
         message: 'Internal server error while processing payment callback',
+        error: error.message
+      });
+    }
+  }
+
+  async handlePickup(req, res) {
+    try {
+      // Get token and orderId from request body
+      const { token, orderId } = req.body;
+
+      // Validate token
+      if (!token) {
+        return res.status(401).json({
+          success: false,
+          message: 'Authorization token is required in request body'
+        });
+      }
+
+      // Validate orderId
+      if (!orderId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Order ID is required in request body'
+        });
+      }
+
+      // Make request to external API with Bearer token authorization
+      const response = await axios({
+        method: 'POST',
+        url: `${kBaseUrl}/vending/orders/${orderId}/pickup`,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      // Return the response from the external API
+      return res.status(200).json({
+        success: true,
+        message: response.data,
+        error: ""
+      });
+
+    } catch (error) {
+      console.error('Error processing pickup order:', error);
+      
+      // If the error is from the external API, forward its response
+      if (error.response) {
+        // Special handling for 401 unauthorized errors
+        if (error.response.status === 401) {
+          return res.status(401).json({
+            success: false,
+            message: 'Invalid or expired token',
+            error: error.response.data
+          });
+        }
+
+        // Special handling for 404 not found errors
+        if (error.response.status === 404) {
+          return res.status(404).json({
+            success: false,
+            message: 'Order not found',
+            error: error.response.data
+          });
+        }
+
+        return res.status(error.response.status).json({
+          success: false,
+          message: error.response.data.message || 'Failed to process pickup order',
+          error: error.response.data
+        });
+      }
+
+      // For other errors, return a generic error message
+      return res.status(500).json({
+        success: false,
+        message: 'Internal server error while processing pickup order',
+        error: error.message
+      });
+    }
+  }
+
+  async handlePickupSuccess(req, res) {
+    try {
+      // Get required parameters from request body
+      const { remark, merchant_id, device_number } = req.body;
+
+      // Validate required parameters
+      if (!remark || !merchant_id || !device_number) {
+        return res.status(400).json({
+          success: false,
+          message: 'Missing required parameters: remark, merchant_id, and device_number are all required'
+        });
+      }
+
+      // Create document ID by combining merchant_id and device_number
+      const documentId = `${merchant_id}_${device_number}`;
+
+      // Reference to the pickup document in Firestore
+      const pickupDocRef = fireStore
+        .collection('user')
+        .doc(`FU_${remark}`)
+        .collection('pickup')
+        .doc(documentId);
+
+      // Reference to the pickup_success document in Firestore
+      const pickupSuccessDocRef = fireStore
+        .collection('user')
+        .doc(`FU_${remark}`)
+        .collection('pickup_success')
+        .doc(documentId);
+
+      // Check if document exists before attempting to move
+      const docSnapshot = await pickupDocRef.get();
+
+      if (!docSnapshot.exists) {
+        return res.status(404).json({
+          success: false,
+          message: `Pickup record with ID ${documentId} not found for user ${remark}`,
+          user_id: `FU_${remark}`
+        });
+      }
+
+      // Get the document data
+      const pickupData = docSnapshot.data();
+
+      // Add timestamp for when it was moved to pickup_success
+      const pickupSuccessData = {
+        ...pickupData,
+        pickup_success_timestamp: new Date(),
+        moved_from_pickup_at: new Date().toISOString()
+      };
+
+      // Use batch operation to move data atomically
+      const batch = fireStore.batch();
+      
+      // Add to pickup_success collection
+      batch.set(pickupSuccessDocRef, pickupSuccessData);
+      
+      // Remove from pickup collection
+      batch.delete(pickupDocRef);
+      
+      // Commit the batch operation
+      await batch.commit();
+
+      console.log(`Successfully moved pickup record ${documentId} to pickup_success for user FU_${remark}`);
+
+      return res.status(200).json({
+        success: true,
+        message: 'Pickup record successfully moved to pickup_success',
+        moved_document_id: documentId,
+        user_id: `FU_${remark}`,
+        pickup_success_timestamp: pickupSuccessData.pickup_success_timestamp
+      });
+
+    } catch (error) {
+      console.error('Error processing pickup success:', error);
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Internal server error while processing pickup success',
         error: error.message
       });
     }

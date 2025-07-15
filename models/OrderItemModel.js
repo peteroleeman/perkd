@@ -35,6 +35,7 @@ class OrderItemModel  {
         this.discount_amount = props.discount;
         this.modifiers = "";
         this.sku = props.sku;
+       
         
         // this.id = props.id;
         // this.menuid = props.menuid;

@@ -15,6 +15,7 @@ var DemoOdooRouter = require("./demoodoorouter");
 var VendingRouter = require("./vendingrouter");
 var RHBRouter = require("./rhbrouter");
 var MyInvoisRouter = require("./myinvoisrouter");
+var MyReportRouter = require("./myreportrouter");
 var TicketRouter = require("./ticketrouter");
 var PosRouter = require('./posrouter');
 
@@ -182,6 +183,10 @@ app.use('/rhb', myRHB.getRouter());
 //for myinvois
 const myInvois = new MyInvoisRouter();
 app.use('/myinvois', myInvois.getRouter());
+
+//for myreport
+const myReport = new MyReportRouter();
+app.use('/myreport', myReport.getRouter());
 
 //for ticket service
 const myTicket = new TicketRouter();
