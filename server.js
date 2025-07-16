@@ -18,6 +18,7 @@ var MyInvoisRouter = require("./myinvoisrouter");
 var MyReportRouter = require("./myreportrouter");
 var TicketRouter = require("./ticketrouter");
 var PosRouter = require('./posrouter');
+var GrabRouter = require('./grabrouter');
 
 
 var {Logging} = require('@google-cloud/logging');
@@ -194,6 +195,10 @@ app.use('/ticket', myTicket.getRouter());
 
 const posRouter = new PosRouter();
 app.use('/pos', posRouter.getRouter());
+
+//for grab
+const grabRouter = new GrabRouter();
+app.use('/grab', grabRouter.getRouter());
 
 // START THE SERVER
 // =============================================================================
