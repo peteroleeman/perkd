@@ -1536,11 +1536,12 @@ async testSendOTP()
       }
 
       // Step 4.5: Process payment based on type (matching Dart logic)
+      console.log("deciding payment type for order:", currentOrderModel.paymenttype);
       if (enableFullProcessing && currentOrderModel.paymenttype === "CREDIT") {
         console.log('💳 [DEBUG] Step 4.5: Processing credit payment...');
         await this.processCreditPayment(currentOrderModel, phoneString);
         console.log('✅ [DEBUG] Step 4.5 Complete: Credit payment processed');
-      } else if (enableFullProcessing && currentOrderModel.paymenttype !== "FREE" && currentOrderModel.paymenttype !== "COD") {
+      } else if (enableFullProcessing && currentOrderModel.paymenttype.toUpperCase() !== "FREE" && currentOrderModel.paymenttype.toUpperCase() !== "COD") {
         console.log('⏳ [DEBUG] Step 4.5: Waiting for GKash order confirmation...');
         console.log('💰 [DEBUG] Payment type:', currentOrderModel.paymenttype, '- requires GKash confirmation');
         try {
@@ -1575,9 +1576,13 @@ async testSendOTP()
       }
       
       // Always save to myInvois collection
-      if (enableFullProcessing) {
+      if (enableFullProcessing && (currentOrderModel.paymenttype !== "COD") ) {
         console.log('📄 [DEBUG] Saving to myInvois collection...');
         await this.saveToMyInvois(storeId, currentOrderModel);
+      }
+      else
+      {
+        console.log('📄 [DEBUG] Skipping myInvois collection as it is COD');
       }
       console.log('✅ [DEBUG] Step 7 Complete: Order saved appropriately');
 
@@ -1735,6 +1740,7 @@ async testSendOTP()
 
   async updateTransactionDetails(orderModel, gkashResult) {
     console.log("Updating transaction details");
+    console.log("Payment type:", orderModel.paymenttype);
     
     // Get message ID (similar to Dart version)
     let messageId = "";
@@ -1753,10 +1759,20 @@ async testSendOTP()
     orderModel.paymenttype = gkashResult.PAYMENT_TYPE;
     orderModel.epaymentdetail = gkashResult;
     orderModel.transactiondetail = gkashResult;
-    orderModel.ordertype = 1;
+    //orderModel.ordertype = 1;
     
     // Set payment status to paid
-    orderModel.paymentstatus = 0; //kPaid
+   // orderModel.paymentstatus = 0; //kPaid
+
+    // Set payment status to paid only for non-COD orders
+  if (orderModel.paymenttype !== "COD") {
+  orderModel.paymentstatus = 0; //kPaid
+  
+  } else {
+  orderModel.paymentstatus = -999; //kUnpaid for COD orders
+  }
+
+console.log("set payment status :", orderModel.paymentstatus);
     
     // Update order date time if not set
     if (!orderModel.orderdatetime) {
@@ -1875,6 +1891,31 @@ async testSendOTP()
           
           // Query existing vouchers
           console.log("🎫 [VOUCHER] Querying for existing vouchers with menuid:", orderItem.menuid);
+          
+          // DEBUG: List all voucher menu IDs from collection for debugging
+          console.log("🎫 [VOUCHER] === DEBUGGING: Listing all voucher menu IDs ===");
+          const allVouchersDebug = await userRef.collection("vouchers").get();
+          console.log("🎫 [VOUCHER] Total vouchers in collection:", allVouchersDebug.size);
+          
+          const menuIdsFound = [];
+          allVouchersDebug.forEach(doc => {
+            const data = doc.data();
+            if (data.menuId !== undefined) {
+              menuIdsFound.push({
+                voucherId: data.id,
+                menuId: data.menuId,
+                menuIdType: typeof data.menuId,
+                title: data.title
+              });
+            } else {
+              console.log("🎫 [VOUCHER] Voucher without menuId field:", data.id, "Title:", data.title);
+            }
+          });
+          
+          console.log("🎫 [VOUCHER] All menu IDs found:", menuIdsFound);
+          console.log("🎫 [VOUCHER] Looking for menuId:", orderItem.menuid, "Type:", typeof orderItem.menuid);
+          console.log("🎫 [VOUCHER] === END DEBUGGING ===");
+          
           const vouchersSnapshot = await userRef
             .collection("vouchers")
             .where('menuId', '==', orderItem.menuid)
@@ -1902,7 +1943,7 @@ async testSendOTP()
               const qtyMatch = orderItem.voucherstring.match(/QTY:(\d+)/);
               if (qtyMatch) {
                 const parsedQty = parseInt(qtyMatch[1]) || 1;
-                qty = parsedQty * (orderItem.qty || 1);
+                qty = parsedQty * (orderItem.quantity || 1);
                 console.log("🎫 [VOUCHER] Parsed QTY from string:", parsedQty, "x", (orderItem.qty || 1), "=", qty);
               } else {
                 console.log("🎫 [VOUCHER] QTY pattern found but no match - using default");
@@ -1961,7 +2002,7 @@ async testSendOTP()
               const qtyMatch = orderItem.voucherstring.match(/QTY:(\d+)/);
               if (qtyMatch) {
                 const parsedQty = parseInt(qtyMatch[1]) || 1;
-                qty = parsedQty * (orderItem.qty || 1);
+                qty = parsedQty * (orderItem.quantity || 1);
                 console.log("🎫 [VOUCHER] Parsed QTY from string:", parsedQty, "x", (orderItem.qty || 1), "=", qty);
               } else {
                 console.log("🎫 [VOUCHER] QTY pattern found but no match - using default");
@@ -2093,22 +2134,48 @@ async testSendOTP()
         try {
           console.log("Redeeming voucher:", voucher.id, "-", voucher.title);
 
-          // Mark voucher as redeemed
-          const now = new Date();
-          const updateData = {
-            isRedeemed: true,
-            redeemedAt: now,
-            redeemedCount: voucher.quantity || 1
-          };
-
-          // Update voucher in user's voucher collection
-          await fireStore.collection("user")
+          // Get current voucher data from user's voucher collection
+          const voucherRef = fireStore.collection("user")
             .doc(`FU_${phoneString}`)
             .collection("vouchers")
-            .doc(voucher.id)
-            .update(updateData);
+            .doc(voucher.id);
+          
+          const voucherDoc = await voucherRef.get();
+          
+          if (!voucherDoc.exists) {
+            console.error("Voucher not found in user collection:", voucher.id);
+            continue;
+          }
 
-          console.log("Successfully redeemed voucher:", voucher.id);
+          const currentVoucher = voucherDoc.data();
+          const currentRedeemedCount = currentVoucher.redeemedCount || 0;
+          const voucherQuantity = currentVoucher.quantity || 1;
+          const redeemAmount = voucher.redeemedCount || 1;
+          
+          // Calculate new redeemed count
+          const newRedeemedCount = redeemAmount;//currentRedeemedCount + redeemAmount;
+          
+          console.log(`Voucher ${voucher.id}: current redeemed ${currentRedeemedCount}, adding ${redeemAmount}, total quantity ${voucherQuantity}`);
+
+          // Prepare update data
+          const now = new Date();
+          const updateData = {
+            redeemedAt: now,
+            redeemedCount: newRedeemedCount
+          };
+
+          // Only set isRedeemed to true if new redeemed count equals total quantity
+          if (newRedeemedCount >= voucherQuantity) {
+            updateData.isRedeemed = true;
+            console.log(`Voucher ${voucher.id} fully redeemed (${newRedeemedCount}/${voucherQuantity})`);
+          } else {
+            console.log(`Voucher ${voucher.id} partially redeemed (${newRedeemedCount}/${voucherQuantity})`);
+          }
+
+          // Update voucher in user's voucher collection
+          await voucherRef.update(updateData);
+
+          console.log("Successfully updated voucher:", voucher.id);
         } catch (voucherError) {
           console.error("Error redeeming voucher", voucher.id, ":", voucherError);
           // Continue with other vouchers even if one fails
@@ -3068,6 +3135,7 @@ async testSendOTP()
     console.log('🛒 [DEBUG] Saving COD order to counter_order collection...');
     
     try {
+      orderModel.paymentstatus = -999;
       const counterOrderRef = fireStore.collection('store')
         .doc(storeId)
         .collection('counter_order')
@@ -3824,7 +3892,7 @@ async testSendOTP()
         AMOUNT: null,
         SIGNATURE: null,
         DESC: 'Direct order processing - no GKash payment',
-        PAYMENT_TYPE: 'DIRECT'
+        PAYMENT_TYPE: 'COD'
       };
       
       console.log('🚀 [API] Final GKash Result:', JSON.stringify(finalGkashResult, null, 2));

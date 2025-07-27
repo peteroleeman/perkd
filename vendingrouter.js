@@ -859,17 +859,17 @@ class VendingRouter {
       }
 
       // Validate each item in the list
-      const requiredItemFields = ['goods_count', 'goods_description', 'goods_id', 'goods_name', 
-                                'goods_photo', 'goods_price', 'goods_sku'];
-      for (const item of list) {
-        const missingFields = requiredItemFields.filter(field => !item[field]);
-        if (missingFields.length > 0) {
-          return res.status(400).json({
-            success: false,
-            message: `Missing required fields in list item: ${missingFields.join(', ')}`
-          });
-        }
-      }
+//      const requiredItemFields = ['goods_count', 'goods_description', 'goods_id', 'goods_name',
+//                                'goods_photo', 'goods_price', 'goods_sku'];
+//      for (const item of list) {
+//        const missingFields = requiredItemFields.filter(field => !item[field]);
+//        if (missingFields.length > 0) {
+//          return res.status(400).json({
+//            success: false,
+//            message: `Missing required fields in list item: ${missingFields.join(', ')}`
+//          });
+//        }
+//      }
 
       // Make request to external API
       const response = await axios({
@@ -1169,11 +1169,26 @@ class VendingRouter {
 
   async handlePickupSuccess(req, res) {
     try {
+      // DEBUG: Log function entry with timestamp and request details
+      console.log('=== handlePickupSuccess TRIGGERED ===');
+      console.log('=====================================');
+
       // Get required parameters from request body
       const { remark, merchant_id, device_number } = req.body;
 
+      // DEBUG: Log extracted parameters
+      console.log('Extracted parameters:');
+      console.log('- remark:', remark);
+      console.log('- merchant_id:', merchant_id);
+      console.log('- device_number:', device_number);
+
       // Validate required parameters
       if (!remark || !merchant_id || !device_number) {
+        console.log('DEBUG: Validation failed - missing required parameters');
+        console.log('- remark exists:', !!remark);
+        console.log('- merchant_id exists:', !!merchant_id);
+        console.log('- device_number exists:', !!device_number);
+        
         return res.status(400).json({
           success: false,
           message: 'Missing required parameters: remark, merchant_id, and device_number are all required'
@@ -1182,6 +1197,9 @@ class VendingRouter {
 
       // Create document ID by combining merchant_id and device_number
       const documentId = `${merchant_id}_${device_number}`;
+      
+      // DEBUG: Log document ID creation
+      console.log('DEBUG: Created document ID:', documentId);
 
       // Reference to the pickup document in Firestore
       const pickupDocRef = fireStore
@@ -1197,10 +1215,20 @@ class VendingRouter {
         .collection('pickup_success')
         .doc(documentId);
 
+      // DEBUG: Log Firestore paths
+      console.log('DEBUG: Firestore paths:');
+      console.log('- Pickup collection path:', `user/FU_${remark}/pickup/${documentId}`);
+      console.log('- Pickup success collection path:', `user/FU_${remark}/pickup_success/${documentId}`);
+
       // Check if document exists before attempting to move
+      console.log('DEBUG: Checking if pickup document exists...');
       const docSnapshot = await pickupDocRef.get();
 
       if (!docSnapshot.exists) {
+        console.log('DEBUG: Pickup document NOT found - returning 404');
+        console.log('- Document ID:', documentId);
+        console.log('- User ID:', `FU_${remark}`);
+        
         return res.status(404).json({
           success: false,
           message: `Pickup record with ID ${documentId} not found for user ${remark}`,
@@ -1232,6 +1260,16 @@ class VendingRouter {
 
       console.log(`Successfully moved pickup record ${documentId} to pickup_success for user FU_${remark}`);
 
+      // DEBUG: Log success response details
+      console.log('DEBUG: Preparing success response...');
+      console.log('DEBUG: Response data:', {
+        success: true,
+        moved_document_id: documentId,
+        user_id: `FU_${remark}`,
+        pickup_success_timestamp: pickupSuccessData.pickup_success_timestamp
+      });
+      console.log('=== handlePickupSuccess COMPLETED SUCCESSFULLY ===');
+
       return res.status(200).json({
         success: true,
         message: 'Pickup record successfully moved to pickup_success',
@@ -1241,6 +1279,14 @@ class VendingRouter {
       });
 
     } catch (error) {
+      // DEBUG: Enhanced error logging
+      console.log('=== handlePickupSuccess ERROR OCCURRED ===');
+      console.log('Error timestamp:', new Date().toISOString());
+      console.log('Error message:', error.message);
+      console.log('Error stack:', error.stack);
+      console.log('Request body at time of error:', JSON.stringify(req.body, null, 2));
+      console.log('==========================================');
+      
       console.error('Error processing pickup success:', error);
       
       return res.status(500).json({

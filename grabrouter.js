@@ -12,24 +12,41 @@ class GrabRouter {
       res.json({ message: 'Endpoint for Grab integration v1.1'});
     });
 
-    // Get menu endpoint
-    //https://{{api-endpoint}}/<any-path>/pushGrabMenu
-    this.router.post('/merchant/pushGrabMenu', this.handleGetMenu.bind(this));
+    //partner end point
+    //Onboarding -> Push Grab menu webhook
+    //GrabFood calls this partner endpoint to push the Grab store menu to POS.
+    this.router.post('/pushgrabmenu', this.handlePushGrabMenu.bind(this));
+
+
+    //Push integration status webhook
+    //GrabFood calls this partner endpoint to push the Grab store integration status 
+    // whenever there is a status change.
+    this.router.post('/pushintegrationstatus', this.handlePushIntegrationStatus.bind(this));
+
+    // 	Get menu webhook
+    //GrabFood sends request to this endpoint to fetch the latest menu from the partner. 
+    // This is initiated during integration activation or when an update menu notification is received after the store integration has been enabled.
+    this.router.get('/merchant/menu', this.handleGetMenu.bind(this));
+
+    //Menu sync state webhook
+    //GrabFood sends updates on the status of a menu sync, including any errors encountered to the partner through webhook.
+    this.router.post('/menusyncstate', this.handleMenuSyncState.bind(this));
 
     // Submit order endpoint
+    //GrabFood submits order details in request to this endpoint to the partner when consumers places orders via a partner POS integrated outlet.
     this.router.post('/order', this.handleSubmitOrder.bind(this));
 
     // Push order state endpoint
-    this.router.post('/order/state', this.handlePushOrderState.bind(this));
+    //GrabFood sends order status updates in request to this partner endpoint.
+    this.router.put('/order/state', this.handlePushOrderState.bind(this));
 
     // OAuth token endpoint
     this.router.post('/oauth/token', this.handleOAuthToken.bind(this));
 
     // Menu Sync Webhook
-    this.router.post('/webhook/menu-sync', this.handleMenuSyncWebhook.bind(this));
+    this.router.post('/webhook/menu-sync', this.handleGetMenu.bind(this));
 
-    // Push Grab menu endpoint
-    this.router.post('/menu/push', this.handlePushGrabMenu.bind(this));
+    
 
     // Integration status endpoint
     this.router.get('/integration/status', this.handleIntegrationStatus.bind(this));
@@ -52,211 +69,598 @@ class GrabRouter {
       console.log('Request Query Parameters:', req.query);
       console.log('Request Headers:', req.headers);
       console.log('Request Method:', req.method);
-      console.log('Request IP:', req.ip);
-      console.log('Request User Agent:', req.get('User-Agent'));
-      
-      // Extract required parameters
-    //   const { merchantID, partnerMerchantID } = req.query;
-    //   const authHeader = req.headers.authorization;
-      
-    //   // Validate required parameters
-    //   if (!merchantID) {
-    //     return res.status(400).json({
-    //       status: 'ERROR',
-    //       message: 'Bad Request: merchantID is required'
-    //     });
-    //   }
-      
-    //   if (!partnerMerchantID) {
-    //     return res.status(400).json({
-    //       status: 'ERROR',
-    //       message: 'Bad Request: partnerMerchantID is required'
-    //     });
-    //   }
-      
-    //   // Validate Authorization header
-    //   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    //     return res.status(401).json({
-    //       status: 'ERROR',
-    //       message: 'Unauthorized: Bearer token is required'
-    //     });
-    //   }
-      
-    //   const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-      
-    //   console.log('MerchantID:', merchantID);
-    //   console.log('PartnerMerchantID:', partnerMerchantID);
-    //   console.log('Bearer Token:', token);
-      
-      // TODO: Validate bearer token
       
       const menuData = {
-        "merchantID": merchantID,
-        "partnerMerchantID": partnerMerchantID,
-        "currency": {
-          "code": "SGD",
-          "symbol": "S$",
-          "exponent": 2
-        },
-        "sellingTimes": [
-          {
-            "startTime": "2022-03-01 10:00:00",
-            "endTime": "2025-01-21 22:00:00",
-            "id": "partner-sellingTimeID-1",
-            "name": "Lunch deal",
-            "serviceHours": {
-              "mon": {
-                "openPeriodType": "OpenPeriod",
-                "periods": [
-                  {
-                    "startTime": "11:30",
-                    "endTime": "21:30"
-                  }
-                ]
-              },
-              "tue": {
-                "openPeriodType": "OpenPeriod",
-                "periods": [
-                  {
-                    "startTime": "11:30",
-                    "endTime": "21:30"
-                  }
-                ]
-              },
-              "wed": {
-                "openPeriodType": "OpenPeriod",
-                "periods": [
-                  {
-                    "startTime": "11:30",
-                    "endTime": "21:30"
-                  }
-                ]
-              },
-              "thu": {
-                "openPeriodType": "OpenPeriod",
-                "periods": [
-                  {
-                    "startTime": "11:30",
-                    "endTime": "21:30"
-                  }
-                ]
-              },
-              "fri": {
-                "openPeriodType": "OpenPeriod",
-                "periods": [
-                  {
-                    "startTime": "11:30",
-                    "endTime": "21:30"
-                  }
-                ]
-              },
-              "sat": {
-                "openPeriodType": "OpenPeriod",
-                "periods": [
-                  {
-                    "startTime": "11:30",
-                    "endTime": "21:30"
-                  }
-                ]
-              },
-              "sun": {
-                "openPeriodType": "OpenPeriod",
-                "periods": [
-                  {
-                    "startTime": "11:30",
-                    "endTime": "21:30"
-                  }
-                ]
-              }
-            }
-          }
-        ],
-        "categories": [
-          {
-            "id": "category_id",
-            "name": "Value set",
-            "nameTranslation": {
-              "property1": "translation",
-              "property2": "translation"
-            },
-            "availableStatus": "AVAILABLE",
-            "sellingTimeID": "partner-sellingTimeID-1",
-            "sequence": 1,
-            "items": [
-              {
-                "id": "item_id",
-                "name": "Crispy burger with smoked salmon",
-                "nameTranslation": {
-                  "property1": "translation",
-                  "property2": "translation"
-                },
-                "availableStatus": "AVAILABLE",
-                "description": "Crispy burger with smoked salmon is a delicious twist on a classic burger. Made with a perfectly cooked beef patty and topped with smoked salmon, fresh greens, and a creamy sauce.",
-                "descriptionTranslation": {
-                  "property1": "translation",
-                  "property2": "translation"
-                },
-                "price": 1900,
-                "photos": [
-                  "http://example.com/image_url.jpg"
-                ],
-                "specialType": null,
-                "taxable": false,
-                "barcode": "GTIN",
-                "sellingTimeID": "partner-sellingTimeID-1",
-                "maxStock": 15,
-                "sequence": 1,
-                "advancedPricing": {
-                  "Delivery_OnDemand_GrabApp": 30,
-                  "Delivery_Scheduled_GrabApp": 25,
-                  "SelfPickUp_OnDemand_GrabApp": 25,
-                  "DineIn_OnDemand_GrabApp": 25,
-                  "Delivery_OnDemand_StoreFront": 25,
-                  "Delivery_Scheduled_StoreFront": 25,
-                  "SelfPickUp_OnDemand_StoreFront": 25
-                },
-                "purchasability": {
-                  "Delivery_OnDemand_GrabApp": true,
-                  "Delivery_Scheduled_GrabApp": true,
-                  "SelfPickUp_OnDemand_GrabApp": true,
-                  "DineIn_OnDemand_GrabApp": true,
-                  "Delivery_OnDemand_StoreFront": true,
-                  "Delivery_Scheduled_StoreFront": true,
-                  "SelfPickUp_OnDemand_StoreFront": true
-                },
-                "modifierGroups": [
-                  {
-                    "id": "modifier_group_id",
-                    "name": "Add on",
-                    "nameTranslation": {
-                      "property1": "translation",
-                      "property2": "translation"
-                    },
-                    "availableStatus": "AVAILABLE",
-                    "selectionRangeMin": 0,
-                    "selectionRangeMax": 1,
-                    "sequence": 1,
-                    "modifiers": [
-                      {
-                        "id": "modifier_id",
-                        "name": "Smoked tuna",
-                        "nameTranslation": {},
-                        "availableStatus": "AVAILABLE",
-                        "price": 200,
-                        "barcode": "GTIN",
-                        "sequence": 1,
-                        "advancedPricing": {}
-                      }
-                    ]
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      };
+                         "merchantID": "GFSBPOS-256-440",
+                           "partnerMerchantID": "FUD01",
+                         "currency": {
+                           "code": "SGD",
+                           "symbol": "S$",
+                           "exponent": 2
+                         },
+                         "sections": [
+                           {
+                             "id": "SECTION-01",
+                             "name": "Breakfast",
+                             "sequence": 1,
+                             "serviceHours": {
+                               "mon": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "07:00",
+                                     "endTime": "10:00"
+                                   }
+                                 ]
+                               },
+                               "tue": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "07:00",
+                                     "endTime": "10:00"
+                                   }
+                                 ]
+                               },
+                               "wed": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "07:00",
+                                     "endTime": "10:00"
+                                   }
+                                 ]
+                               },
+                               "thu": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "07:00",
+                                     "endTime": "10:00"
+                                   }
+                                 ]
+                               },
+                               "fri": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "07:00",
+                                     "endTime": "10:00"
+                                   }
+                                 ]
+                               },
+                               "sat": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "07:00",
+                                     "endTime": "10:00"
+                                   }
+                                 ]
+                               },
+                               "sun": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "07:00",
+                                     "endTime": "10:00"
+                                   }
+                                 ]
+                               }
+                             },
+                             "categories": [
+                               {
+                                 "id": "CATEGORY-01",
+                                 "name": "Savoury Pancakes",
+                                 "sequence": 1,
+                                 "availableStatus": "AVAILABLE",
+                                 "items": [
+                                   {
+                                     "id": "ITEM-01",
+                                     "name": "Gourmet Flapjacks",
+                                     "sequence": 1,
+                                     "availableStatus": "AVAILABLE",
+                                     "price": 220,
+                                     "campaignInfo": null,
+                                     "description": "Blueberries stuffed pancakes, served with scrambled eggs, baked beans, and hash brown, savoury, and sweet toppings of all day, add on of toppings available.",
+                                     "photos": [
+                                       "https://developer.grab.com/assets/default-menu/pancake-2.jpeg"
+                                     ],
+                                     "modifierGroups": [
+                                       {
+                                         "id": "MODIFIERGROUP-01",
+                                         "name": "Topping Additions",
+                                         "sequence": 1,
+                                         "availableStatus": "AVAILABLE",
+                                         "selectionRangeMin": 1,
+                                         "selectionRangeMax": 1,
+                                         "modifiers": [
+                                           {
+                                             "id": "MODIFIER-01",
+                                             "name": "Sunny Egg",
+                                             "sequence": 1,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 100
+                                           },
+                                           {
+                                             "id": "MODIFIER-02",
+                                             "name": "Sausage & Chipolata",
+                                             "sequence": 2,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 200
+                                           },
+                                           {
+                                             "id": "MODIFIER-03",
+                                             "name": "Turkey Bacon",
+                                             "sequence": 1,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 100
+                                           }
+                                         ]
+                                       }
+                                     ],
+                                     "nameTranslation": {
+                                       "zh": "美食烙饼"
+                                     }
+                                   },
+                                   {
+                                     "id": "ITEM-02",
+                                     "name": "Mini Pancakes",
+                                     "sequence": 2,
+                                     "availableStatus": "AVAILABLE",
+                                     "price": 230,
+                                     "campaignInfo": null,
+                                     "description": "Grilled chicken with creamy tomato sauce spaghetti.",
+                                     "photos": [
+                                       "https://developer.grab.com/assets/default-menu/pancake-1.jpeg"
+                                     ],
+                                     "modifierGroups": [
+                                       {
+                                         "id": "MODIFIERGROUP-02",
+                                         "name": "Topping Additions",
+                                         "sequence": 1,
+                                         "availableStatus": "AVAILABLE",
+                                         "selectionRangeMin": 1,
+                                         "selectionRangeMax": 2,
+                                         "modifiers": [
+                                           {
+                                             "id": "MODIFIER-04",
+                                             "name": "Honey",
+                                             "sequence": 1,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 0
+                                           },
+                                           {
+                                             "id": "MODIFIER-05",
+                                             "name": "Chocolate Sauce",
+                                             "sequence": 2,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 0
+                                           }
+                                         ]
+                                       }
+                                     ]
+                                   }
+                                 ],
+                                 "nameTranslation": {
+                                   "id": "Pancake Gurih"
+                                 }
+                               },
+                               {
+                                 "id": "CATEGORY-02",
+                                 "name": "Crispy Puffs",
+                                 "sequence": 2,
+                                 "availableStatus": "AVAILABLE",
+                                 "items": [
+                                   {
+                                     "id": "ITEM-03",
+                                     "name": "2 Pieces Crispy Puffs Set",
+                                     "sequence": 1,
+                                     "availableStatus": "AVAILABLE",
+                                     "price": 220,
+                                     "campaignInfo": null,
+                                     "description": "",
+                                     "photos": [
+                                       "https://developer.grab.com/assets/default-menu/crispy-puff.jpeg"
+                                     ],
+                                     "modifierGroups": [
+                                       {
+                                         "id": "MODIFIERGROUP-03",
+                                         "name": "Flavour of Crispy Puff 1",
+                                         "sequence": 1,
+                                         "availableStatus": "AVAILABLE",
+                                         "selectionRangeMin": 1,
+                                         "selectionRangeMax": 1,
+                                         "modifiers": [
+                                           {
+                                             "id": "MODIFIER-06",
+                                             "name": "Chicken Curry Puff",
+                                             "sequence": 1,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 100
+                                           },
+                                           {
+                                             "id": "MODIFIER-07",
+                                             "name": "Sardine Puff",
+                                             "sequence": 2,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 200
+                                           },
+                                           {
+                                             "id": "MODIFIER-08",
+                                             "name": "Yam Puff",
+                                             "sequence": 1,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 300
+                                           }
+                                         ]
+                                       },
+                                       {
+                                         "id": "MODIFIERGROUP-04",
+                                         "name": "Flavour of Crispy Puff 2",
+                                         "sequence": 1,
+                                         "availableStatus": "AVAILABLE",
+                                         "selectionRangeMin": 1,
+                                         "selectionRangeMax": 1,
+                                         "modifiers": [
+                                           {
+                                             "id": "MODIFIER-09",
+                                             "name": "Chicken Curry Puff",
+                                             "sequence": 1,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 100
+                                           },
+                                           {
+                                             "id": "MODIFIER-10",
+                                             "name": "Sardine Puff",
+                                             "sequence": 2,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 200
+                                           },
+                                           {
+                                             "id": "MODIFIER-11",
+                                             "name": "Yam Puff",
+                                             "sequence": 1,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 300
+                                           }
+                                         ]
+                                       }
+                                     ]
+                                   }
+                                 ]
+                               },
+                               {
+                                 "id": "CATEGORY-03",
+                                 "name": "Desserts",
+                                 "sequence": 3,
+                                 "availableStatus": "AVAILABLE",
+                                 "items": [
+                                   {
+                                     "id": "ITEM-04",
+                                     "name": "Panna Cotta DePizza",
+                                     "sequence": 1,
+                                     "availableStatus": "AVAILABLE",
+                                     "price": 500,
+                                     "campaignInfo": null,
+                                     "description": "Homemade eggless custard served with wild berry mix & mango sauce",
+                                     "photos": [
+                                       "https://developer.grab.com/assets/default-menu/panna-cotta.jpeg"
+                                     ],
+                                     "modifierGroups": [
+                                       {
+                                         "id": "MODIFIERGROUP-04",
+                                         "name": "Toppings",
+                                         "sequence": 1,
+                                         "availableStatus": "AVAILABLE",
+                                         "selectionRangeMin": 1,
+                                         "selectionRangeMax": 1,
+                                         "modifiers": [
+                                           {
+                                             "id": "MODIFIER-12",
+                                             "name": "Caramel Sauce",
+                                             "sequence": 1,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 100
+                                           },
+                                           {
+                                             "id": "MODIFIER-13",
+                                             "name": "More Mango Sauce",
+                                             "sequence": 2,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 300
+                                           }
+                                         ]
+                                       }
+                                     ]
+                                   }
+                                 ]
+                               }
+                             ]
+                           },
+                           {
+                             "id": "SECTION-02",
+                             "name": "Regular Menu",
+                             "sequence": 2,
+                             "serviceHours": {
+                               "mon": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "12:00",
+                                     "endTime": "16:00"
+                                   }
+                                 ]
+                               },
+                               "tue": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "12:00",
+                                     "endTime": "16:00"
+                                   }
+                                 ]
+                               },
+                               "wed": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "12:00",
+                                     "endTime": "16:00"
+                                   }
+                                 ]
+                               },
+                               "thu": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "12:00",
+                                     "endTime": "16:00"
+                                   }
+                                 ]
+                               },
+                               "fri": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "12:00",
+                                     "endTime": "16:00"
+                                   }
+                                 ]
+                               },
+                               "sat": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "12:00",
+                                     "endTime": "16:00"
+                                   }
+                                 ]
+                               },
+                               "sun": {
+                                 "openPeriodType": "OpenPeriod",
+                                 "periods": [
+                                   {
+                                     "startTime": "12:00",
+                                     "endTime": "16:00"
+                                   }
+                                 ]
+                               }
+                             },
+                             "categories": [
+                               {
+                                 "id": "CATEGORY-04",
+                                 "name": "Drinks",
+                                 "sequence": 1,
+                                 "availableStatus": "AVAILABLE",
+                                 "items": [
+                                   {
+                                     "id": "ITEM-05",
+                                     "name": "Speciality Drinks",
+                                     "sequence": 1,
+                                     "availableStatus": "AVAILABLE",
+                                     "price": 1000,
+                                     "campaignInfo": null,
+                                     "description": "Choose from our Speciality Drinks",
+                                     "photos": [
+                                       "https://developer.grab.com/assets/default-menu/milk-shake.png"
+                                     ],
+                                     "modifierGroups": [
+                                       {
+                                         "id": "MODIFIERGROUP-05",
+                                         "name": "Choice of Drinks",
+                                         "sequence": 1,
+                                         "availableStatus": "AVAILABLE",
+                                         "selectionRangeMin": 1,
+                                         "selectionRangeMax": 1,
+                                         "modifiers": [
+                                           {
+                                             "id": "MODIFIER-14",
+                                             "name": "Chocolate Milkshake",
+                                             "sequence": 1,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 0
+                                           },
+                                           {
+                                             "id": "MODIFIER-15",
+                                             "name": "Strawberry Milkshake",
+                                             "sequence": 2,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 0
+                                           },
+                                           {
+                                             "id": "MODIFIER-16",
+                                             "name": "Vanilla Milkshake",
+                                             "sequence": 3,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 0
+                                           }
+                                         ]
+                                       }
+                                     ]
+                                   }
+                                 ]
+                               },
+                               {
+                                 "id": "CATEGORY-05",
+                                 "name": "Pasta",
+                                 "sequence": 2,
+                                 "availableStatus": "AVAILABLE",
+                                 "items": [
+                                   {
+                                     "id": "ITEM-06",
+                                     "name": "Grilled Chicken Cream Pasta",
+                                     "sequence": 1,
+                                     "availableStatus": "AVAILABLE",
+                                     "price": 10000,
+                                     "campaignInfo": null,
+                                     "description": "Grilled chicken with creamy tomato sauce spaghetti.",
+                                     "photos": [
+                                       "https://developer.grab.com/assets/default-menu/pasta.jpeg"
+                                     ],
+                                     "modifierGroups": [
+                                       {
+                                         "id": "MODIFIERGROUP-06",
+                                         "name": "Spiciness Level",
+                                         "sequence": 1,
+                                         "availableStatus": "AVAILABLE",
+                                         "selectionRangeMin": 1,
+                                         "selectionRangeMax": 1,
+                                         "modifiers": [
+                                           {
+                                             "id": "MODIFIER-17",
+                                             "name": "Low",
+                                             "sequence": 1,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 0
+                                           },
+                                           {
+                                             "id": "MODIFIER-18",
+                                             "name": "Medium",
+                                             "sequence": 2,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 0
+                                           },
+                                           {
+                                             "id": "MODIFIER-19",
+                                             "name": "Hot",
+                                             "sequence": 3,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 0
+                                           }
+                                         ]
+                                       }
+                                     ]
+                                   }
+                                 ]
+                               },
+                               {
+                                 "id": "CATEGORY-06",
+                                 "name": "Pizza",
+                                 "sequence": 3,
+                                 "availableStatus": "AVAILABLE",
+                                 "items": [
+                                   {
+                                     "id": "ITEM-07",
+                                     "name": "Mala Madness",
+                                     "sequence": 1,
+                                     "availableStatus": "AVAILABLE",
+                                     "price": 10000,
+                                     "campaignInfo": null,
+                                     "description": "Spicy. Spice up your day. Mala spice base, spam and bacon, topped with peanuts.",
+                                     "photos": [
+                                       "https://developer.grab.com/assets/default-menu/pizza.jpeg"
+                                     ],
+                                     "modifierGroups": [
+                                       {
+                                         "id": "MODIFIERGROUP-07",
+                                         "name": "Add on toppings",
+                                         "sequence": 1,
+                                         "availableStatus": "AVAILABLE",
+                                         "selectionRangeMin": 1,
+                                         "selectionRangeMax": 1,
+                                         "modifiers": [
+                                           {
+                                             "id": "MODIFIER-20",
+                                             "name": "Vegetables",
+                                             "sequence": 1,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 100
+                                           },
+                                           {
+                                             "id": "MODIFIER-21",
+                                             "name": "Crab Meat",
+                                             "sequence": 2,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 300
+                                           },
+                                           {
+                                             "id": "MODIFIER-22",
+                                             "name": "Pepperoni",
+                                             "sequence": 3,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 300
+                                           }
+                                         ]
+                                       }
+                                     ]
+                                   }
+                                 ]
+                               },
+                               {
+                                 "id": "CATEGORY-07",
+                                 "name": "Desserts",
+                                 "sequence": 4,
+                                 "availableStatus": "AVAILABLE",
+                                 "items": [
+                                   {
+                                     "id": "ITEM-08",
+                                     "name": "Panna Cotta DePizza",
+                                     "sequence": 1,
+                                     "availableStatus": "AVAILABLE",
+                                     "price": 10000,
+                                     "campaignInfo": null,
+                                     "description": "Homemade eggless custard served with wild berry mix & mango sauce",
+                                     "photos": [
+                                       "https://developer.grab.com/assets/default-menu/panna-cotta.jpeg"
+                                     ],
+                                     "modifierGroups": [
+                                       {
+                                         "id": "MODIFIERGROUP-08",
+                                         "name": "Toppings",
+                                         "sequence": 1,
+                                         "availableStatus": "AVAILABLE",
+                                         "selectionRangeMin": 1,
+                                         "selectionRangeMax": 1,
+                                         "modifiers": [
+                                           {
+                                             "id": "MODIFIER-23",
+                                             "name": "Caramel Sauce",
+                                             "sequence": 1,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 100
+                                           },
+                                           {
+                                             "id": "MODIFIER-24",
+                                             "name": "More Mango Sauce",
+                                             "sequence": 2,
+                                             "availableStatus": "AVAILABLE",
+                                             "price": 300
+                                           }
+                                         ]
+                                       }
+                                     ]
+                                   }
+                                 ]
+                               }
+                             ]
+                           }
+                         ]
+                       };
       
-      res.status(200).json(menuData);
+      // Set content type and return 200 response with JSON data
+      res.status(200).contentType('application/json').json(menuData);
+      
     } catch (error) {
       console.error('Error in handleGetMenu:', error);
       res.status(500).json({
@@ -269,36 +673,22 @@ class GrabRouter {
   // Submit order endpoint handler
   async handleSubmitOrder(req, res) {
     try {
-      console.log('POST /grab/order - Submitting order');
-      console.log('Request payload:', req.body);
+      console.log('POST /grab/order - Receiving order submission from Grab');
+      console.log('Request Headers:', req.headers);
+      console.log('Request Method:', req.method);
+      console.log('Request URL:', req.originalUrl);
+      console.log('Request Query Parameters:', req.query);
+      console.log('Request Body:', JSON.stringify(req.body, null, 2));
       
-      // TODO: Implement order submission logic
-      const orderData = req.body;
+      // Return 204 No Content - successful but no content returned
+      res.status(204).end();
       
-      // Basic validation
-      if (!orderData || !orderData.orderId) {
-        return res.status(400).json({
-          status: 'ERROR',
-          message: 'Bad Request: Order ID is required'
-        });
-      }
-
-      // Process order here
-      const processedOrder = {
-        orderId: orderData.orderId,
-        status: 'confirmed',
-        estimatedDeliveryTime: new Date(Date.now() + 30 * 60 * 1000) // 30 minutes from now
-      };
-
-      res.status(200).json({
-        status: 'OK',
-        data: processedOrder
-      });
     } catch (error) {
       console.error('Error in handleSubmitOrder:', error);
       res.status(500).json({
         status: 'ERROR',
-        message: 'Internal server error while processing order'
+        message: 'Internal server error while processing order submission',
+        error: error.message
       });
     }
   }
@@ -306,31 +696,22 @@ class GrabRouter {
   // Push order state endpoint handler
   async handlePushOrderState(req, res) {
     try {
-      console.log('POST /grab/order/state - Pushing order state');
-      console.log('Request payload:', req.body);
+      console.log('PUT /grab/order/state - Receiving order status updates from Grab');
+      console.log('Request Headers:', req.headers);
+      console.log('Request Method:', req.method);
+      console.log('Request URL:', req.originalUrl);
+      console.log('Request Query Parameters:', req.query);
+      console.log('Request Body:', JSON.stringify(req.body, null, 2));
       
-      const stateData = req.body;
+      // Return 204 No Content - successful but no content returned
+      res.status(204).end();
       
-      // Basic validation
-      if (!stateData || !stateData.orderId || !stateData.status) {
-        return res.status(400).json({
-          status: 'ERROR',
-          message: 'Bad Request: Order ID and status are required'
-        });
-      }
-
-      // TODO: Implement order state update logic
-      // Update order status in database
-      
-      res.status(200).json({
-        status: 'OK',
-        message: 'Order state updated successfully'
-      });
     } catch (error) {
       console.error('Error in handlePushOrderState:', error);
       res.status(500).json({
         status: 'ERROR',
-        message: 'Internal server error while updating order state'
+        message: 'Internal server error while processing order state updates',
+        error: error.message
       });
     }
   }
@@ -341,34 +722,42 @@ class GrabRouter {
       console.log('POST /grab/oauth/token - OAuth token request');
       console.log('Request payload:', req.body);
       
-      const tokenRequest = req.body;
-      
-      // Basic validation
-      if (!tokenRequest || !tokenRequest.grant_type) {
-        return res.status(400).json({
-          status: 'ERROR',
-          message: 'Bad Request: Grant type is required'
-        });
-      }
+      const axios = require('axios');
+      let data = JSON.stringify({
+        "client_id": "25b782bd0ced45239e913cc80b5fc0ea",
+        "client_secret": "y9Ox9oUqRTYtTQrd",
+        "grant_type": "client_credentials",
+        "scope": "food.partner_api"
+      });
 
-      // TODO: Implement OAuth token generation logic
-      const tokenResponse = {
-        access_token: 'sample_access_token_' + Date.now(),
-        token_type: 'Bearer',
-        expires_in: 3600,
-        scope: 'read write'
+      let config = {
+        method: 'post',
+        maxBodyLength: Infinity,
+        url: 'https://partner-api.grab.com/grabid/v1/oauth2/token',
+        headers: { 
+          'Content-Type': 'application/json'
+        },
+        data : data
       };
 
-      res.status(200).json({
-        status: 'OK',
-        data: tokenResponse
-      });
+      const response = await axios.request(config);
+      console.log('Grab OAuth response:', JSON.stringify(response.data));
+      
+      // Return the response directly
+      res.status(200).json(response.data);
+      
     } catch (error) {
       console.error('Error in handleOAuthToken:', error);
-      res.status(500).json({
-        status: 'ERROR',
-        message: 'Internal server error while processing OAuth token'
-      });
+      
+      if (error.response) {
+        // Forward the error response from Grab API
+        res.status(error.response.status).json(error.response.data);
+      } else {
+        res.status(500).json({
+          status: 'ERROR',
+          message: 'Internal server error while processing OAuth token'
+        });
+      }
     }
   }
 
@@ -396,26 +785,71 @@ class GrabRouter {
     }
   }
 
-  // Push Grab menu endpoint handler
+  // Push Grab menu webhook handler - receives menu data from Grab
   async handlePushGrabMenu(req, res) {
     try {
-      console.log('POST /grab/menu/push - Pushing menu to Grab');
-      console.log('Request payload:', req.body);
+      console.log('POST /grab/pushGrabMenu - Receiving menu data from Grab');
+      console.log('Request Headers:', req.headers);
+      console.log('Request Method:', req.method);
+      console.log('Request URL:', req.originalUrl);
+      console.log('Request Query Parameters:', req.query);
+      console.log('Request Body:', JSON.stringify(req.body, null, 2));
       
-      const menuData = req.body;
+      // Return 204 No Content - successful but no content returned
+      res.status(204).end();
       
-      // TODO: Implement menu push logic
-      // Push menu to Grab platform
-      
-      res.status(200).json({
-        status: 'OK',
-        message: 'Menu pushed to Grab successfully'
-      });
     } catch (error) {
       console.error('Error in handlePushGrabMenu:', error);
       res.status(500).json({
         status: 'ERROR',
-        message: 'Internal server error while pushing menu to Grab'
+        message: 'Internal server error while processing Grab menu data',
+        error: error.message
+      });
+    }
+  }
+
+  // Push Integration Status webhook handler - receives integration status from Grab
+  async handlePushIntegrationStatus(req, res) {
+    try {
+      console.log('POST /grab/pushIntegrationStatus - Receiving integration status from Grab');
+      console.log('Request Headers:', req.headers);
+      console.log('Request Method:', req.method);
+      console.log('Request URL:', req.originalUrl);
+      console.log('Request Query Parameters:', req.query);
+      console.log('Request Body:', JSON.stringify(req.body, null, 2));
+      
+      // Return 204 No Content - successful but no content returned
+      res.status(204).end();
+      
+    } catch (error) {
+      console.error('Error in handlePushIntegrationStatus:', error);
+      res.status(500).json({
+        status: 'ERROR',
+        message: 'Internal server error while processing Grab integration status',
+        error: error.message
+      });
+    }
+  }
+
+  // Menu Sync State webhook handler - receives menu sync status updates from Grab
+  async handleMenuSyncState(req, res) {
+    try {
+      console.log('POST /grab/menuSyncState - Receiving menu sync state from Grab');
+      console.log('Request Headers:', req.headers);
+      console.log('Request Method:', req.method);
+      console.log('Request URL:', req.originalUrl);
+      console.log('Request Query Parameters:', req.query);
+      console.log('Request Body:', JSON.stringify(req.body, null, 2));
+      
+      // Return 204 No Content - successful but no content returned
+      res.status(204).end();
+      
+    } catch (error) {
+      console.error('Error in handleMenuSyncState:', error);
+      res.status(500).json({
+        status: 'ERROR',
+        message: 'Internal server error while processing Grab menu sync state',
+        error: error.message
       });
     }
   }
