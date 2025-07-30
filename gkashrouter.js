@@ -45,7 +45,7 @@ class GKashRouter {
   initializeRoutes() {
 
     this.router.get('/about', function(req, res) {
-     res.json({ message: `Endpoint for GKash integration v1.13`});
+     res.json({ message: `Endpoint for GKash integration v1.15`});
     });
 
     //point related
