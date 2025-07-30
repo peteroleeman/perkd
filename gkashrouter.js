@@ -723,7 +723,7 @@ async sendONEOTP(phoneNumber) {
     const cleanPhoneNumber = phoneNumber.replace(/[\+\-]/g, '');
 
     // Construct the API URL
-    const apiUrl = `https://wba-api.onewaysms.com/api.aspx?apiusername=APIOOZLYLKO&apipassword=APIOOZLYLKOOOZL&mobile=${cleanPhoneNumber}&message=*T1529|${otp}`;
+    const apiUrl = `https://wba-api.onewaysms.com/api.aspx?apiusername=APIQBJEZYRS&apipassword=APIQBJEZYRSQBJE&mobile=${cleanPhoneNumber}&message=*T1795|${otp}`;
 
     // Make the GET request using Axios
     const response = await axios.get(apiUrl, {
