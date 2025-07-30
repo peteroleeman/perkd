@@ -95,6 +95,16 @@ class GKashRouter {
     // Soundbox publish e-Invoice endpoint
     this.router.post('/soundboxinvoice', this.publishSoundboxInvoice.bind(this));
 
+    // Loyalty cards endpoint
+    /*
+    POST /copyloyaltycards
+    {
+      "userId": "FU_1234567890",
+      "loyaltyCardIds": ["card_1", "card_2", "card_3"]
+    }
+    */
+    this.router.post('/copyloyaltycards', this.handleCopyLoyaltyCards.bind(this));
+
   }
 
 
@@ -1603,6 +1613,15 @@ async testSendOTP()
       }
       console.log('✅ [DEBUG] Step 8 Complete: Vouchers and credits processed');
 
+      // Step 8.5: Handle free vouchers (if provided in order model)
+      if (currentOrderModel.freevouchers && Array.isArray(currentOrderModel.freevouchers) && currentOrderModel.freevouchers.length > 0 && phoneString !== "0") {
+        console.log('🎁 [DEBUG] Step 8.5: Processing free vouchers...');
+        await this.handleFreeVouchers(currentOrderModel, phoneString);
+        console.log('✅ [DEBUG] Step 8.5 Complete: Free vouchers processed');
+      } else {
+        console.log('⏭️ [DEBUG] Step 8.5 Skipped: No free vouchers or invalid phone number');
+      }
+
       // Step 9: Add loyalty points
       console.log('⭐ [DEBUG] Step 9: Adding loyalty points...');
       const pointsAdded = await this.addOrderWithLoyaltyPoints(phoneString, currentOrderModel, currentStoreModel);
@@ -2072,6 +2091,87 @@ console.log("set payment status :", orderModel.paymentstatus);
     console.log("🎫 [VOUCHER] Successfully processed", processedVouchers.length, "out of", voucherItems.length, "voucher items");
   }
 
+  async handleFreeVouchers(orderModel, phoneString) {
+    console.log("🎁 [FREE_VOUCHER] ========== STARTING FREE VOUCHER PROCESSING ==========");
+    console.log("🎁 [FREE_VOUCHER] Order ID:", orderModel.id);
+    console.log("🎁 [FREE_VOUCHER] Phone String:", phoneString);
+    console.log("🎁 [FREE_VOUCHER] Free Vouchers Count:", orderModel.freevouchers?.length || 0);
+
+    if (!orderModel.freevouchers || !Array.isArray(orderModel.freevouchers) || orderModel.freevouchers.length === 0) {
+      console.log("🎁 [FREE_VOUCHER] No free vouchers to process");
+      return;
+    }
+
+    if (phoneString === "0") {
+      console.log("❌ [FREE_VOUCHER] Invalid phone number, cannot save vouchers");
+      return;
+    }
+
+    const userRef = fireStore.collection("user").doc(`FU_${phoneString}`);
+
+    // Process each free voucher
+    for (let index = 0; index < orderModel.freevouchers.length; index++) {
+      const voucherModel = orderModel.freevouchers[index];
+      console.log(`🎁 [FREE_VOUCHER] ========== Processing Free Voucher ${index + 1} ==========`);
+      
+      try {
+        console.log("🎁 [FREE_VOUCHER] Voucher Model:", JSON.stringify(voucherModel, null, 2));
+
+        // Check if user already has this voucher (by id)
+        if (voucherModel.id) {
+          console.log("🔍 [FREE_VOUCHER] Checking for existing voucher with id:", voucherModel.id);
+          
+          const existingVoucherDoc = await userRef
+            .collection("vouchers")
+            .doc(voucherModel.id)
+            .get();
+
+          if (existingVoucherDoc.exists) {
+            console.log("⚠️ [FREE_VOUCHER] User already has voucher with id:", voucherModel.id);
+            console.log("⏭️ [FREE_VOUCHER] Skipping duplicate voucher");
+            continue; // Skip this voucher
+          }
+        }
+
+        // Generate voucher ID if not provided
+        const voucherId = voucherModel.id;
+        console.log("🎁 [FREE_VOUCHER] Voucher ID:", voucherId);
+
+        // Copy voucher model directly and ensure it has an ID
+        // Set createdAt to tomorrow's date
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        
+        const voucherToSave = {
+          ...voucherModel,
+          id: voucherId,
+          createdAt: tomorrow
+        };
+
+        console.log("🎁 [FREE_VOUCHER] Copying voucher data:", JSON.stringify(voucherToSave, null, 2));
+
+        // Save voucher to user's vouchers collection
+        await userRef
+          .collection("vouchers")
+          .doc(voucherId)
+          .set(voucherToSave);
+
+        console.log("🎁 [FREE_VOUCHER] Successfully copied free voucher to Firestore");
+        
+        // Update the free voucher in the order model with the ID
+        orderModel.freevouchers[index].id = voucherId;
+        console.log("🎁 [FREE_VOUCHER] Updated voucher with ID:", voucherId);
+
+      } catch (error) {
+        console.error(`❌ [FREE_VOUCHER] Error processing free voucher ${index + 1}:`, error);
+        console.error("❌ [FREE_VOUCHER] Voucher data:", JSON.stringify(voucherModel, null, 2));
+      }
+    }
+
+    console.log("🎁 [FREE_VOUCHER] ========== COMPLETED FREE VOUCHER PROCESSING ==========");
+    console.log("🎁 [FREE_VOUCHER] Total vouchers processed:", orderModel.freevouchers.length);
+  }
+
   // Helper method to generate UUID (similar to Dart's Uuid().v4())
   generateUUID() {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
@@ -2079,6 +2179,169 @@ console.log("set payment status :", orderModel.paymentstatus);
       const v = c === 'x' ? r : (r & 0x3 | 0x8);
       return v.toString(16);
     });
+  }
+
+  async copyLoyaltyCardsToUser(userId, loyaltyCardIds = []) {
+    console.log("🎫 [LOYALTY_CARDS] ========== STARTING LOYALTY CARD COPYING ==========");
+    console.log("🎫 [LOYALTY_CARDS] User ID:", userId);
+    console.log("🎫 [LOYALTY_CARDS] Loyalty Card IDs:", loyaltyCardIds);
+
+    try {
+      const userRef = fireStore.collection('user').doc(userId);
+      const batch = fireStore.batch();
+
+      // Copy loyalty cards if any are configured
+      if (loyaltyCardIds.length > 0) {
+        console.log("🔍 [LOYALTY_CARDS] Checking which cards user already has...");
+        
+        // First check which cards the user already has
+        const userCardsSnapshot = await userRef
+          .collection('loyalty_cards')
+          .where(fireStore.FieldPath.documentId(), 'in', loyaltyCardIds)
+          .get();
+
+        // Create a set of existing card IDs for faster lookup
+        const existingCardIds = new Set(userCardsSnapshot.docs.map(doc => doc.id));
+        console.log("🎫 [LOYALTY_CARDS] Existing card IDs:", Array.from(existingCardIds));
+
+        // Filter out cards that user already has
+        const cardsToAdd = loyaltyCardIds.filter(cardId => !existingCardIds.has(cardId));
+        console.log("🎫 [LOYALTY_CARDS] Cards to add:", cardsToAdd);
+
+        if (cardsToAdd.length > 0) {
+          console.log("📥 [LOYALTY_CARDS] Fetching loyalty cards to copy...");
+          
+          // Get only the cards that need to be copied from loyalty_cards collection
+          const loyaltyCardsSnapshot = await fireStore.collection('loyalty_cards')
+            .where(fireStore.FieldPath.documentId(), 'in', cardsToAdd)
+            .get();
+
+          // Copy only new cards to user's collection
+          for (const doc of loyaltyCardsSnapshot.docs) {
+            const loyaltyCardData = doc.data();
+            const newLoyaltyCardRef = userRef
+              .collection('loyalty_cards')
+              .doc(doc.id);
+            
+            batch.set(newLoyaltyCardRef, loyaltyCardData);
+            console.log("🎫 [LOYALTY_CARDS] Queued card for copying:", doc.id);
+          }
+          console.log(`✅ [LOYALTY_CARDS] Queued ${cardsToAdd.length} new loyalty cards for copying`);
+        } else {
+          console.log("⏭️ [LOYALTY_CARDS] All loyalty cards already exist for user, skipping card copying");
+        }
+      } else {
+        console.log("⏭️ [LOYALTY_CARDS] No loyalty card IDs provided");
+      }
+
+      // Always attempt to copy relevant vouchers, regardless of loyalty card status
+      await this._copyRelevantVouchersToUser(userRef, batch);
+
+      // Commit the batch
+      console.log("💾 [LOYALTY_CARDS] Committing batch operations...");
+      await batch.commit();
+      console.log("✅ [LOYALTY_CARDS] Successfully copied loyalty cards and vouchers");
+      
+      console.log("🎫 [LOYALTY_CARDS] ========== COMPLETED LOYALTY CARD COPYING ==========");
+      return { success: true, message: "Loyalty cards and vouchers copied successfully" };
+
+    } catch (error) {
+      console.error("❌ [LOYALTY_CARDS] Error copying loyalty cards and vouchers:", error);
+      console.error("❌ [LOYALTY_CARDS] Error stack:", error.stack);
+      throw error;
+    }
+  }
+
+  async _copyRelevantVouchersToUser(userRef, batch) {
+    console.log("🎁 [RELEVANT_VOUCHERS] ========== COPYING RELEVANT VOUCHERS ==========");
+    
+    try {
+      // This method can be implemented based on your business logic
+      // For example, copy vouchers based on store, user preferences, etc.
+      
+      // Example implementation - copy global vouchers or store-specific vouchers
+      const relevantVouchersSnapshot = await fireStore.collection('global_vouchers')
+        .where('isActive', '==', true)
+        .where('giveOnSignup', '==', true)
+        .get();
+
+      if (!relevantVouchersSnapshot.empty) {
+        for (const doc of relevantVouchersSnapshot.docs) {
+          const voucherData = doc.data();
+          
+          // Check if user already has this voucher
+          const existingVoucherDoc = await userRef
+            .collection('vouchers')
+            .doc(doc.id)
+            .get();
+
+          if (!existingVoucherDoc.exists) {
+            const newVoucherRef = userRef
+              .collection('vouchers')
+              .doc(doc.id);
+            
+            // Add voucher with user-specific data
+            const userVoucherData = {
+              ...voucherData,
+              addedAt: new Date(),
+              isRedeemed: false,
+              redeemedAt: null
+            };
+            
+            batch.set(newVoucherRef, userVoucherData);
+            console.log("🎁 [RELEVANT_VOUCHERS] Queued voucher for copying:", doc.id);
+          } else {
+            console.log("⏭️ [RELEVANT_VOUCHERS] User already has voucher:", doc.id);
+          }
+        }
+        console.log(`✅ [RELEVANT_VOUCHERS] Queued ${relevantVouchersSnapshot.docs.length} relevant vouchers`);
+      } else {
+        console.log("⏭️ [RELEVANT_VOUCHERS] No relevant vouchers found");
+      }
+      
+         } catch (error) {
+       console.error("❌ [RELEVANT_VOUCHERS] Error copying relevant vouchers:", error);
+       // Don't throw here, just log the error so loyalty card copying can still proceed
+     }
+   }
+
+  async handleCopyLoyaltyCards(req, res) {
+    console.log("🎫 [API] ========== COPY LOYALTY CARDS ENDPOINT ==========");
+    
+    try {
+      const { userId, loyaltyCardIds } = req.body;
+      
+      // Validate required parameters
+      if (!userId) {
+        console.log("❌ [API] Missing required parameter: userId");
+        return res.status(400).json({
+          success: false,
+          error: "Missing required parameter: userId"
+        });
+      }
+
+      // loyaltyCardIds is optional, default to empty array
+      const cardIds = Array.isArray(loyaltyCardIds) ? loyaltyCardIds : [];
+      
+      console.log("🎫 [API] Request parameters:");
+      console.log("🎫 [API] - User ID:", userId);
+      console.log("🎫 [API] - Loyalty Card IDs:", cardIds);
+
+      // Call the main method
+      const result = await this.copyLoyaltyCardsToUser(userId, cardIds);
+      
+      console.log("✅ [API] Loyalty cards copying completed successfully");
+      res.status(200).json(result);
+      
+    } catch (error) {
+      console.error("❌ [API] Error in copy loyalty cards endpoint:", error);
+      console.error("❌ [API] Error stack:", error.stack);
+      
+      res.status(500).json({
+        success: false,
+        error: error.message || "Internal server error"
+      });
+    }
   }
 
   async handleCreditItems(orderModel, phoneString) {
