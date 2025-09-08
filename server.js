@@ -16,6 +16,7 @@ var VendingRouter = require("./vendingrouter");
 var RHBRouter = require("./rhbrouter");
 var MyInvoisRouter = require("./myinvoisrouter");
 var MyReportRouter = require("./myreportrouter");
+var UserRouter = require("./userrouter");
 var TicketRouter = require("./ticketrouter");
 var PosRouter = require('./posrouter');
 var GrabRouter = require('./grabrouter');
@@ -188,6 +189,10 @@ app.use('/myinvois', myInvois.getRouter());
 //for myreport
 const myReport = new MyReportRouter();
 app.use('/myreport', myReport.getRouter());
+
+//for user
+const myUser = new UserRouter();
+app.use('/user', myUser.getRouter());
 
 //for ticket service
 const myTicket = new TicketRouter();

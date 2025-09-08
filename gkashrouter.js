@@ -10,6 +10,7 @@ const firebase = require("./db");
 const https = require('https');
 const VendingRouter = require('./vendingrouter');
 const { UserModel } = require('./models/UserModel');
+const { StampCardModel } = require('./models/StampCardModel');
 const fireStore = firebase.firestore();
 
 const {
@@ -45,7 +46,7 @@ class GKashRouter {
   initializeRoutes() {
 
     this.router.get('/about', function(req, res) {
-     res.json({ message: `Endpoint for GKash integration v1.15`});
+     res.json({ message: `Endpoint for GKash integration v1.17`});
     });
 
     //point related
@@ -95,13 +96,26 @@ class GKashRouter {
     // Soundbox publish e-Invoice endpoint
     this.router.post('/soundboxinvoice', this.publishSoundboxInvoice.bind(this));
 
+    // Voucher limit management endpoints
+    this.router.post('/voucher/create-limit', this.createVoucherLimitEndpoint.bind(this));
+    this.router.post('/voucher/increment', this.incrementVoucherCountEndpoint.bind(this));
+    this.router.get('/voucher/check/:machineModelId/:voucherId', this.checkVoucherLimitEndpoint.bind(this));
+    this.router.get('/voucher/details/:machineModelId/:voucherId', this.getVoucherLimitDetailsEndpoint.bind(this));
+    this.router.get('/voucher/list-all-limits', this.listAllVoucherLimitsEndpoint.bind(this)); // ✨ NEW: List all voucher limits
+    this.router.delete('/voucher/remove/:machineModelId/:voucherId', this.removeVoucherLimitEndpoint.bind(this));
+
     // Loyalty cards endpoint
     /*
     POST /copyloyaltycards
     {
       "userId": "FU_1234567890",
-      "loyaltyCardIds": ["card_1", "card_2", "card_3"]
+      "loyaltyCardIds": ["card_1", "card_2", "card_3"],
+      "machineModelId": "MODEL_KIOSK_V2"  // Optional: For voucher limit checking
     }
+    
+    Note: If machineModelId is provided, the system will check voucher limits 
+    before copying vouchers to the user. Vouchers that have reached their 
+    limit for the specified machine model will be skipped.
     */
     this.router.post('/copyloyaltycards', this.handleCopyLoyaltyCards.bind(this));
 
@@ -1563,6 +1577,7 @@ async testSendOTP()
         }
       } else {
         console.log('⏭️ [DEBUG] Step 4.5 Skipped: Payment type', currentOrderModel.paymenttype, '- no GKash waiting needed');
+        currentOrderModel.paymentstatus = 0; //kPaid
       }
 
       // Step 5: Increment store counter and assign order ID
@@ -1627,11 +1642,25 @@ async testSendOTP()
       const pointsAdded = await this.addOrderWithLoyaltyPoints(phoneString, currentOrderModel, currentStoreModel);
       console.log('✅ [DEBUG] Step 9 Complete: Loyalty points added -', pointsAdded, 'points');
 
+      // Step 9.2: Award stamp card progress (if eligible)
+      try {
+        if (phoneString !== "0") {
+          console.log('🟩 [DEBUG] Step 9.2: Awarding stamp card (if eligible)... ',   parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice));
+          const orderTotalForStamp = parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice);
+          await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid);
+          console.log('✅ [DEBUG] Step 9.2 Complete: Stamp card award step executed');
+        } else {
+          console.log('⏭️ [DEBUG] Step 9.2 Skipped: No valid phone number for stamp card');
+        }
+      } catch (stampErr) {
+        console.error('❌ [DEBUG] Step 9.2 Failed: Error awarding stamp card:', stampErr);
+      }
+
       // Step 10: Handle vending machine specific logic
       if (isVendingOrder) {
-        console.log('🤖 [DEBUG] Step 10: Processing vending order specifics...');
-        console.log('📦 [DEBUG] Saving to pickup collection...');
-        await this.saveToPickupCollection(currentOrderModel);
+        // console.log('🤖 [DEBUG] Step 10: Processing vending order specifics...');
+        // console.log('📦 [DEBUG] Saving to pickup collection...');
+        // await this.saveToPickupCollection(currentOrderModel);
         console.log('📞 [DEBUG] Triggering vending payment callback...');
         await this.triggerVendingPaymentCallback(currentOrderModel, currentStoreModel);
         console.log('✅ [DEBUG] Step 10 Complete: Vending order processing done');
@@ -1662,6 +1691,11 @@ async testSendOTP()
         console.log('🔑 [DEBUG] Step 10.7: Retrieving pickup code for vending order...');
         await this.retrievePickupCode(currentOrderModel, phoneString);
         console.log('✅ [DEBUG] Step 10.7 Complete: Pickup code retrieved');
+
+        console.log('🤖 [DEBUG] Step 10.7: Processing vending order specifics...');
+        console.log('📦 [DEBUG] Step 10.7: Saving to pickup collection...');
+        await this.saveToPickupCollection(currentOrderModel);
+
       } else {
         console.log('⏭️ [DEBUG] Step 10.7 Skipped: No pickup code retrieval needed');
       }
@@ -1669,7 +1703,7 @@ async testSendOTP()
       // Step 11: Update order_temp with the latest order model
       console.log('🔄 [DEBUG] Step 11: Updating order_temp with latest order model... ' + storeId + " " + orderId);
 
-      await this.updateOrderTemp(storeId, orderId, currentOrderModel);
+      await this.updateOrderTempMyReport(storeId, orderId, currentOrderModel);
       console.log('✅ [DEBUG] Step 11 Complete: order_temp updated with processed data');
 
       // Step 12: Cleanup order (delete order_temp if requested)
@@ -2181,14 +2215,15 @@ console.log("set payment status :", orderModel.paymentstatus);
     });
   }
 
-  async copyLoyaltyCardsToUser(userId, loyaltyCardIds = []) {
+  async copyLoyaltyCardsToUser(userId, loyaltyCardIds = [], machineModelId = null) {
     console.log("🎫 [LOYALTY_CARDS] ========== STARTING LOYALTY CARD COPYING ==========");
     console.log("🎫 [LOYALTY_CARDS] User ID:", userId);
     console.log("🎫 [LOYALTY_CARDS] Loyalty Card IDs:", loyaltyCardIds);
+    console.log("🎫 [LOYALTY_CARDS] Machine Model ID:", machineModelId || "Not provided");
 
     try {
       const userRef = fireStore.collection('user').doc(userId);
-      const batch = fireStore.batch();
+      const cardBatch = fireStore.batch();
 
       // Copy loyalty cards if any are configured
       if (loyaltyCardIds.length > 0) {
@@ -2197,34 +2232,65 @@ console.log("set payment status :", orderModel.paymentstatus);
         // First check which cards the user already has
         const userCardsSnapshot = await userRef
           .collection('loyalty_cards')
-          .where(fireStore.FieldPath.documentId(), 'in', loyaltyCardIds)
+          .where('id', 'in', loyaltyCardIds)
           .get();
 
         // Create a set of existing card IDs for faster lookup
-        const existingCardIds = new Set(userCardsSnapshot.docs.map(doc => doc.id));
+        const existingCardIds = new Set(userCardsSnapshot.docs.map(doc => doc.data().id));
+        console.log("🎫 [LOYALTY_CARDS] User already has", existingCardIds.size, "loyalty cards");
         console.log("🎫 [LOYALTY_CARDS] Existing card IDs:", Array.from(existingCardIds));
 
         // Filter out cards that user already has
         const cardsToAdd = loyaltyCardIds.filter(cardId => !existingCardIds.has(cardId));
+        console.log("🎫 [LOYALTY_CARDS] ===== FILTERING RESULTS =====");
+        console.log("🎫 [LOYALTY_CARDS] Requested cards:", loyaltyCardIds);
+        console.log("🎫 [LOYALTY_CARDS] Already owned:", Array.from(existingCardIds));
         console.log("🎫 [LOYALTY_CARDS] Cards to add:", cardsToAdd);
+        console.log("🎫 [LOYALTY_CARDS] Total new cards to copy:", cardsToAdd.length);
 
         if (cardsToAdd.length > 0) {
           console.log("📥 [LOYALTY_CARDS] Fetching loyalty cards to copy...");
+          console.log("📥 [LOYALTY_CARDS] Cards to fetch:", cardsToAdd);
           
           // Get only the cards that need to be copied from loyalty_cards collection
-          const loyaltyCardsSnapshot = await fireStore.collection('loyalty_cards')
-            .where(fireStore.FieldPath.documentId(), 'in', cardsToAdd)
+          const loyaltyCardsSnapshot = await fireStore.collection('loyal_card')
+            .where('id', 'in', cardsToAdd)
             .get();
+            
+          console.log("📥 [LOYALTY_CARDS] Found", loyaltyCardsSnapshot.docs.length, "loyalty cards in database");
+          
+          // Debug: Show which cards were found vs requested
+          const foundCardIds = loyaltyCardsSnapshot.docs.map(doc => doc.data().id);
+          const missingCardIds = cardsToAdd.filter(cardId => !foundCardIds.includes(cardId));
+          
+          if (foundCardIds.length > 0) {
+            console.log("📥 [LOYALTY_CARDS] Found cards:", foundCardIds);
+          }
+          if (missingCardIds.length > 0) {
+            console.log("⚠️ [LOYALTY_CARDS] Missing cards (not found in database):", missingCardIds);
+          }
 
           // Copy only new cards to user's collection
           for (const doc of loyaltyCardsSnapshot.docs) {
             const loyaltyCardData = doc.data();
+            const cardId = loyaltyCardData.id;
             const newLoyaltyCardRef = userRef
               .collection('loyalty_cards')
-              .doc(doc.id);
+              .doc(cardId);
             
-            batch.set(newLoyaltyCardRef, loyaltyCardData);
-            console.log("🎫 [LOYALTY_CARDS] Queued card for copying:", doc.id);
+            cardBatch.set(newLoyaltyCardRef, loyaltyCardData);
+            
+            // 🐛 Enhanced debug info about the loyalty card being copied
+            console.log("🎫 [LOYALTY_CARDS] ===== COPYING LOYALTY CARD =====");
+            console.log("🎫 [LOYALTY_CARDS] Card ID:", cardId);
+            console.log("🎫 [LOYALTY_CARDS] Card Title:", loyaltyCardData.title || "No title");
+            console.log("🎫 [LOYALTY_CARDS] Card Type:", loyaltyCardData.type || "No type");
+            console.log("🎫 [LOYALTY_CARDS] Card Description:", loyaltyCardData.description || "No description");
+            console.log("🎫 [LOYALTY_CARDS] Card Status:", loyaltyCardData.isActive ? "Active" : "Inactive");
+            console.log("🎫 [LOYALTY_CARDS] Card Data:", JSON.stringify(loyaltyCardData, null, 2));
+            console.log("🎫 [LOYALTY_CARDS] Target User Doc:", userId);
+            console.log("🎫 [LOYALTY_CARDS] Target Collection: loyalty_cards");
+            console.log("🎫 [LOYALTY_CARDS] ===== END LOYALTY CARD INFO =====");
           }
           console.log(`✅ [LOYALTY_CARDS] Queued ${cardsToAdd.length} new loyalty cards for copying`);
         } else {
@@ -2234,13 +2300,33 @@ console.log("set payment status :", orderModel.paymentstatus);
         console.log("⏭️ [LOYALTY_CARDS] No loyalty card IDs provided");
       }
 
-      // Always attempt to copy relevant vouchers, regardless of loyalty card status
-      await this._copyRelevantVouchersToUser(userRef, batch);
+      // Phase 1: commit loyalty cards first to ensure subsequent voucher logic sees them
+      console.log("💾 [LOYALTY_CARDS] ===== COMMITTING LOYALTY CARDS BATCH =====");
+      await cardBatch.commit();
+      console.log("✅ [LOYALTY_CARDS] Loyalty cards batch committed");
 
-      // Commit the batch
-      console.log("💾 [LOYALTY_CARDS] Committing batch operations...");
-      await batch.commit();
-      console.log("✅ [LOYALTY_CARDS] Successfully copied loyalty cards and vouchers");
+      // Phase 2a: copy relevant vouchers in a fresh batch so reads include committed cards
+      const voucherBatch = fireStore.batch();
+      await this._copyRelevantVouchersToUser(userRef, voucherBatch, machineModelId);
+
+      console.log("💾 [VOUCHERS] ===== COMMITTING VOUCHERS BATCH =====");
+      await voucherBatch.commit();
+      console.log("✅ [VOUCHERS] Vouchers batch committed");
+
+      // Phase 2b: copy relevant stamp cards from crm_stamp_card into user/stampcard
+      console.log("💾 [STAMP] ===== COPYING RELEVANT STAMP CARDS =====");
+      const stampBatch = fireStore.batch();
+      await this._copyRelevantStampCardsToUser(userRef, stampBatch, loyaltyCardIds);
+      console.log("💾 [STAMP] ===== COMMITTING STAMP CARDS BATCH =====");
+      await stampBatch.commit();
+      console.log("✅ [STAMP] Stamp cards batch committed");
+
+      // Step 10.8: Move temp promotions to used promotions for this user
+      console.log("🔟.8 [PROMO] ===== MOVING temp_promotion TO used_promotion =====");
+      await this._moveTempPromotionsToUsed(userRef);
+      console.log("✅ [PROMO] Moved temp promotions to used promotions (if any)");
+
+      console.log("✅ [LOYALTY_CARDS] Successfully copied loyalty cards and vouchers for user:", userId);
       
       console.log("🎫 [LOYALTY_CARDS] ========== COMPLETED LOYALTY CARD COPYING ==========");
       return { success: true, message: "Loyalty cards and vouchers copied successfully" };
@@ -2252,64 +2338,405 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async _copyRelevantVouchersToUser(userRef, batch) {
+  async _copyRelevantVouchersToUser(userRef, batch, machineModelId = null) {
     console.log("🎁 [RELEVANT_VOUCHERS] ========== COPYING RELEVANT VOUCHERS ==========");
+    console.log("🎁 [RELEVANT_VOUCHERS] Machine Model ID:", machineModelId || "Not provided");
     
     try {
-      // This method can be implemented based on your business logic
-      // For example, copy vouchers based on store, user preferences, etc.
+      // 1. Get all existing user vouchers to avoid duplicates
+      console.log("🔍 [RELEVANT_VOUCHERS] Getting existing user vouchers...");
+      const existingUserVouchers = await userRef.collection('vouchers').get();
+      const existingVoucherIds = new Set(existingUserVouchers.docs.map(doc => doc.id));
+      console.log("🔍 [RELEVANT_VOUCHERS] User has", existingVoucherIds.size, "existing vouchers:", Array.from(existingVoucherIds));
       
-      // Example implementation - copy global vouchers or store-specific vouchers
-      const relevantVouchersSnapshot = await fireStore.collection('global_vouchers')
-        .where('isActive', '==', true)
-        .where('giveOnSignup', '==', true)
-        .get();
+      // 2. Get existing user loyalty cards to check for giveOnLogin logic
+      console.log("🔍 [RELEVANT_VOUCHERS] Getting existing user loyalty cards...");
+      const existingUserCards = await userRef.collection('loyalty_cards').get();
+      const existingCardIds = new Set(existingUserCards.docs.map(doc => doc.id));
+      console.log("🔍 [RELEVANT_VOUCHERS] User has", existingCardIds.size, "existing loyalty cards:", Array.from(existingCardIds));
 
-      if (!relevantVouchersSnapshot.empty) {
-        for (const doc of relevantVouchersSnapshot.docs) {
-          const voucherData = doc.data();
+      // 3. Get all vouchers from crm_voucher collection
+      console.log("🔍 [RELEVANT_VOUCHERS] Fetching all vouchers from crm_voucher collection...");
+      const allVouchersSnapshot = await fireStore.collection('crm_voucher').get();
+      console.log("🔍 [RELEVANT_VOUCHERS] Found", allVouchersSnapshot.docs.length, "total vouchers in crm_voucher collection");
+      
+      let vouchersProcessed = 0;
+      let vouchersSkippedAlreadyExists = 0;
+      let vouchersSkippedExpired = 0;
+      let vouchersSkippedLimitReached = 0;
+      let vouchersSkippedNoMatchingCard = 0;
+      let vouchersQueued = 0;
+      let loyaltyCardsQueued = 0;
+      let voucherCountsIncremented = 0;
+      let voucherCountIncrementFailed = 0;
+
+      for (const voucherDoc of allVouchersSnapshot.docs) {
+        const voucherData = voucherDoc.data();
+        const voucherId = voucherDoc.id;
+        vouchersProcessed++;
+        
+        console.log(`🎁 [VOUCHER_${vouchersProcessed}] Processing voucher: ${voucherId}`);
+        
+        // Skip if user already has this voucher
+        if (existingVoucherIds.has(voucherId)) {
+          vouchersSkippedAlreadyExists++;
+          console.log(`⏭️ [VOUCHER_${vouchersProcessed}] User already has voucher: ${voucherId}`);
+          continue;
+        }
+        
+        const voucherStoreId = voucherData.storeId || voucherData.store_id || '';
+        const voucherCompanyId = voucherData.companyId || voucherData.company_id || '';
+        const voucherMachineId = voucherData.machineId || voucherData.machine_id || '';
+        const giveOnLogin = voucherData.giveOnLogin || voucherData.give_on_login || false;
+        const expiresAt = voucherData.expiresAt || voucherData.expires_at;
+        
+        // Validate voucher storeId and companyId against user's loyalty cards
+        let hasMatchingLoyaltyCard = false;
+        let loyaltyCardValidationReason = "";
+        
+        if (voucherStoreId || voucherCompanyId) {
+          // Check if user has a loyalty card that matches the voucher's store/company
+          for (const cardDoc of existingUserCards.docs) {
+            const cardData = cardDoc.data();
+            const cardStoreId = cardData.storeId || cardData.storeid || '';
+            const cardCompanyId = cardData.companyId || cardData.companyid || '';
+            
+            // Match if either storeId or companyId matches (when they are set)
+            const storeMatches = voucherStoreId && cardStoreId && voucherStoreId === cardStoreId;
+            const companyMatches = voucherCompanyId && cardCompanyId && voucherCompanyId === cardCompanyId;
+            
+            if (storeMatches || companyMatches) {
+              hasMatchingLoyaltyCard = true;
+              loyaltyCardValidationReason = storeMatches 
+                ? `matches loyalty card store: ${cardStoreId}` 
+                : `matches loyalty card company: ${cardCompanyId}`;
+              break;
+            }
+          }
           
-          // Check if user already has this voucher
-          const existingVoucherDoc = await userRef
-            .collection('vouchers')
-            .doc(doc.id)
-            .get();
-
-          if (!existingVoucherDoc.exists) {
-            const newVoucherRef = userRef
-              .collection('vouchers')
-              .doc(doc.id);
-            
-            // Add voucher with user-specific data
-            const userVoucherData = {
-              ...voucherData,
-              addedAt: new Date(),
-              isRedeemed: false,
-              redeemedAt: null
-            };
-            
-            batch.set(newVoucherRef, userVoucherData);
-            console.log("🎁 [RELEVANT_VOUCHERS] Queued voucher for copying:", doc.id);
+          if (!hasMatchingLoyaltyCard) {
+            vouchersSkippedNoMatchingCard++;
+            console.log(`❌ [VOUCHER_${vouchersProcessed}] Skipping voucher ${voucherId}: No matching loyalty card found for store: ${voucherStoreId} or company: ${voucherCompanyId}`);
+            continue; // Skip this voucher
           } else {
-            console.log("⏭️ [RELEVANT_VOUCHERS] User already has voucher:", doc.id);
+            console.log(`✅ [VOUCHER_${vouchersProcessed}] Voucher ${voucherId} validation passed: ${loyaltyCardValidationReason}`);
           }
         }
-        console.log(`✅ [RELEVANT_VOUCHERS] Queued ${relevantVouchersSnapshot.docs.length} relevant vouchers`);
-      } else {
-        console.log("⏭️ [RELEVANT_VOUCHERS] No relevant vouchers found");
+        
+        let shouldCopyVoucher = false;
+        let voucherReason = "";
+        
+        // Priority 1: If voucher is set with giveOnLogin, copy regardless of storeId and expiry
+        if (giveOnLogin) {
+          shouldCopyVoucher = true;
+          voucherReason = "giveOnLogin flag is true";
+          console.log(`✅ [VOUCHER_${vouchersProcessed}] Found giveOnLogin voucher: ${voucherId}`);
+          
+          // Special condition: If giveOnLogin voucher has storeId and user doesn't have that loyalty card,
+          // copy the loyalty card as well
+          if (voucherStoreId && !existingCardIds.has(voucherStoreId)) {
+            console.log(`🎫 [VOUCHER_${vouchersProcessed}] giveOnLogin voucher needs loyalty card: ${voucherStoreId}`);
+            const copied = await this._copyLoyaltyCardIfExists(userRef, batch, voucherStoreId);
+            if (copied) {
+              loyaltyCardsQueued++;
+              existingCardIds.add(voucherStoreId); // Update our tracking
+            }
+          }
+        }
+        // Priority 2: If voucher machineId contains this machine's ID and voucher is not expired
+        else if (voucherMachineId && machineModelId) {
+          // Check if voucher is expired
+          let isExpired = false;
+          if (expiresAt) {
+            const expiryDate = expiresAt.toDate ? expiresAt.toDate() : new Date(expiresAt);
+            isExpired = new Date() > expiryDate;
+          }
+          
+          if (!isExpired) {
+            // Check if machine ID matches (can be comma-separated list)
+            const machineIds = voucherMachineId.split(',').map(id => id.trim());
+            if (machineIds.includes(machineModelId)) {
+              shouldCopyVoucher = true;
+              voucherReason = `machine-specific voucher for machine: ${machineModelId}`;
+              console.log(`✅ [VOUCHER_${vouchersProcessed}] Found machine-specific voucher: ${voucherId} for machine: ${machineModelId}`);
+            }
+          } else {
+            vouchersSkippedExpired++;
+            console.log(`⏭️ [VOUCHER_${vouchersProcessed}] Skipping expired machine voucher: ${voucherId} (expired: ${expiresAt})`);
+          }
+        }
+        // Priority 3: If storeId is set and voucher is not expired  
+        else if (voucherStoreId) {
+          // Check if voucher is expired
+          let isExpired = false;
+          if (expiresAt) {
+            const expiryDate = expiresAt.toDate ? expiresAt.toDate() : new Date(expiresAt);
+            isExpired = new Date() > expiryDate;
+          }
+          
+          if (!isExpired) {
+            // For now, copy all store-specific vouchers (you can add store filtering logic here)
+            shouldCopyVoucher = true;
+            voucherReason = `store-specific voucher for store: ${voucherStoreId}`;
+            console.log(`✅ [VOUCHER_${vouchersProcessed}] Found store-specific voucher: ${voucherId} for store: ${voucherStoreId}`);
+          } else {
+            vouchersSkippedExpired++;
+            console.log(`⏭️ [VOUCHER_${vouchersProcessed}] Skipping expired store voucher: ${voucherId} (expired: ${expiresAt})`);
+          }
+        }
+        // Priority 4: If voucher companyId matches and voucher is not expired
+        else if (voucherCompanyId) {
+          // Check if voucher is expired
+          let isExpired = false;
+          if (expiresAt) {
+            const expiryDate = expiresAt.toDate ? expiresAt.toDate() : new Date(expiresAt);
+            isExpired = new Date() > expiryDate;
+          }
+          
+          if (!isExpired) {
+            // For now, copy all company-specific vouchers (you can add company filtering logic here)
+            shouldCopyVoucher = true;
+            voucherReason = `company-specific voucher for company: ${voucherCompanyId}`;
+            console.log(`✅ [VOUCHER_${vouchersProcessed}] Found company-specific voucher: ${voucherId} for company: ${voucherCompanyId}`);
+          } else {
+            vouchersSkippedExpired++;
+            console.log(`⏭️ [VOUCHER_${vouchersProcessed}] Skipping expired company voucher: ${voucherId} (expired: ${expiresAt})`);
+          }
+        }
+        
+        if (shouldCopyVoucher) {
+          // ✨ Check voucher limit before copying
+          let limitCheckPassed = true;
+          let limitCheckMessage = "No machine model provided - proceeding without limit check";
+
+          if (machineModelId) {
+            console.log(`🔍 [VOUCHER_LIMIT] Checking limit for voucher ${voucherId} on machine model ${machineModelId}...`);
+            
+            try {
+              const limitResult = await this.checkVoucherLimit(machineModelId, voucherId);
+              
+              if (limitResult.success && limitResult.limitReached) {
+                limitCheckPassed = false;
+                limitCheckMessage = `Limit reached (${limitResult.count}/${limitResult.limit})`;
+                vouchersSkippedLimitReached++;
+                console.log(`⚠️ [VOUCHER_LIMIT] Skipping voucher ${voucherId}: ${limitCheckMessage}`);
+              } else if (limitResult.success && !limitResult.limitReached) {
+                limitCheckMessage = limitResult.limit !== null 
+                  ? `Limit OK (${limitResult.count}/${limitResult.limit})` 
+                  : "No limit set";
+                console.log(`✅ [VOUCHER_LIMIT] Voucher ${voucherId}: ${limitCheckMessage}`);
+              } else {
+                // If there's an error checking the limit, log it but proceed with copying
+                console.log(`⚠️ [VOUCHER_LIMIT] Error checking limit for voucher ${voucherId}, proceeding anyway: ${limitResult.message}`);
+                limitCheckMessage = "Limit check failed - proceeding anyway";
+              }
+            } catch (limitError) {
+              console.error(`❌ [VOUCHER_LIMIT] Exception checking limit for voucher ${voucherId}:`, limitError);
+              limitCheckMessage = "Limit check exception - proceeding anyway";
+              // Proceed with copying if there's an exception
+            }
+          }
+
+          if (limitCheckPassed) {
+            // Prepare voucher data for copying
+            const newVoucherData = { ...voucherData };
+            
+            // Only set default expiry date if it hasn't been set and it's not a giveOnLogin voucher
+            if (!expiresAt && !giveOnLogin) {
+              // Set default expiry to 2 years from now only if no expiry date exists
+              const defaultExpiry = new Date();
+              defaultExpiry.setFullYear(defaultExpiry.getFullYear() + 2);
+              newVoucherData.expiresAt = defaultExpiry;
+              console.log(`📅 [VOUCHER_${vouchersProcessed}] Set expiry date for voucher ${voucherId} to: ${defaultExpiry}`);
+            } else if (expiresAt) {
+              const expiryDate = expiresAt.toDate ? expiresAt.toDate() : new Date(expiresAt);
+              console.log(`📅 [VOUCHER_${vouchersProcessed}] Voucher ${voucherId} already has expiry date: ${expiryDate}`);
+            }
+            
+            // Ensure voucher is not redeemed
+            newVoucherData.isRedeemed = false;
+            delete newVoucherData.redeemedAt;
+            newVoucherData.redeemedCount = 0;
+            newVoucherData.addedAt = new Date();
+            newVoucherData.machineModelId = machineModelId || null;
+            newVoucherData.limitCheckResult = limitCheckMessage;
+            newVoucherData.copyReason = voucherReason;
+            
+            // Copy voucher to user's collection
+            const newVoucherRef = userRef.collection('vouchers').doc(voucherId);
+            batch.set(newVoucherRef, newVoucherData);
+            vouchersQueued++;
+            
+            console.log(`🎁 [VOUCHER_${vouchersProcessed}] Queued voucher for copying: ${voucherId} (${voucherReason}) [${limitCheckMessage}]`);
+            
+            // ✨ Increment voucher count after successful copying (if machineModelId provided)
+            if (machineModelId) {
+              try {
+                console.log(`📈 [VOUCHER_COUNT] Incrementing count for voucher ${voucherId} on machine ${machineModelId}...`);
+                const incrementResult = await this.incrementVoucherCount(machineModelId, voucherId);
+                
+                if (incrementResult.success) {
+                  voucherCountsIncremented++;
+                  console.log(`✅ [VOUCHER_COUNT] Successfully incremented count for ${voucherId}: ${incrementResult.count}/${incrementResult.limit || 'unlimited'}`);
+                } else {
+                  voucherCountIncrementFailed++;
+                  console.log(`⚠️ [VOUCHER_COUNT] Failed to increment count for ${voucherId}: ${incrementResult.message}`);
+                }
+              } catch (incrementError) {
+                voucherCountIncrementFailed++;
+                console.error(`❌ [VOUCHER_COUNT] Exception incrementing count for ${voucherId}:`, incrementError);
+                // Don't fail the whole process if count increment fails
+              }
+            } else {
+              console.log(`ℹ️ [VOUCHER_COUNT] No machine model provided - skipping count increment for ${voucherId}`);
+            }
+          }
+        }
       }
       
-         } catch (error) {
-       console.error("❌ [RELEVANT_VOUCHERS] Error copying relevant vouchers:", error);
-       // Don't throw here, just log the error so loyalty card copying can still proceed
-     }
-   }
+      console.log(`📊 [RELEVANT_VOUCHERS] ===== FINAL SUMMARY =====`);
+      console.log(`   - Total vouchers processed: ${vouchersProcessed}`);
+      console.log(`   - Vouchers queued for copying: ${vouchersQueued}`);
+      console.log(`   - Loyalty cards queued: ${loyaltyCardsQueued}`);
+      console.log(`   - Voucher counts incremented: ${voucherCountsIncremented}`);
+      console.log(`   - Voucher count increment failed: ${voucherCountIncrementFailed}`);
+      console.log(`   - Skipped (already exists): ${vouchersSkippedAlreadyExists}`);
+      console.log(`   - Skipped (expired): ${vouchersSkippedExpired}`);
+      console.log(`   - Skipped (limit reached): ${vouchersSkippedLimitReached}`);
+      console.log(`   - Skipped (no matching loyalty card): ${vouchersSkippedNoMatchingCard}`);
+      console.log(`📊 [RELEVANT_VOUCHERS] ===== END SUMMARY =====`);
+      
+    } catch (error) {
+      console.error("❌ [RELEVANT_VOUCHERS] Error copying relevant vouchers:", error);
+      console.error("❌ [RELEVANT_VOUCHERS] Error stack:", error.stack);
+      // Don't throw here, just log the error so loyalty card copying can still proceed
+    }
+  }
+
+  async _copyRelevantStampCardsToUser(userRef, batch, loyaltyCardIds = []) {
+    try {
+      console.log("🎟️ [STAMP] ========== COPYING RELEVANT STAMP CARDS ==========");
+      const userId = userRef.id;
+
+      // 1) Read existing user stamp cards to avoid duplicates
+      const existingSnap = await userRef.collection('stampcard').get();
+      const existingIds = new Set(existingSnap.docs.map(d => d.id));
+      console.log("🎟️ [STAMP] Existing user stamp cards:", existingIds.size);
+
+      // 2) Fetch all active stamp cards from crm_stamp_card
+      const crmSnap = await fireStore.collection('crm_stamp_card')
+        .where('status', 'in', ['in_progress', 'completed', 'active'])
+        .get();
+      console.log("🎟️ [STAMP] Found", crmSnap.docs.length, "cards in crm_stamp_card");
+
+      let queued = 0;
+
+      for (const doc of crmSnap.docs) {
+        const data = doc.data() || {};
+        const loyaltyCardId = data.loyaltyCardId || '';
+
+        // If request specified loyaltyCardIds, only take those matching
+        if (Array.isArray(loyaltyCardIds) && loyaltyCardIds.length > 0) {
+          if (!loyaltyCardId || !loyaltyCardIds.includes(loyaltyCardId)) {
+            continue;
+          }
+        }
+
+        const targetId = data.id || doc.id;
+        if (!targetId) continue;
+        if (existingIds.has(targetId)) {
+          continue; // skip duplicate
+        }
+
+        // Normalize with model then map to Firestore-friendly object
+        let model;
+        try {
+          model = StampCardModel.fromMap({ id: targetId, ...data });
+        } catch (_) {
+          model = new StampCardModel({ id: targetId, ...data });
+        }
+
+        // Force userId on copy
+        model.userId = userId;
+
+        const dstRef = userRef.collection('stampcard').doc(model.id);
+        batch.set(dstRef, model.toMap());
+        queued++;
+      }
+
+      console.log(`🎟️ [STAMP] Queued ${queued} stamp cards for copying`);
+    } catch (error) {
+      console.error("❌ [STAMP] Error copying stamp cards:", error);
+    }
+  }
+
+  async _moveTempPromotionsToUsed(userRef) {
+    try {
+      const tempSnap = await userRef.collection('temp_promotion').get();
+      if (tempSnap.empty) {
+        console.log('🔟.8 [PROMO] No temp promotions to move');
+        return;
+      }
+
+      let batch = fireStore.batch();
+      let ops = 0;
+      let moved = 0;
+
+      for (const doc of tempSnap.docs) {
+        const data = doc.data() || {};
+        const usedRef = userRef.collection('used_promotion').doc(doc.id);
+        batch.set(usedRef, { ...data, movedAt: new Date() });
+        batch.delete(doc.ref);
+        ops += 2;
+        moved += 1;
+
+        // Commit periodically to respect Firestore batch limits
+        if (ops >= 400) {
+          await batch.commit();
+          batch = fireStore.batch();
+          ops = 0;
+        }
+      }
+
+      if (ops > 0) {
+        await batch.commit();
+      }
+
+      console.log(`🔟.8 [PROMO] Moved ${moved} temp promotions to used_promotion`);
+    } catch (error) {
+      console.error('❌ [PROMO] Error moving temp promotions to used promotions:', error);
+    }
+  }
+
+  async _copyLoyaltyCardIfExists(userRef, batch, cardId) {
+    try {
+      console.log(`🎫 [LOYALTY_CARD_COPY] Attempting to copy loyalty card: ${cardId}`);
+      
+      // Get the loyalty card from loyal_card collection
+      const loyaltyCardDoc = await fireStore.collection('loyal_card').doc(cardId).get();
+      
+      if (loyaltyCardDoc.exists) {
+        const loyaltyCardData = loyaltyCardDoc.data();
+        const newLoyaltyCardRef = userRef.collection('loyalty_cards').doc(cardId);
+        
+        batch.set(newLoyaltyCardRef, loyaltyCardData);
+        console.log(`✅ [LOYALTY_CARD_COPY] Queued loyalty card for copying: ${cardId}`);
+        return true;
+      } else {
+        console.log(`⚠️ [LOYALTY_CARD_COPY] Loyalty card not found in database: ${cardId}`);
+        return false;
+      }
+    } catch (error) {
+      console.error(`❌ [LOYALTY_CARD_COPY] Error copying loyalty card ${cardId}:`, error);
+      return false;
+    }
+  }
 
   async handleCopyLoyaltyCards(req, res) {
     console.log("🎫 [API] ========== COPY LOYALTY CARDS ENDPOINT ==========");
     
     try {
-      const { userId, loyaltyCardIds } = req.body;
+      const { userId, loyaltyCardIds, machineModelId } = req.body;
       
       // Validate required parameters
       if (!userId) {
@@ -2326,9 +2753,10 @@ console.log("set payment status :", orderModel.paymentstatus);
       console.log("🎫 [API] Request parameters:");
       console.log("🎫 [API] - User ID:", userId);
       console.log("🎫 [API] - Loyalty Card IDs:", cardIds);
+      console.log("🎫 [API] - Machine Model ID:", machineModelId || "Not provided");
 
-      // Call the main method
-      const result = await this.copyLoyaltyCardsToUser(userId, cardIds);
+      // Call the main method with machine model ID
+      const result = await this.copyLoyaltyCardsToUser(userId, cardIds, machineModelId);
       
       console.log("✅ [API] Loyalty cards copying completed successfully");
       res.status(200).json(result);
@@ -2541,12 +2969,155 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
+  async loadUserStampCards(phoneString) {
+    try {
+      const userId = `FU_${phoneString}`;
+      const snap = await fireStore
+        .collection('user')
+        .doc(userId)
+        .collection('stampcard')
+        .where('status', 'in', ['in_progress', 'completed'])
+        .get();
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (e) {
+      console.error('Error loading user stamp cards:', e);
+      return [];
+    }
+  }
+
+  async awardStampForOrder(phoneString, orderId, orderTotal, storeId) {
+    try {
+      const userId = `FU_${phoneString}`;
+      console.log('🟩 [STAMP] awardStampForOrder: start', {
+        userId,
+        phoneString,
+        orderId,
+        orderTotal: Number(orderTotal || 0),
+        storeId
+      });
+      const cardsQuery = await fireStore
+        .collection('user')
+        .doc(userId)
+        .collection('stampcard')
+        .where('status', '==', 'in_progress')
+        .where('storeId', '==', storeId)
+        .get();
+
+      if (cardsQuery.empty) {
+        console.log(`🟨 [STAMP] No in-progress stamp cards for user: ${userId} and storeId: ${storeId}`);
+        return;
+      }
+
+      console.log('🟩 [STAMP] In-progress cards found for $userId: ', cardsQuery.size);
+
+      for (const cardDoc of cardsQuery.docs) {
+        const cardRef = cardDoc.ref;
+        let awarded = false;
+        let skipReason = 'none';
+        const preCard = cardDoc.data() || {};
+        console.log('🟩 [STAMP] Evaluating card', cardDoc.id, {
+          status: preCard.status,
+          conditionType: preCard.conditionType,
+          storeId: preCard.storeId,
+          thresholdAmount: preCard.conditionParams?.thresholdAmount,
+          totalStamps: preCard.totalStamps,
+          expiresAt: preCard.expiresAt,
+          stampsLength: Array.isArray(preCard.stamps) ? preCard.stamps.length : 0,
+          relatedOrderIdsCount: Array.isArray(preCard.relatedOrderIds) ? preCard.relatedOrderIds.length : 0
+        });
+
+        await fireStore.runTransaction(async (trx) => {
+          const snap = await trx.get(cardRef);
+          if (!snap.exists) { skipReason = 'card_not_found'; return; }
+          const card = snap.data() || {};
+
+          if (card.status !== 'in_progress') { skipReason = 'status_not_in_progress'; return; }
+
+          let isExpired = false;
+          try {
+            if (card.expiresAt && typeof card.expiresAt.toDate === 'function') {
+              isExpired = new Date() > card.expiresAt.toDate();
+            }
+          } catch (_) {
+            // ignore
+          }
+          if (isExpired) { skipReason = 'card_expired'; return; }
+
+          const relatedOrderIds = Array.isArray(card.relatedOrderIds) ? card.relatedOrderIds.slice() : [];
+          if (relatedOrderIds.includes(orderId)) { skipReason = 'order_already_counted'; return; }
+
+          if (card.conditionType !== 'spend_threshold') { skipReason = 'unsupported_conditionType'; return; }
+          const threshold = Number(card.conditionParams && card.conditionParams.thresholdAmount ? card.conditionParams.thresholdAmount : 0);
+          const numericOrderTotal = Number(orderTotal || 0);
+          console.log('🟩 [STAMP] Threshold check:', { orderTotal: numericOrderTotal, threshold });
+          if (numericOrderTotal < threshold || threshold <= 0) { skipReason = 'below_threshold'; return; }
+
+          const stamps = Array.isArray(card.stamps) ? card.stamps.slice() : [];
+          const emptyIndices = [];
+          for (let i = 0; i < stamps.length; i++) {
+            if (!stamps[i] || !stamps[i].earnedAt) { emptyIndices.push(i); }
+          }
+          const maxAwardableByAmount = Math.floor(numericOrderTotal / threshold);
+          const stampsToAward = Math.min(maxAwardableByAmount, emptyIndices.length);
+          console.log('🟩 [STAMP] Stamp slot selection:', { totalSlots: stamps.length, emptySlots: emptyIndices.length, maxAwardableByAmount, stampsToAward });
+          if (stampsToAward <= 0) { skipReason = emptyIndices.length === 0 ? 'no_empty_stamp_slot' : 'below_threshold'; return; }
+
+          for (let i = 0; i < stampsToAward; i++) {
+            const idx = emptyIndices[i];
+            stamps[idx] = {
+              index: stamps[idx] && stamps[idx].index != null ? stamps[idx].index : idx,
+              earnedAt: new Date(),
+              orderId: orderId
+            };
+          }
+
+          const earnedCount = stamps.filter(s => !!(s && s.earnedAt)).length;
+          const totalStamps = Number(card.totalStamps || 0);
+
+          const updates = {
+            stamps: stamps,
+            relatedOrderIds: relatedOrderIds.includes(orderId) ? relatedOrderIds : relatedOrderIds.concat([orderId])
+          };
+
+          if (earnedCount >= totalStamps && totalStamps > 0) {
+            updates.status = 'completed';
+            updates.completedAt = new Date();
+          }
+
+          console.log('🟩 [STAMP] Applying updates:', {
+            cardId: cardDoc.id,
+            earnedCount,
+            totalStamps,
+            willComplete: earnedCount >= totalStamps && totalStamps > 0,
+            relatedOrderIdsNewCount: updates.relatedOrderIds.length,
+            stampsAwardedThisOrder: stampsToAward
+          });
+
+          trx.update(cardRef, updates);
+          awarded = true;
+        });
+
+        if (awarded) {
+          console.log('✅ [STAMP] Awarded a stamp on card:', cardDoc.id, 'for user:', userId);
+          break;
+        }
+
+        console.log('🟨 [STAMP] Skipped card', cardDoc.id, 'reason:', skipReason);
+      }
+
+      console.log('🟩 [STAMP] awardStampForOrder: done for user:', userId);
+    } catch (e) {
+      console.error('💥 [STAMP] Error while awarding stamp:', e);
+    }
+  }
+
   async saveToPickupCollection(orderModel) {
     console.log("📦 [VENDING] ========== SAVING TO PICKUP COLLECTION ==========");
     console.log("📦 [VENDING] Order ID:", orderModel.id);
     console.log("📦 [VENDING] Merchant ID:", orderModel.merchantid);
     console.log("📦 [VENDING] Device Number:", orderModel.devicenumber);
     console.log("📦 [VENDING] User Phone Number:", orderModel.userphonenumber);
+    console.log("📦 [VENDING] Pickup code:", orderModel.pickupcode);
     console.log("📦 [VENDING] Pickup Code:", orderModel.pickupCode);
     console.log("📦 [VENDING] Payment Status:", orderModel.paymentstatus);
     
@@ -3309,48 +3880,64 @@ console.log("set payment status :", orderModel.paymentstatus);
     const dateTime = new UtilDateTime();
     const currentGkashDate = dateTime.getCurrentDateString(); // Get current date string for collection name
     
-    const maxWaitingTime = 1000;
-    let currentWaiting = 1;
-    let gkashResults = null;
+    // Cloud Run safe timeouts: max 120s total wait
+    const maxWaitTimeMs = 120000; // 2 minutes
+    const startTime = Date.now();
+    let attempt = 1;
     
     console.log('📅 [DEBUG] Using GKash date collection:', currentGkashDate);
     console.log('🏪 [DEBUG] Store ID:', storeId, 'Order ID:', orderId);
+    console.log('⏱️ [DEBUG] Max wait time:', maxWaitTimeMs / 1000, 'seconds');
     
-    // Exponential delay loop: i starts at 1, then 2, 4, 8, 16, 32, etc.
-    for (let i = 1; i < maxWaitingTime && currentWaiting < maxWaitingTime; i += i) {
+    // Fixed delay between attempts
+    const fixedDelayMs = 1000; // 1 seconds
+    
+    while (Date.now() - startTime < maxWaitTimeMs) {
       try {
-        console.log(`⏰ [DEBUG] Waiting ${i} seconds before attempt ${currentWaiting}...`);
-        await new Promise(resolve => setTimeout(resolve, i * 1000)); // Convert to milliseconds
+        // Use fixed delay for consistent polling
+        const delayMs = fixedDelayMs;
         
-        console.log(`🔍 [DEBUG] GKash confirmation attempt ${currentWaiting}/${maxWaitingTime}...`);
+        if (attempt > 1) {
+          console.log(`⏰ [DEBUG] Waiting ${delayMs/1000}s before attempt ${attempt}...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+        
+        const remainingTime = Math.max(0, maxWaitTimeMs - (Date.now() - startTime));
+        console.log(`🔍 [DEBUG] GKash confirmation attempt ${attempt} (${Math.round(remainingTime/1000)}s remaining)...`);
         
         // Check if GKash document exists in the date-based collection
-        gkashResults = await fireStore.collection('gkash')
+        const gkashResults = await fireStore.collection('gkash')
           .doc(storeId)
           .collection(currentGkashDate)
           .doc(orderId)
           .get();
-          
-        currentWaiting++;
         
         if (gkashResults.exists) {
-          console.log('✅ [DEBUG] GKash document found successfully');
+          console.log('✅ [DEBUG] GKash document found successfully after', Date.now() - startTime, 'ms');
           const gkashData = gkashResults.data();
-          console.log('📊 [DEBUG] GKash data:', JSON.stringify(gkashData));
+          console.log('📊 [DEBUG] GKash data keys:', Object.keys(gkashData || {}));
           return gkashResults;
         } else {
           console.log(`⏳ [DEBUG] GKash document not found yet, continuing wait...`);
         }
         
+        attempt++;
+        
       } catch (error) {
-        console.error('❌ [DEBUG] Error checking GKash confirmation:', error);
-        currentWaiting++;
+        console.error('❌ [DEBUG] Error checking GKash confirmation:', error.message);
+        attempt++;
+        
+        // If we can't check, wait before retrying
+        if (Date.now() - startTime < maxWaitTimeMs) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
       }
     }
     
     // Timeout occurred
-    console.log('⚠️ [DEBUG] GKash order timeout after', currentWaiting, 'attempts');
-    throw new Error("GKash order timeout");
+    const totalWaitTime = Date.now() - startTime;
+    console.log('⚠️ [DEBUG] GKash order timeout after', totalWaitTime, 'ms,', attempt, 'attempts');
+    throw new Error(`GKash order timeout after ${Math.round(totalWaitTime/1000)}s`);
   }
 
   async processCreditPayment(orderModel, phoneString) {
@@ -3363,7 +3950,7 @@ console.log("set payment status :", orderModel.paymentstatus);
         throw new Error('User not found for credit payment');
       }
       
-      const totalAmount = parseFloat(orderModel.total || 0);
+      const totalAmount = parseFloat(orderModel.totalprice || 0);
       const storeId = orderModel.storeid || orderModel.storeId;
       const currentCredits = userModel.getCredits(storeId);
       
@@ -3522,19 +4109,33 @@ console.log("set payment status :", orderModel.paymentstatus);
         throw new Error('[VENDING] Failed to get vending auth token');
       }
       console.log('🔑 [VENDING] Auth token retrieved successfully');
-      
-      // Check order status and get pickup code
-      console.log('🔑 [VENDING] Checking order for pickup code...');
-      const orderResult = await this.vendingCheckOrder(token, orderModel.vendingid);
-      console.log('🔑 [VENDING] Order check result:', JSON.stringify(orderResult, null, 2));
-      
-      if (orderResult && orderResult.pickup_code) {
-        orderModel.pickupCode = orderResult.pickup_code;
-        console.log('✅ [VENDING] Pickup code retrieved successfully:', orderResult.pickup_code);
-      } else {
-        console.log('⚠️ [VENDING] No pickup code available yet - Order result:', orderResult);
+
+      const maxAttempts = 1;
+      const delayMs = 1500;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        console.log(`🔑 [VENDING] Checking order for pickup code (attempt ${attempt}/${maxAttempts})...`);
+        const orderResult = await this.vendingCheckOrder(token, orderModel.vendingid);
+        console.log('🔑 [VENDING] Order check result:', JSON.stringify(orderResult, null, 2));
+
+        // The internal handler returns { success, message, error } where message holds external API body
+        const payload = orderResult?.message ?? orderResult?.data ?? orderResult;
+        const pickupCode = payload?.pickup_code;
+
+        if (pickupCode) {
+          orderModel.pickupcode = pickupCode;
+          // Keep legacy field for backward compatibility
+          orderModel.pickupCode = pickupCode;
+          console.log('✅ [VENDING] Pickup code retrieved successfully:', pickupCode);
+          break;
+        }
+
+        if (attempt < maxAttempts) {
+          console.log(`⏳ [VENDING] Pickup code not ready. Retrying in ${delayMs}ms...`);
+          await new Promise(r => setTimeout(r, delayMs));
+        } else {
+          console.log('⚠️ [VENDING] No pickup code available after retries');
+        }
       }
-      
     } catch (error) {
       console.error('❌ [VENDING] Error retrieving pickup code:', error);
       throw error;
@@ -3560,7 +4161,7 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async updateOrderTemp(storeId, orderId, orderModel) {
+  async updateOrderTempMyReport(storeId, orderId, orderModel) {
     console.log("🔄 [DEBUG] Updating order_temp with latest order model");
     console.log("🔄 [DEBUG] Store ID:", storeId);
     console.log("🔄 [DEBUG] Order Document ID:", orderId);
@@ -3619,10 +4220,16 @@ console.log("set payment status :", orderModel.paymentstatus);
         .collection("order_temp")
         .doc(orderId)
         .set(orderModel);
+
+        await fireStore.collection("myreport")
+        .doc(storeId)
+        .collection("order")
+        .doc(orderId)
+        .set(orderModel);
         
-      console.log("✅ [DEBUG] Successfully updated order_temp with processed order data");
+      console.log("✅ [DEBUG] Successfully updated order_temp and myreport with processed order data");
       console.log("✅ [DEBUG] Order_temp document path: store/" + storeId + "/order_temp/" + orderId);
-      
+      console.log("✅ [DEBUG] Myreport document path: myreport/" + storeId + "/order/" + orderId);
     } catch (ex) {
       console.error("❌ [DEBUG] Error updating order_temp:", ex);
       console.error("❌ [DEBUG] Error details:", ex.message);
@@ -4074,7 +4681,8 @@ console.log("set payment status :", orderModel.paymentstatus);
       // Make the POST request using Axios
       const formData = querystring.stringify(postData);
 
-      //console.log(postData);
+      console.log("init payment");
+      console.log(postData);
 
       // Make the POST request using Axios
       axios.post('https://api-staging.pay.asia/api/paymentform.aspx', formData, {
@@ -4746,6 +5354,520 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
 
     return pointsReduced;
+  }
+
+  // SECTION: Voucher Limit API Endpoints
+  
+  /**
+   * API Endpoint: Create voucher limit
+   * POST /voucher/create-limit
+   * Body: { machineModelId: "MODEL001", voucherId: "VOUCHER123", limit: 100 }
+   */
+  async createVoucherLimitEndpoint(req, res) {
+    try {
+      const { machineModelId, voucherId, limit } = req.body;
+      
+      if (!machineModelId || !voucherId || !limit) {
+        return res.status(400).json({
+          success: false,
+          message: 'machineModelId, voucherId and limit are required'
+        });
+      }
+
+      const result = await this.createVoucherLimit(machineModelId, voucherId, limit);
+      
+      if (result.success) {
+        res.status(201).json(result);
+      } else {
+        res.status(400).json(result);
+      }
+    } catch (error) {
+      console.error('Error in createVoucherLimitEndpoint:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * API Endpoint: Increment voucher count
+   * POST /voucher/increment
+   * Body: { machineModelId: "MODEL001", voucherId: "VOUCHER123" }
+   */
+  async incrementVoucherCountEndpoint(req, res) {
+    try {
+      const { machineModelId, voucherId } = req.body;
+      
+      if (!machineModelId || !voucherId) {
+        return res.status(400).json({
+          success: false,
+          message: 'machineModelId and voucherId are required'
+        });
+      }
+
+      const result = await this.incrementVoucherCount(machineModelId, voucherId);
+      
+      if (result.success) {
+        res.status(200).json(result);
+      } else {
+        res.status(400).json(result);
+      }
+    } catch (error) {
+      console.error('Error in incrementVoucherCountEndpoint:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * API Endpoint: Check voucher limit
+   * GET /voucher/check/:machineModelId/:voucherId
+   */
+  async checkVoucherLimitEndpoint(req, res) {
+    try {
+      const { machineModelId, voucherId } = req.params;
+      
+      if (!machineModelId || !voucherId) {
+        return res.status(400).json({
+          success: false,
+          message: 'machineModelId and voucherId are required'
+        });
+      }
+
+      const result = await this.checkVoucherLimit(machineModelId, voucherId);
+      res.status(200).json(result);
+    } catch (error) {
+      console.error('Error in checkVoucherLimitEndpoint:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * API Endpoint: Get voucher limit details
+   * GET /voucher/details/:machineModelId/:voucherId
+   */
+  async getVoucherLimitDetailsEndpoint(req, res) {
+    try {
+      const { machineModelId, voucherId } = req.params;
+      
+      if (!machineModelId || !voucherId) {
+        return res.status(400).json({
+          success: false,
+          message: 'machineModelId and voucherId are required'
+        });
+      }
+
+      const result = await this.getVoucherLimitDetails(machineModelId, voucherId);
+      res.status(200).json(result);
+    } catch (error) {
+      console.error('Error in getVoucherLimitDetailsEndpoint:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * API Endpoint: Remove voucher limit
+   * DELETE /voucher/remove/:machineModelId/:voucherId
+   */
+  async removeVoucherLimitEndpoint(req, res) {
+    try {
+      const { machineModelId, voucherId } = req.params;
+      
+      if (!machineModelId || !voucherId) {
+        return res.status(400).json({
+          success: false,
+          message: 'machineModelId and voucherId are required'
+        });
+      }
+
+      const result = await this.removeVoucherLimit(machineModelId, voucherId);
+      
+      if (result.success) {
+        res.status(200).json(result);
+      } else {
+        res.status(404).json(result);
+      }
+    } catch (error) {
+      console.error('Error in removeVoucherLimitEndpoint:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * API Endpoint: List all voucher limits
+   * GET /voucher/list-all-limits
+   * Returns raw data from crm_voucher_limit collection
+   */
+  async listAllVoucherLimitsEndpoint(req, res) {
+    try {
+      console.log("📋 [LIST_LIMITS] Fetching all voucher limits...");
+
+      const result = await this.listAllVoucherLimits();
+      
+      res.status(200).json(result);
+    } catch (error) {
+      console.error('Error in listAllVoucherLimitsEndpoint:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: error.message
+      });
+    }
+  }
+
+  // SECTION: Voucher Limit Management Functions
+  
+  /**
+   * Create a voucher limit document with machine model ID, voucher ID and limit
+   * @param {string} machineModelId - The machine model ID
+   * @param {string} voucherId - The voucher ID
+   * @param {number} limit - The maximum number of claims allowed
+   * @returns {Promise<Object>} Result object with success status
+   */
+  async createVoucherLimit(machineModelId, voucherId, limit) {
+    try {
+      // Create composite key: machineModelId_voucherId
+      const compositeKey = `${machineModelId}_${voucherId}`;
+      const voucherLimitRef = fireStore.collection("crm_voucher_limit").doc(compositeKey);
+      
+      const voucherLimitData = {
+        machineModelId: machineModelId,
+        voucherId: voucherId,
+        compositeKey: compositeKey,
+        limit: limit,
+        count: 0,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+
+      await voucherLimitRef.set(voucherLimitData);
+      
+      console.log(`✅ Voucher limit created for ${compositeKey} with limit ${limit}`);
+      return {
+        success: true,
+        message: `Voucher limit created successfully`,
+        data: voucherLimitData
+      };
+    } catch (error) {
+      console.error(`❌ Error creating voucher limit for ${machineModelId}_${voucherId}:`, error);
+      return {
+        success: false,
+        message: 'Failed to create voucher limit',
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Atomically increment voucher claim count using Firestore transaction
+   * @param {string} machineModelId - The machine model ID
+   * @param {string} voucherId - The voucher ID
+   * @returns {Promise<Object>} Result object with success status and count info
+   */
+  async incrementVoucherCount(machineModelId, voucherId) {
+    try {
+      // Create composite key: machineModelId_voucherId
+      const compositeKey = `${machineModelId}_${voucherId}`;
+      const voucherLimitRef = fireStore.collection("crm_voucher_limit").doc(compositeKey);
+      
+      const result = await fireStore.runTransaction(async (transaction) => {
+        const voucherDoc = await transaction.get(voucherLimitRef);
+        
+        if (!voucherDoc.exists) {
+          // Document doesn't exist, no limit applied
+          return {
+            success: true,
+            limitReached: false,
+            count: 0,
+            limit: null,
+            machineModelId: machineModelId,
+            voucherId: voucherId,
+            message: "No limit set for this voucher"
+          };
+        }
+
+        const voucherData = voucherDoc.data();
+        const currentCount = voucherData.count || 0;
+        const limit = voucherData.limit || 0;
+
+        // Check if limit is already reached
+        if (currentCount >= limit) {
+          return {
+            success: false,
+            limitReached: true,
+            count: currentCount,
+            limit: limit,
+            machineModelId: machineModelId,
+            voucherId: voucherId,
+            message: `Voucher claim limit reached (${currentCount}/${limit}) for machine model ${machineModelId}`
+          };
+        }
+
+        // Increment the count
+        const newCount = currentCount + 1;
+        transaction.update(voucherLimitRef, {
+          count: newCount,
+          updatedAt: new Date()
+        });
+
+        return {
+          success: true,
+          limitReached: newCount >= limit,
+          count: newCount,
+          limit: limit,
+          machineModelId: machineModelId,
+          voucherId: voucherId,
+          message: `Voucher count incremented to ${newCount}/${limit} for machine model ${machineModelId}`
+        };
+      });
+
+      if (result.success) {
+        console.log(`🔢 Voucher ${compositeKey} count: ${result.count}/${result.limit || 'unlimited'}`);
+      } else {
+        console.log(`⚠️ Voucher ${compositeKey} limit reached: ${result.count}/${result.limit}`);
+      }
+
+      return result;
+    } catch (error) {
+      console.error(`❌ Error incrementing voucher count for ${machineModelId}_${voucherId}:`, error);
+      return {
+        success: false,
+        limitReached: false,
+        count: 0,
+        limit: 0,
+        machineModelId: machineModelId,
+        voucherId: voucherId,
+        message: 'Failed to increment voucher count',
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Check if voucher limit is reached without incrementing
+   * @param {string} machineModelId - The machine model ID
+   * @param {string} voucherId - The voucher ID
+   * @returns {Promise<Object>} Result object with limit check info
+   */
+  async checkVoucherLimit(machineModelId, voucherId) {
+    try {
+      // Create composite key: machineModelId_voucherId
+      const compositeKey = `${machineModelId}_${voucherId}`;
+      const voucherLimitRef = fireStore.collection("crm_voucher_limit").doc(compositeKey);
+      const voucherDoc = await voucherLimitRef.get();
+      
+      if (!voucherDoc.exists) {
+        // Document doesn't exist, no limit applied
+        return {
+          success: true,
+          limitReached: false,
+          count: 0,
+          limit: null,
+          machineModelId: machineModelId,
+          voucherId: voucherId,
+          message: "No limit set for this voucher"
+        };
+      }
+
+      const voucherData = voucherDoc.data();
+      const currentCount = voucherData.count || 0;
+      const limit = voucherData.limit || 0;
+      const limitReached = currentCount >= limit;
+
+      console.log(`🔍 Voucher ${compositeKey} check: ${currentCount}/${limit} ${limitReached ? '(LIMIT REACHED)' : '(OK)'}`);
+
+      return {
+        success: true,
+        limitReached: limitReached,
+        count: currentCount,
+        limit: limit,
+        machineModelId: machineModelId,
+        voucherId: voucherId,
+        message: limitReached 
+          ? `Voucher limit reached (${currentCount}/${limit}) for machine model ${machineModelId}` 
+          : `Voucher available (${currentCount}/${limit}) for machine model ${machineModelId}`
+      };
+    } catch (error) {
+      console.error(`❌ Error checking voucher limit for ${machineModelId}_${voucherId}:`, error);
+      return {
+        success: false,
+        limitReached: false,
+        count: 0,
+        limit: 0,
+        machineModelId: machineModelId,
+        voucherId: voucherId,
+        message: 'Failed to check voucher limit',
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Get voucher limit details
+   * @param {string} machineModelId - The machine model ID
+   * @param {string} voucherId - The voucher ID
+   * @returns {Promise<Object>} Result object with voucher limit details
+   */
+  async getVoucherLimitDetails(machineModelId, voucherId) {
+    try {
+      // Create composite key: machineModelId_voucherId
+      const compositeKey = `${machineModelId}_${voucherId}`;
+      const voucherLimitRef = fireStore.collection("crm_voucher_limit").doc(compositeKey);
+      const voucherDoc = await voucherLimitRef.get();
+      
+      if (!voucherDoc.exists) {
+        return {
+          success: true,
+          exists: false,
+          data: null,
+          machineModelId: machineModelId,
+          voucherId: voucherId,
+          message: "Voucher limit not found"
+        };
+      }
+
+      const voucherData = voucherDoc.data();
+      
+      return {
+        success: true,
+        exists: true,
+        data: voucherData,
+        machineModelId: machineModelId,
+        voucherId: voucherId,
+        message: "Voucher limit details retrieved successfully"
+      };
+    } catch (error) {
+      console.error(`❌ Error getting voucher limit details for ${machineModelId}_${voucherId}:`, error);
+      return {
+        success: false,
+        exists: false,
+        data: null,
+        machineModelId: machineModelId,
+        voucherId: voucherId,
+        message: 'Failed to get voucher limit details',
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Remove voucher limit document
+   * @param {string} machineModelId - The machine model ID
+   * @param {string} voucherId - The voucher ID
+   * @returns {Promise<Object>} Result object with success status
+   */
+  async removeVoucherLimit(machineModelId, voucherId) {
+    try {
+      // Create composite key: machineModelId_voucherId
+      const compositeKey = `${machineModelId}_${voucherId}`;
+      const voucherLimitRef = fireStore.collection("crm_voucher_limit").doc(compositeKey);
+      
+      // Check if document exists before attempting to delete
+      const voucherDoc = await voucherLimitRef.get();
+      
+      if (!voucherDoc.exists) {
+        console.log(`⚠️ Voucher limit not found for ${compositeKey}`);
+        return {
+          success: false,
+          exists: false,
+          machineModelId: machineModelId,
+          voucherId: voucherId,
+          message: "Voucher limit not found - nothing to remove"
+        };
+      }
+
+      const voucherData = voucherDoc.data();
+      
+      // Delete the document
+      await voucherLimitRef.delete();
+      
+      console.log(`🗑️ Voucher limit removed for ${compositeKey}`);
+      return {
+        success: true,
+        exists: true,
+        machineModelId: machineModelId,
+        voucherId: voucherId,
+        removedData: {
+          count: voucherData.count || 0,
+          limit: voucherData.limit || 0,
+          createdAt: voucherData.createdAt,
+          updatedAt: voucherData.updatedAt
+        },
+        message: `Voucher limit removed successfully for machine model ${machineModelId}`
+      };
+    } catch (error) {
+      console.error(`❌ Error removing voucher limit for ${machineModelId}_${voucherId}:`, error);
+      return {
+        success: false,
+        exists: false,
+        machineModelId: machineModelId,
+        voucherId: voucherId,
+        message: 'Failed to remove voucher limit',
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * List all voucher limits - returns raw data from Firestore collection
+   * @returns {Promise<Object>} Result object with raw voucher limits data
+   */
+  async listAllVoucherLimits() {
+    try {
+      console.log("📋 [LIST_ALL_LIMITS] Fetching all voucher limits from crm_voucher_limit collection...");
+      
+      // Get all documents from crm_voucher_limit collection
+      const voucherLimitsSnapshot = await fireStore.collection("crm_voucher_limit").get();
+      
+      console.log("📋 [LIST_ALL_LIMITS] Found", voucherLimitsSnapshot.docs.length, "documents");
+      
+      const voucherLimits = [];
+      
+      // Just return the raw data from each document
+      for (const doc of voucherLimitsSnapshot.docs) {
+        const data = doc.data();
+        voucherLimits.push({
+          id: doc.id,
+          ...data
+        });
+      }
+      
+      console.log("📋 [LIST_ALL_LIMITS] Returning", voucherLimits.length, "voucher limit records");
+      
+      return {
+        success: true,
+        data: voucherLimits,
+        total: voucherLimits.length,
+        message: `Retrieved ${voucherLimits.length} voucher limits from database`
+      };
+      
+    } catch (error) {
+      console.error("❌ [LIST_ALL_LIMITS] Error listing voucher limits:", error);
+      return {
+        success: false,
+        data: [],
+        total: 0,
+        message: 'Failed to list voucher limits',
+        error: error.message
+      };
+    }
   }
 
   getRouter() {

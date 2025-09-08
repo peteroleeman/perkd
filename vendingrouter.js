@@ -12,6 +12,10 @@ const kSecurePhase = "foodio_foodio";
 const fireStore = firebase.firestore();
 const kBaseUrl = "http://43.128.71.13:8001/api";
 
+// 🔒 HARD-CODED SECRET (CHANGE THIS BEFORE USE)
+const REFERRAL_SECRET = 'CERIA_SECRET_v1_hV9@6a!uLzF6b3nQ%#kR2Yp9qD';
+const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no O/0/I/1/L
+
 class VendingRouter {
   constructor() {
     this.router = express.Router();
@@ -40,6 +44,7 @@ class VendingRouter {
     this.router.post('/payment/callback', this.handlePaymentCallback.bind(this));
     this.router.post('/pickup', this.handlePickup.bind(this));
     this.router.post('/pickupsuccess', this.handlePickupSuccess.bind(this));
+    this.router.post('/getreferralcode', this.handleGetReferralCode.bind(this));
 
   }
 
@@ -1292,6 +1297,79 @@ class VendingRouter {
       return res.status(500).json({
         success: false,
         message: 'Internal server error while processing pickup success',
+        error: error.message
+      });
+    }
+  }
+
+  // Utility functions for referral code generation
+  toBase32(buf, alphabet = ALPHABET) {
+    let n = BigInt('0x' + buf.toString('hex'));
+    if (n === 0n) return alphabet[0];
+    let out = '';
+    while (n > 0n) {
+      out = alphabet[Number(n % 32n)] + out;
+      n /= 32n;
+    }
+    return out;
+  }
+
+  /**
+   * makeReferralCode(input, { length=8, version='v1', attempt=0 })
+   * - input: stable id (UID or normalized phone)
+   * - length: code length (8 is a good default)
+   * - version: bump to rotate scheme (e.g., 'v2')
+   * - attempt: increment if you need to retry on DB collision
+   */
+  makeReferralCode(input, { length = 8, version = 'v1', attempt = 0 } = {}) {
+    if (!input) throw new Error('makeReferralCode: `input` is required');
+    const msg = `${String(input).trim()}|${version}|${attempt}`;
+    const hmac = crypto.createHmac('sha256', REFERRAL_SECRET).update(msg).digest();
+    return this.toBase32(hmac).slice(0, length);
+  }
+
+  // Optional helpers for phone numbers
+  normalizePhoneE164(raw) {
+    const digits = String(raw ?? '').replace(/\D+/g, '');
+    if (!digits) throw new Error('normalizePhoneE164: invalid phone');
+    return `+${digits}`;
+  }
+
+  makeReferralCodeFromPhone(phone, opts) {
+    return this.makeReferralCode(this.normalizePhoneE164(phone), opts);
+  }
+
+  async handleGetReferralCode(req, res) {
+    try {
+      // Extract phone number from request body
+      const { phoneNumber } = req.body;
+
+      // Validate required parameters
+      if (!phoneNumber) {
+        return res.status(400).json({
+          success: false,
+          message: 'Phone number is required'
+        });
+      }
+
+      // Generate referral code from phone number
+      const referralCode = this.makeReferralCodeFromPhone(phoneNumber);
+
+      console.log(`Generated referral code ${referralCode} for phone number ${phoneNumber}`);
+
+      return res.status(200).json({
+        success: true,
+        message: 'Referral code generated successfully',
+        phoneNumber: phoneNumber,
+        referralCode: referralCode
+      });
+
+    } catch (error) {
+      console.error('Error generating referral code:', error);
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to generate referral code',
         error: error.message
       });
     }
