@@ -7,6 +7,23 @@ const firebase = require("./db");
 const fireStore = firebase.firestore();
 const { v4: uuidv4 } = require('uuid');
 
+/**
+ * Format date to YYYY-MM-DD HH:mm:ss.SSS format
+ * @param {Date} date - Date object (defaults to now)
+ * @returns {string} Formatted date string
+ */
+function formatOrderDateTime(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  const milliseconds = String(date.getMilliseconds()).padStart(3, '0');
+  
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${milliseconds}`;
+}
+
 class PosRouter {
   constructor() {
     this.router = express.Router();
@@ -301,11 +318,11 @@ class PosRouter {
 
       // Calculate totals and generate ID
       const subtotal = list.reduce((sum, item) => sum + (item.goods_count * item.goods_price), 0);
-      const grandTotal = amount || subtotal;
+      const grandTotal = parseFloat(amount || subtotal) || 0;
       const id = "O_" + uuidv4();
 
       // Query vending_merchant collection to get store information
-      console.log("Querying vending_merchant for merchant_id:", merchant_id);
+      console.log("Querying vending_merchant for merchant_id:" + merchant_id + " device number:" + device_number);
       
       const merchantRef = fireStore.collection('vending_merchant').doc(merchant_id);
       const merchantDoc = await merchantRef.get();
@@ -336,6 +353,43 @@ class PosRouter {
 
       console.log("Found store ID:", storeId);
 
+      // Look up machine model from merchant_device collection using fridgemid
+      // device_number parameter is actually the fridge mid
+      let vendingDeviceNumber = device_number;
+      let vendingMerchantId = merchant_id;
+      
+      try {
+        console.log("Querying merchant_device for fridgemid:", device_number);
+        
+        // Query merchant_device collection where fridgemid matches device_number
+        const machineModelQuery = await fireStore
+          .collection('merchant_device')
+          .where('fridgemid', '==', device_number)
+          .limit(1)
+          .get();
+
+        if (!machineModelQuery.empty) {
+          const machineModelDoc = machineModelQuery.docs[0];
+          const machineModel = machineModelDoc.data();
+          console.log("Machine model found:", machineModel.id);
+          
+          // Extract vendingdevicenumber and vendingmerchantid from machine model
+          if (machineModel.vendingdevicenumber) {
+            vendingDeviceNumber = machineModel.vendingdevicenumber;
+            console.log("Using vendingdevicenumber from machine model:", vendingDeviceNumber);
+          }
+          if (machineModel.vendingmerchantid) {
+            vendingMerchantId = machineModel.vendingmerchantid;
+            console.log("Using vendingmerchantid from machine model:", vendingMerchantId);
+          }
+        } else {
+          console.log("Machine model not found in merchant_device with fridgemid:", device_number, "- using original device_number and merchant_id");
+        }
+      } catch (machineModelError) {
+        console.error("Error querying merchant_device:", machineModelError);
+        // Continue with original values if lookup fails
+      }
+
       // Save order data directly to Firestore
       const orderDocRef = fireStore
         .collection('myinvois')
@@ -343,32 +397,49 @@ class PosRouter {
         .collection('order')
         .doc(id);
 
+      // Calculate order items first
+      const orderitems = list.map(item => ({
+        id: item.goods_id,
+        sku: item.goods_sku,
+        title: item.goods_name,
+        quantity: item.goods_count,
+        price: item.goods_price,
+        discount_amount: 0,
+        total_price: item.goods_count * item.goods_price
+      }));
+
+      // Calculate totalQty (sum of all item quantities) - integer
+      const totalQty = orderitems.reduce((sum, item) => sum + (parseInt(item.quantity) || 0), 0);
+      
+      // Calculate totalPrice (use grandTotal) - double
+      const totalPrice = parseFloat(grandTotal.toFixed(2));
+      
+      // Calculate totalPaid (use totalPrice as default) - double
+      const totalPaid = totalPrice;
+
       // Create order data directly as plain object for Firestore
       const orderData = {
         id: id,
         orderid: receipt_id,
         storetitle: storeTitle,
         store_merchant_code: merchant_id,
-        order_datetime: new Date().toISOString(),
+        orderdatetime: formatOrderDateTime(),
         payment_type: "E-Invoice",
         subtotal: subtotal,
         grand_total: grandTotal,
         mode: "einvoice",
-        kiosk_machine: device_number,
+        kiosk_machine: vendingDeviceNumber,
         customer_payment: grandTotal,
         currency: currency,
-        device_number: device_number,
-        merchant_id: merchant_id,
+        // device_number: vendingDeviceNumber,
+        // merchant_id: vendingMerchantId,
+        devicenumber: vendingDeviceNumber,
+        merchantid: vendingMerchantId,
         store_id: storeId,
-        orderitems: list.map(item => ({
-          id: item.goods_id,
-          sku: item.goods_sku,
-          title: item.goods_name,
-          quantity: item.goods_count,
-          price: item.goods_price,
-          discount_amount: 0,
-          total_price: item.goods_count * item.goods_price
-        })),
+        totalqty: totalQty,
+        totalprice: totalPrice,
+        totalpaid: totalPaid,
+        orderitems: orderitems,
         created_at: new Date()
       };
 
@@ -376,6 +447,81 @@ class PosRouter {
       await orderDocRef.set(orderData);
 
       console.log(`OrderModel saved to Firestore: myinvois/${storeId}/order/${id}`);
+
+      // Also save order data to myreport collection
+      try {
+        const myReportDocRef = fireStore
+          .collection('myreport')
+          .doc(storeId)
+          .collection('order')
+          .doc(id);
+        
+        await myReportDocRef.set(orderData);
+        console.log(`OrderModel saved to Firestore: myreport/${storeId}/order/${id}`);
+      } catch (myReportError) {
+        console.error('Error saving to myreport collection:', myReportError);
+        // Don't fail the request if myreport save fails
+      }
+
+      // Also save order data to store collection
+      // try {
+      //   const myReportDocRef = fireStore
+      //     .collection('store')
+      //     .doc(storeId)
+      //     .collection('order')
+      //     .doc(id);
+        
+      //   await myReportDocRef.set(orderData);
+      //   console.log(`OrderModel saved to Firestore: myreport/${storeId}/order/${id}`);
+      // } catch (myReportError) {
+      //   console.error('Error saving to myreport collection:', myReportError);
+      //   // Don't fail the request if myreport save fails
+      // }
+
+      // Save to vending_points collection
+      try {
+        // Calculate points from grand total (1 dollar = 10 points)
+        const points = Math.floor(grandTotal * 10);
+        
+        // Use order ID as document ID
+        const documentId = id;
+        
+        console.log('💾 [VENDING_POINTS] Saving pending points for:', documentId);
+        console.log('💾 [VENDING_POINTS] Points:', points, 'Order ID:', id, 'Store ID:', storeId);
+
+        // Prepare pending points document with order and pickup code data
+        const pendingPointsData = {
+          points: points,
+          orderId: id,
+          storeId: storeId,
+          createdAt: new Date().toISOString(),
+          orderData: orderData, // Store order data for later copying
+        };
+
+        // Check if order has pickup code data
+        if (orderData.pickupcode || orderData.pickupCode || (orderData.merchantid && orderData.devicenumber)) {
+          const pickupDocId = `${orderData.merchantid}_${orderData.devicenumber}`;
+          pendingPointsData.pickupDocId = pickupDocId;
+          pendingPointsData.pickupData = orderData; // Store pickup data for later copying
+          console.log('📦 [VENDING_POINTS] Pickup code data found, doc ID:', pickupDocId);
+        }
+
+        // Save pending points document
+        await fireStore.collection('vending_points').doc(documentId).set(pendingPointsData);
+        console.log('✅ [VENDING_POINTS] Pending points saved to:', documentId);
+
+        // Save order to vending_points subcollection
+        await fireStore
+          .collection('vending_points')
+          .doc(documentId)
+          .collection('order')
+          .doc(id)
+          .set(orderData);
+        console.log('✅ [VENDING_POINTS] Order saved to vending_points subcollection');
+      } catch (pendingPointsError) {
+        console.error('❌ [VENDING_POINTS] Error saving pending points:', pendingPointsError);
+        // Don't fail the request if pending points save fails
+      }
 
       // Return success response with URL
       res.json({ 

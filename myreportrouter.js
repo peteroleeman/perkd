@@ -48,6 +48,8 @@ class MyReportRouter {
     this.router.get('/about', this.about.bind(this));
     this.router.post('/querybigquery', this.queryBigQuery.bind(this));
     this.router.post('/queryrawdata', this.queryRawData.bind(this));
+    this.router.post('/querycurrentmonth', this.queryCurrentMonth.bind(this));
+    this.router.post('/querybydays', this.queryByDays.bind(this));
   }
 
   about(req, res) {
@@ -234,6 +236,183 @@ class MyReportRouter {
       return res.status(500).json({
         success: false,
         message: 'Failed to query myreport raw data',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Query BigQuery to get myreport data from the last 30 days with pagination support
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async queryCurrentMonth(req, res) {
+    try {
+      // Extract pagination parameters from request body
+      const limit = parseInt(req.body.limit) || 100; // Default to 100 records
+      const offset = parseInt(req.body.offset) || 0; // Default to starting from the beginning
+      const storeid = req.body.storeid || null; // Get the storeId filter
+      
+      // Build the WHERE clause for filtering - last 30 days from today
+      let whereClause = `WHERE operation != 'DELETE' AND DATE(timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)`;
+      
+      if (storeid) {
+        // Create a pattern to match the storeId in the document_name
+        whereClause += ` AND document_name LIKE '%/myreport/${storeid}/%'`;
+      }
+
+      // Build query with pagination and filtering
+      const query = `
+        SELECT 
+          document_name,
+          operation,
+          data,
+          timestamp,
+          document_id
+        FROM \`foodio-ab3b2.firestore_myreport.myreport_raw_latest\`
+        ${whereClause}
+        ORDER BY timestamp DESC
+        LIMIT ${limit}
+        OFFSET ${offset}
+      `;
+
+      // Get total count in a separate query (for first page only)
+      let totalCount = null;
+      if (offset === 0) {
+        const countQuery = `
+          SELECT COUNT(*) as total_count 
+          FROM \`foodio-ab3b2.firestore_myreport.myreport_raw_latest\`
+          ${whereClause}
+        `;
+        
+        const [countRows] = await this.bigquery.query({ query: countQuery });
+        totalCount = countRows[0].total_count;
+      }
+
+      // Set query options
+      const options = {
+        query: query,
+        location: 'asia-southeast1', // Set the appropriate location
+        useQueryCache: true
+      };
+
+      // Run the main query
+      const [rows] = await this.bigquery.query(options);
+
+      console.log(`Successfully queried BigQuery for last 30 days myreport data, retrieved ${rows.length} rows (offset: ${offset}, limit: ${limit}${storeid ? ', filtered by storeId: ' + storeid : ''})`);
+
+      return res.status(200).json({
+        success: true,
+        count: rows.length,
+        total: totalCount,
+        offset: offset,
+        limit: limit,
+        storeId: storeid,
+        hasMore: rows.length === limit, // Indicate if there might be more records
+        nextOffset: offset + limit, // Provide the next offset for pagination
+        data: rows
+      });
+      
+    } catch (error) {
+      console.error('Error querying BigQuery for last 30 days myreport data:', error.message);
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to query BigQuery for last 30 days myreport data',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Query BigQuery to get myreport data for a specified number of days from current date with pagination support
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async queryByDays(req, res) {
+    try {
+      // Extract pagination parameters from request body
+      const limit = parseInt(req.body.limit) || 100; // Default to 100 records
+      const offset = parseInt(req.body.offset) || 0; // Default to starting from the beginning
+      const storeid = req.body.storeid || null; // Get the storeId filter
+      const days = parseInt(req.body.days); // Get the number of days (required)
+      
+      // Validate days parameter - minimum is 1
+      if (!days || isNaN(days) || days < 1) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid days parameter. Days must be a number and at least 1.',
+          error: 'Days parameter is required and must be >= 1'
+        });
+      }
+      
+      // Build the WHERE clause for filtering - last N days from today
+      let whereClause = `WHERE operation != 'DELETE' AND DATE(timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${days} DAY)`;
+      
+      if (storeid) {
+        // Create a pattern to match the storeId in the document_name
+        whereClause += ` AND document_name LIKE '%/myreport/${storeid}/%'`;
+      }
+
+      // Build query with pagination and filtering
+      const query = `
+        SELECT 
+          document_name,
+          operation,
+          data,
+          timestamp,
+          document_id
+        FROM \`foodio-ab3b2.firestore_myreport.myreport_raw_latest\`
+        ${whereClause}
+        ORDER BY timestamp DESC
+        LIMIT ${limit}
+        OFFSET ${offset}
+      `;
+
+      // Get total count in a separate query (for first page only)
+      let totalCount = null;
+      if (offset === 0) {
+        const countQuery = `
+          SELECT COUNT(*) as total_count 
+          FROM \`foodio-ab3b2.firestore_myreport.myreport_raw_latest\`
+          ${whereClause}
+        `;
+        
+        const [countRows] = await this.bigquery.query({ query: countQuery });
+        totalCount = countRows[0].total_count;
+      }
+
+      // Set query options
+      const options = {
+        query: query,
+        location: 'asia-southeast1', // Set the appropriate location
+        useQueryCache: true
+      };
+
+      // Run the main query
+      const [rows] = await this.bigquery.query(options);
+
+      console.log(`Successfully queried BigQuery for last ${days} days myreport data, retrieved ${rows.length} rows (offset: ${offset}, limit: ${limit}${storeid ? ', filtered by storeId: ' + storeid : ''})`);
+
+      return res.status(200).json({
+        success: true,
+        count: rows.length,
+        total: totalCount,
+        offset: offset,
+        limit: limit,
+        days: days,
+        storeId: storeid,
+        hasMore: rows.length === limit, // Indicate if there might be more records
+        nextOffset: offset + limit, // Provide the next offset for pagination
+        data: rows
+      });
+      
+    } catch (error) {
+      console.error('Error querying BigQuery for specified days myreport data:', error.message);
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to query BigQuery for specified days myreport data',
         error: error.message
       });
     }

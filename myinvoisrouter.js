@@ -4,15 +4,68 @@ const querystring = require('querystring');
 const {BigQuery} = require('@google-cloud/bigquery');
 const firebase = require("./db");
 const fireStore = firebase.firestore();
+const { parseSubmitDocumentResponse, parseValidateDocumentResponse, saveSubmissionResult, saveValidationResult } = require('./util/myinvois');
+const SqlAccountRouter = require('./sqlaccountrouter');
 
 class MyInvoisRouter {
 
-   InvoisURL = 'https://preprod-api.myinvois.hasil.gov.my';
+  // Default to preprod, but can be overridden
+  InvoisURL = 'https://preprod-api.myinvois.hasil.gov.my';
+  
+  // API URL constants
+  static PREPROD_URL = 'https://preprod-api.myinvois.hasil.gov.my';
+  static PRODUCTION_URL = 'https://api.myinvois.hasil.gov.my';
 
-  constructor() {
+  constructor(apiUrl = null) {
     this.router = express.Router();
+    
+    // Allow setting API URL via constructor or environment variable
+    if (apiUrl) {
+      this.InvoisURL = apiUrl;
+    }  else {
+      // Default to preprod
+      this.InvoisURL = MyInvoisRouter.PREPROD_URL;
+    }
+    
+    console.log('📡 [MYINVOIS] Initialized with API URL:', this.InvoisURL);
+    
+    // Initialize SQL Account router for invoice creation
+    this.sqlAccountRouter = new SqlAccountRouter();
+    
     this.initializeRoutes();
     this.bigquery = this.initializeBigQuery();
+  }
+
+  /**
+   * Get the API URL for a request, allowing per-request override
+   * @param {Object} req - Express request object
+   * @returns {string} The API URL to use
+   */
+  getApiUrl(req) {
+    // Check for per-request override via query parameter or body
+    const apiEnv = req.query?.apiEnv || req.body?.apiEnv;
+    const apiUrl = req.query?.apiUrl || req.body?.apiUrl;
+    
+    if (apiUrl) {
+      // Direct URL override
+      console.log('📡 [MYINVOIS] Using custom API URL from request:', apiUrl);
+      return apiUrl;
+    }
+    
+    if (apiEnv) {
+      // Environment-based selection
+      const env = apiEnv.toLowerCase();
+      if (env === 'production' || env === 'prod') {
+        console.log('📡 [MYINVOIS] Using PRODUCTION API URL from request');
+        return MyInvoisRouter.PRODUCTION_URL;
+      } else if (env === 'preprod' || env === 'pre-prod' || env === 'staging') {
+        console.log('📡 [MYINVOIS] Using PREPROD API URL from request');
+        return MyInvoisRouter.PREPROD_URL;
+      }
+    }
+    
+    // Default to instance URL
+    return this.InvoisURL;
   }
 
   /**
@@ -84,7 +137,7 @@ class MyInvoisRouter {
         });
       }
 
-      const url = this.InvoisURL + '/api/v1.0/documentsubmissions';
+      const url = this.getApiUrl(req) + '/api/v1.0/documentsubmissions';
       
       const headers = {
         'Content-Type': 'application/json',
@@ -125,7 +178,7 @@ class MyInvoisRouter {
         });
       }
 
-      const url = this.InvoisURL + '/connect/token';
+      const url = this.getApiUrl(req) + '/connect/token';
       
       const headers = {
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -168,7 +221,7 @@ class MyInvoisRouter {
         });
       }
 
-      const url = this.InvoisURL + '/connect/token';
+      const url = this.getApiUrl(req) + '/connect/token';
       
       const headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -212,7 +265,7 @@ class MyInvoisRouter {
         });
       }
 
-      const url = this.InvoisURL +  `/api/v1.0/taxpayer/validate/${tin}?idType=${idType}&idValue=${idValue}`;
+      const url = this.getApiUrl(req) +  `/api/v1.0/taxpayer/validate/${tin}?idType=${idType}&idValue=${idValue}`;
       
       const headers = {
         'Authorization': token
@@ -255,7 +308,7 @@ class MyInvoisRouter {
         });
       }
 
-      const url = `${this.InvoisURL}/api/v1.0/taxpayer/search/tin?idType=${idType}&idValue=${idValue}`;
+      const url = `${this.getApiUrl(req)}/api/v1.0/taxpayer/search/tin?idType=${idType}&idValue=${idValue}`;
       
       const headers = {
         'Authorization': `Bearer ${token}`
@@ -297,7 +350,7 @@ class MyInvoisRouter {
         });
       }
 
-      const url = `${this.InvoisURL}/api/v1.0/documents/${uuid}/details`;
+      const url = `${this.getApiUrl(req)}/api/v1.0/documents/${uuid}/details`;
       
       const headers = {
         'Authorization': `Bearer ${token}`
@@ -1057,9 +1110,10 @@ class MyInvoisRouter {
    * Helper method to validate document with MyInvois API
    * @param {string} accessToken - API token
    * @param {string} uuid - Document UUID
+   * @param {Object} req - Optional Express request object for API URL override
    * @returns {Promise<Object>} Validation result
    */
-  async _validateDocument(accessToken, uuid) {
+  async _validateDocument(accessToken, uuid, req = null) {
     try {
       if (!accessToken || !uuid) {
         console.error('Missing required parameters for validation: token and uuid are required');
@@ -1070,8 +1124,9 @@ class MyInvoisRouter {
         };
       }
 
-      // Call the MyInvois API
-      const url = `${this.InvoisURL}/api/v1.0/documents/${uuid}/details`;
+      // Call the MyInvois API - use getApiUrl if req is provided, otherwise use default
+      const apiUrl = req ? this.getApiUrl(req) : this.InvoisURL;
+      const url = `${apiUrl}/api/v1.0/documents/${uuid}/details`;
       
       const headers = {
         'Authorization': `Bearer ${accessToken}`
@@ -1087,6 +1142,7 @@ class MyInvoisRouter {
       return {
         success: true,
         isValid: isValid,
+        data: documentDetails,
         documentDetails: documentDetails,
         error: null
       };
@@ -1101,8 +1157,8 @@ class MyInvoisRouter {
     }
   }
 
-    /**   * Generate a full invoice summary, optionally submit to API   * @param {Object} options - Options for generation and submission   * @param {boolean} options.submitToApi - Whether to submit to API   * @param {Object} options.supplierModel - Optional supplier model to use instead of loading from DB   * @param {string} options.storeId - Store ID to use for data   * @param {boolean} options.detailedLines - Whether to generate detailed invoice lines for each order   * @returns {Promise<Object>} Result of the generation process   */
-  async generateFullInvoiceSummary(options = {}) {
+    /**   * Generate a full invoice summary, optionally submit to API   * @param {Object} options - Options for generation and submission   * @param {boolean} options.submitToApi - Whether to submit to API   * @param {Object} options.supplierModel - Optional supplier model to use instead of loading from DB   * @param {string} options.storeId - Store ID to use for data   * @param {boolean} options.detailedLines - Whether to generate detailed invoice lines for each order   * @param {Object} req - Optional Express request object for API URL override   * @returns {Promise<Object>} Result of the generation process   */
+  async generateFullInvoiceSummary(options = {}, req = null) {
     try {
       const storeId = options.storeId;
       if (!storeId) {
@@ -1225,7 +1281,8 @@ class MyInvoisRouter {
               console.log('Validating document after submission...');
               const validationResult = await this._validateDocument(
                 submissionResult.accessToken,
-                submissionResult.documentUuid
+                submissionResult.documentUuid,
+                req
               );
               
               const validationUpdateResult = await this._updateInvoiceWithValidationResults(
@@ -1708,7 +1765,7 @@ class MyInvoisRouter {
         submitToApi: submitToApi === true,
         validateAfterSubmit: validateAfterSubmit === true,
         detailedLines: true
-      });
+      }, req);
       
       // Return the result
       return res.status(result.success ? 200 : 400).json(result);
@@ -1746,7 +1803,7 @@ class MyInvoisRouter {
         customerInfo: customerInfo || {},
         submitToApiOption: submitToApiOption === true,
         token: token || null
-      });
+      }, req);
       
       // Return the result
       return res.status(result.success ? 200 : 400).json(result);
@@ -1769,9 +1826,10 @@ class MyInvoisRouter {
    * @param {Object} options.customerInfo - Customer information
    * @param {boolean} options.submitToApiOption - Whether to submit to the API
    * @param {string} options.token - Optional API token to use for submission
+   * @param {Object} req - Optional Express request object for API URL override
    * @returns {Promise<Object>} Result of the generation process
    */
-  async generateInvoiceForOrder(options = {}) {
+  async generateInvoiceForOrder(options = {}, req = null) {
         const kTaxInclusive = 0;
         const kTaxExclusive = 1;
         const kUserDefault = "default";
@@ -2084,6 +2142,28 @@ class MyInvoisRouter {
         console.log("submission result");
         console.log(submissionResult)
         
+        // Parse the raw response using parseSubmitDocumentResponse
+        if (submissionResult.rawResponse) {
+          const rawResult = submissionResult.rawResponse;
+          const parsedResult = parseSubmitDocumentResponse(rawResult);
+          
+          console.log("Parsed submission result:", parsedResult);
+          
+          // Use saveSubmissionResult helper to create update data structure
+          const submissionUpdateData = saveSubmissionResult(parsedResult);
+          
+          // Add additional fields
+          const updateData = {
+            'status': 'submitted',
+            'response': rawResult['data'] || null,
+            'rawResponse': rawResult['response'] || rawResult,
+            ...submissionUpdateData
+          };
+          
+          await orderRef.update(updateData);
+          console.log('Order updated with submission results:', updateData);
+        }
+        
         // Update Firestore with submission results
         const updateResult = await this._updateInvoiceWithSubmissionResults(
           storeId,
@@ -2101,10 +2181,83 @@ class MyInvoisRouter {
           console.log('Validating document after submission...');
           const validationResult = await this._validateDocument(
             accessToken,
-            documentUuid
+            documentUuid,
+            req
           );
           
           console.log('Validation result:', validationResult);
+          
+          // Parse validation result
+          let parsedResult;
+          if (validationResult['success'] === true && validationResult['data'] != null) {
+            parsedResult = parseValidateDocumentResponse(validationResult);
+          } else {
+            parsedResult = {
+              'success': false,
+              'error': validationResult['message'] || validationResult['error'] || 'Validation failed'
+            };
+          }
+          
+          // Use saveValidationResult helper to create update data structure
+          const validationUpdateData = saveValidationResult(parsedResult);
+          
+          // Extract validation status and success
+          const validationSuccess = validationResult['success'] || false;
+          const validationStatus = parsedResult['status'] || validationResult['data']?.status || '';
+          
+          // Add additional fields
+          const updateData = {
+            'documentDetailsSuccess': validationSuccess,
+            'documentDetails': validationResult['data'] || null,
+            'validationStatus': validationStatus,
+            'lastValidatedAt': new Date(),
+            ...validationUpdateData
+          };
+          
+          // Check if longId and uuid exist and are not empty, then add to updateData
+          if (parsedResult?.longId && parsedResult.longId.trim() !== '') {
+            updateData['longId'] = parsedResult.longId;
+            console.log('[DEBUG] Adding longId to updateData:', parsedResult.longId);
+          }
+          
+          if (parsedResult?.uuid && parsedResult.uuid.trim() !== '') {
+            updateData['uuid'] = parsedResult.uuid;
+            console.log('[DEBUG] Adding uuid to updateData:', parsedResult.uuid);
+          }
+          
+          await orderRef.update(updateData);
+          console.log('Order updated with validation results:', updateData);
+          
+          // Step 2.5: Check SQL Account integration and create invoice if validation was successful
+          if (validationSuccess === true) {
+            try {
+              // Use already-loaded storeData to check SQL Account integration
+              if (storeData && storeData.integratesqlaccount === true) {
+                console.log('💼 [DEBUG] SQL Account integration enabled, creating invoice...');
+                
+                // Merge updateData (with longId and uuid) into the existing order
+                const updatedOrder = {
+                  ...order,
+                  ...updateData,
+                  //id: orderId
+                };
+                
+                const invoiceResult = await this.sqlAccountRouter.helperCreateCashSalesFromOrder({
+                  order: updatedOrder,
+                  storeId: storeId,
+                  action: 'update'
+                });
+                console.log('📄 [DEBUG] SQL Account Invoice Creation Result:', JSON.stringify(invoiceResult, null, 2));
+              } else {
+                console.log('⏭️ [DEBUG] SQL Account integration not enabled');
+              }
+            } catch (error) {
+              console.error('❌ [DEBUG] SQL Account Invoice Creation Error:', error);
+            }
+          } else {
+            console.log('⏭️ [DEBUG] Validation was not successful');
+          }
+          
           const validationUpdateResult = await this._updateInvoiceWithValidationResults(
             storeId,
             invoiceId,
@@ -2418,7 +2571,7 @@ class MyInvoisRouter {
       }
 
       // First get document details
-      const url = `${this.InvoisURL}/api/v1.0/documents/${uuid}/details`;
+      const url = `${this.getApiUrl(req)}/api/v1.0/documents/${uuid}/details`;
       const headers = {
         'Authorization': `Bearer ${token}`
       };
@@ -2427,7 +2580,7 @@ class MyInvoisRouter {
 
       // Validate the document
       console.log('Validating document...');
-      const validationResult = await this._validateDocument(token, uuid);
+      const validationResult = await this._validateDocument(token, uuid, req);
       
       // Update invoice with validation results
       console.log('Updating invoice with validation results...');

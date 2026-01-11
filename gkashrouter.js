@@ -9,6 +9,7 @@ const UtilDateTime = require("./util/util_datetime");
 const firebase = require("./db");
 const https = require('https');
 const VendingRouter = require('./vendingrouter');
+const SqlAccountRouter = require('./sqlaccountrouter');
 const { UserModel } = require('./models/UserModel');
 const { StampCardModel } = require('./models/StampCardModel');
 const fireStore = firebase.firestore();
@@ -39,6 +40,9 @@ class GKashRouter {
     // Initialize internal vending router for direct method calls
     this.vendingRouter = new VendingRouter();
     
+    // Initialize SQL Account router for invoice creation
+    this.sqlAccountRouter = new SqlAccountRouter();
+    
     this.initializeRoutes();
   }
 
@@ -46,7 +50,7 @@ class GKashRouter {
   initializeRoutes() {
 
     this.router.get('/about', function(req, res) {
-     res.json({ message: `Endpoint for GKash integration v1.17`});
+     res.json({ message: `Endpoint for GKash integration v1.25`});
     });
 
     //point related
@@ -55,14 +59,43 @@ class GKashRouter {
      this.router.post('/send-otp', this.handleSendONEOTP.bind(this));
   
      // Normal endpoints (isBeta = false)
-     this.router.post('/return', (req, res) => this.paymentTBReturn(req, res, false));
-     this.router.post('/crmreturn', (req, res) => this.paymentCRMReturn(req, res, false));
-     this.router.post('/vmreturn', (req, res) => this.paymentVMReturn(req, res, false));
+     this.router.post('/return', (req, res) => {
+       const parsedUrl = url.parse(req.url, true);
+       const version = parsedUrl.query.version || req.body.version || undefined;
+       this.paymentTBReturn(req, res, false, version); //this is used for table ordering
+     });
+     this.router.post('/crmreturn', (req, res) => {
+       const parsedUrl = url.parse(req.url, true);
+       const version = parsedUrl.query.version || req.body.version || undefined;
+       this.paymentCRMReturn(req, res, false, version);
+     });
+     this.router.post('/coinreturn', (req, res) => {
+       const parsedUrl = url.parse(req.url, true);
+       const version = parsedUrl.query.version || req.body.version || undefined;
+       this.paymentCoinReturn(req, res, false, version);
+     });
+     this.router.post('/vmreturn', (req, res) => {
+       const parsedUrl = url.parse(req.url, true);
+       const version = parsedUrl.query.version || req.body.version || undefined;
+       this.paymentVMReturn(req, res, false, version);
+     });
 
      // Beta endpoints (isBeta = true)
-     this.router.post('/betareturn', (req, res) => this.paymentReturn(req, res, false));
-     this.router.post('/betacrmreturn', (req, res) => this.paymentCRMReturn(req, res, false));
-     this.router.post('/betavmreturn', (req, res) => this.paymentVMReturn(req, res, false));
+     this.router.post('/betareturn', (req, res) => {
+       const parsedUrl = url.parse(req.url, true);
+       const version = parsedUrl.query.version || req.body.version || undefined;
+       this.paymentReturn(req, res, false, version);
+     });
+     this.router.post('/betacrmreturn', (req, res) => {
+       const parsedUrl = url.parse(req.url, true);
+       const version = parsedUrl.query.version || req.body.version || undefined;
+       this.paymentCRMReturn(req, res, false, version);
+     });
+     this.router.post('/betavmreturn', (req, res) => {
+       const parsedUrl = url.parse(req.url, true);
+       const version = parsedUrl.query.version || req.body.version || undefined;
+       this.paymentVMReturn(req, res, false, version);
+     });
 
 
      this.router.post('/crmsimplereturn', this.paymentCRMSimpleReturn.bind(this));
@@ -77,12 +110,20 @@ class GKashRouter {
     this.router.post('/remoterefund', this.remote_Refund.bind(this));
     this.router.post('/remotestatus', this.remote_Status.bind(this));
 
+    // Tokenization & recurring payment endpoints
+    this.router.post('/tokenize', this.remote_tokenizePayment.bind(this));
+    this.router.post('/charge-token', this.remote_chargeByToken.bind(this));
+    this.router.post('/tokenizecallback', this.remote_tokenizeCallback.bind(this));
+    this.router.post('/tokenizereturn', this.remote_tokenizeReturn.bind(this));
+
     //customer scan
     this.router.post('/remotegetqr', this.remote_getQR.bind(this));
     this.router.post('/remotegetqrcallback', this.remote_getQRCallBack.bind(this));
 
     // Direct order processing endpoint (no GKash payment required)
     this.router.post('/processOrder', this.handleProcessOrder.bind(this));
+    this.router.post('/processPOSOrder', this.handlePOSProcessOrder.bind(this));
+    this.router.post('/processGamePlayOrder', this.handleGamePlayProcessOrder.bind(this));
 
     // Soundbox payment endpoint
     this.router.post('/soundbox', this.initSoundboxPayment.bind(this));
@@ -96,6 +137,9 @@ class GKashRouter {
     // Soundbox publish e-Invoice endpoint
     this.router.post('/soundboxinvoice', this.publishSoundboxInvoice.bind(this));
 
+    // Payment query endpoint
+    this.router.post('/query', this.paymentQuery.bind(this));
+
     // Voucher limit management endpoints
     this.router.post('/voucher/create-limit', this.createVoucherLimitEndpoint.bind(this));
     this.router.post('/voucher/increment', this.incrementVoucherCountEndpoint.bind(this));
@@ -103,6 +147,11 @@ class GKashRouter {
     this.router.get('/voucher/details/:machineModelId/:voucherId', this.getVoucherLimitDetailsEndpoint.bind(this));
     this.router.get('/voucher/list-all-limits', this.listAllVoucherLimitsEndpoint.bind(this)); // ✨ NEW: List all voucher limits
     this.router.delete('/voucher/remove/:machineModelId/:voucherId', this.removeVoucherLimitEndpoint.bind(this));
+
+    // Pending points management endpoints
+    this.router.post('/pendingpoints/save', this.handleSavePendingPoints.bind(this));
+    this.router.post('/pendingpoints/claim', this.handleClaimPendingPoints.bind(this));
+    //this.router.delete('/pending-points/delete/:userId', this.handleDeletePendingPoints.bind(this));
 
     // Loyalty cards endpoint
     /*
@@ -119,6 +168,11 @@ class GKashRouter {
     */
     this.router.post('/copyloyaltycards', this.handleCopyLoyaltyCards.bind(this));
 
+    // Award order loyalty endpoint - processes loyalty rewards for an existing order
+    // POST /awardOrderLoyalty
+    // Body: { storeId: "S_xxxxx", orderId: "O_xxxxx", userPhoneNumber: "1234567890" }
+    this.router.post('/awardOrderLoyalty', this.handleAwardOrderLoyalty.bind(this));
+
   }
 
 
@@ -131,8 +185,9 @@ class GKashRouter {
   
     // Concatenate parameters for signature calculation
     const timeStamp = Math.floor(Date.now() / 1000).toString();
-    const cSignatureKey = this.cSignatureKey;//"qdz7WDajSMaUOzo";
-    const cCID = this.cCID; //"M102-U-54392";
+    // Allow users to specify their own CID and SignatureKey, with fallback to defaults
+    const cSignatureKey = req.body['SignatureKey'] ?? this.cSignatureKey;
+    const cCID = req.body['CID'] ?? this.cCID;
     var cTID = this.cTID; //"M102-TD-63070";
     var cCartID = "merchant-reference-1731983297"; //`merchant-reference-${timeStamp}`;
     var cAmount = 1;
@@ -151,6 +206,7 @@ class GKashRouter {
     cEmail = req.body['Email'] ?? "";
     cMobileNo = req.body['MobileNo'] ?? "";
     
+    // Calculate signature using the signature key (user-provided or default)
     const formattedAmount = Math.round(parseFloat(cAmount.toString().replace(/,/g, '')) * 100).toString().padStart(3, '0');
     const signatureString = `${cSignatureKey};${formattedAmount};${cCurrency};${cCartID};${cTID}`;
     const signatureKey = crypto.createHash('sha512').update(signatureString).digest('hex').toUpperCase();
@@ -208,9 +264,356 @@ class GKashRouter {
 
   }
 
+  /**
+   * Tokenization + initial payment (form-based, similar to initPayment)
+   *
+   * POST /tokenize
+   * {
+   *   "v_amount": "100.00",
+   *   "v_currency": "MYR",
+   *   "v_cartid": "merchant-reference-712893",
+   *   "recurringtype": "ANNUAL",  // or "MONTHLY", "WEEKLY", etc.
+   *   "returnurl": "https://www.testing.com/api/return",
+   *   "callbackurl": "https://www.testing.com/api/callback"
+   * }
+   *
+   * NOTE:
+   * - This handler uses the form-based payment flow (like initPayment) with recurringtype parameter
+   * - The signature is calculated as: SIGNATUREKEY;CID;CARTID;AMOUNT;CURRENCY (all uppercase)
+   * - You should extract the token from the callback response and store it in your database
+   * - Reference: https://doc.gkash.my/recurring-payments
+   */
+  async remote_tokenizePayment(req, res) {
+    const cSignatureKey =  "ktDoGDCBxSaJSEJ";//this.cSignatureKey;
+    const cCID = "M161-U-40892";//this.cCID;
+
+   
+    
+    // Get parameters from request body (using form field names)
+    let cAmount = req.body['v_amount'] ?? req.body['Amount'] ?? "100.00";
+    let cCurrency = req.body['v_currency'] ?? req.body['Currency'] ?? "MYR";
+    let cCartID = req.body['v_cartid'] ?? req.body['ReferenceNo'] ?? `merchant-reference-${Math.floor(Date.now() / 1000)}`;
+    const recurringType = req.body['recurringtype'] ?? "ANNUAL"; // ANNUAL, MONTHLY, WEEKLY, etc.
+    const returnUrl = req.body['returnurl'] ?? "https://api.foodio.online/gkash/tokenizereturn";
+    const callbackUrl = req.body['callbackurl'] ?? "https://api.foodio.online/gkash/tokenizecallback";
+
+    try {
+      // Signature calculation: SIGNATUREKEY;CID;CARTID;AMOUNT;CURRENCY (all uppercase)
+      // Amount should be without decimal point for signature (e.g., "10000" for 100.00)
+     
+
+      const formattedAmount = Math.round(parseFloat(cAmount.toString().replace(/,/g, '')) * 100).toString();
+      const signatureString = `${cSignatureKey};${cCID};${cCartID};${formattedAmount};${cCurrency}`.toUpperCase();
+      const signatureKey = crypto.createHash('sha512').update(signatureString).digest('hex');
+
+      // Prepare form data (using form field names like initPayment)
+      const postData = {
+        version: "1.5.5",
+        CID: cCID,
+        v_currency: cCurrency,
+        v_amount: String(cAmount),
+        v_cartid: cCartID,
+        signature: signatureKey,
+        returnurl: returnUrl,
+        callbackurl: callbackUrl,
+        recurringtype: recurringType  // Key parameter for tokenization/recurring payments
+      };
+
+      // Convert to form-urlencoded format
+      const formData = querystring.stringify(postData);
+
+      console.log('remote tokenization payment');
+      console.log(postData);
+
+      // Make POST request to payment form endpoint
+      axios.post('https://api-staging.pay.asia/api/paymentform.aspx', formData, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      })
+        .then(response => {
+          console.log('remote tokenization payment return ok');
+          console.log(response.data);
+          // You should extract the token from response.data or callback response
+          // and store it in your own database.
+          res.status(200).send(response.data);
+        })
+        .catch(error => {
+          console.error(error);
+          if (error.response) {
+            res.status(error.response.status || 500).send(error.response.data);
+          } else {
+            res.status(500).send(error.message || 'Error calling GKash tokenization API');
+          }
+        });
+    } catch (error) {
+      console.error(error);
+      res.status(500).send('Error init tokenization payment');
+    }
+  }
+
+  /**
+   * Charge using an existing stored token (form-based)
+   *
+   * POST /charge-token
+   * {
+   *   "token": "GKASH_TOKEN_FROM_PREVIOUS_CALL",
+   *   "v_amount": "100.00",
+   *   "v_currency": "MYR",
+   *   "v_cartid": "merchant-reference-712893",
+   *   "returnurl": "https://www.testing.com/api/return",
+   *   "callbackurl": "https://www.testing.com/api/callback"
+   * }
+   *
+   * NOTE:
+   * - Your own application is responsible for storing and retrieving the token
+   *   in your database. This handler only receives the token and passes it to
+   *   GKash for charging.
+   * - Uses form-based payment flow with token parameter
+   * - Signature calculation: SIGNATUREKEY;CID;CARTID;AMOUNT;CURRENCY (all uppercase)
+   * - Reference: https://doc.gkash.my/recurring-payments
+   */
+  async remote_chargeByToken(req, res) {
+    const cSignatureKey = this.cSignatureKey;
+    const cCID = this.cCID;
+
+    // Get parameters from request body (using form field names)
+    const token = req.body['token'] ?? req.body['Token'] ?? '';
+    let cAmount = req.body['v_amount'] ?? req.body['Amount'] ?? "100.00";
+    let cCurrency = req.body['v_currency'] ?? req.body['Currency'] ?? "MYR";
+    let cCartID = req.body['v_cartid'] ?? req.body['ReferenceNo'] ?? `merchant-reference-${Math.floor(Date.now() / 1000)}`;
+    const returnUrl = req.body['returnurl'] ?? "https://api.foodio.online/gkash/return";
+    const callbackUrl = req.body['callbackurl'] ?? "https://api.foodio.online/gkash/tokenizecallback";
+
+    if (!token) {
+      return res.status(400).send('Token is required');
+    }
+
+    try {
+      // Signature calculation: SIGNATUREKEY;CID;CARTID;AMOUNT;CURRENCY (all uppercase)
+      // Amount should be without decimal point for signature (e.g., "10000" for 100.00)
+      const formattedAmount = Math.round(parseFloat(cAmount.toString().replace(/,/g, '')) * 100).toString();
+      const signatureString = `${cSignatureKey};${cCID};${cCartID};${formattedAmount};${cCurrency}`.toUpperCase();
+      const signatureKey = crypto.createHash('sha512').update(signatureString).digest('hex');
+
+      // Prepare form data (using form field names like initPayment)
+      const postData = {
+        version: "1.5.5",
+        CID: cCID,
+        v_currency: cCurrency,
+        v_amount: String(cAmount),
+        v_cartid: cCartID,
+        signature: signatureKey,
+        returnurl: returnUrl,
+        callbackurl: callbackUrl,
+        token: token  // Token parameter for recurring payment
+      };
+
+      // Convert to form-urlencoded format
+      const formData = querystring.stringify(postData);
+
+      console.log('remote charge by token');
+      console.log(postData);
+
+      // Make POST request to payment form endpoint
+      axios.post('https://api-staging.pay.asia/api/paymentform.aspx', formData, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      })
+        .then(response => {
+          console.log('remote charge by token return ok');
+          console.log(response.data);
+          res.status(200).send(response.data);
+        })
+        .catch(error => {
+          console.error(error);
+          if (error.response) {
+            res.status(error.response.status || 500).send(error.response.data);
+          } else {
+            res.status(500).send(error.message || 'Error calling GKash charge-by-token API');
+          }
+        });
+    } catch (error) {
+      console.error(error);
+      res.status(500).send('Error charge by token payment');
+    }
+  }
+
+  /**
+   * Tokenization callback handler - receives epkey (token) from GKash
+   *
+   * POST /tokenizecallback
+   * 
+   * Callback data from GKash (form-urlencoded):
+   * - CID: Merchant ID
+   * - POID: Payment Order ID
+   * - status: Payment status (e.g., "88 - Transferred")
+   * - description: Payment description (e.g., "00 - Approved")
+   * - cartid: Merchant reference number
+   * - currency: Currency code (e.g., "MYR")
+   * - amount: Payment amount (e.g., "100.00")
+   * - signature: GKash signature
+   * - PaymentType: Payment type (e.g., "Master Credit")
+   * - epkey: The token for recurring payments (THIS IS THE KEY FIELD!)
+   *
+   * Response: "OK" (HTTP 200)
+   *
+   * NOTE:
+   * - The epkey is the token you should store in your database for future recurring payments
+   * - This callback is called by GKash server-to-server after payment completion
+   * - Always return "OK" to acknowledge receipt
+   */
+  async remote_tokenizeCallback(req, res) {
+    console.log("tokenizecallback");
+    console.log(req.body);
+
+    // Extract callback data
+    const vCID = req.body['CID'] ?? "";
+    const vPOID = req.body['POID'] ?? "";
+    const vCartID = req.body['cartid'] ?? "";
+    const vStatus = req.body['status'] ?? "";
+    const vCurrency = req.body['currency'] ?? "";
+    const vAmount = req.body['amount'] ?? "";
+    const vSignature = req.body['signature'] ?? "";
+    const vDescription = req.body['description'] ?? "";
+    const vPaymentType = req.body['PaymentType'] ?? "";
+    const epkey = req.body['epkey'] ?? "";  // THIS IS THE TOKEN!
+
+    console.log('Tokenization callback received:');
+    console.log('CID:', vCID);
+    console.log('POID:', vPOID);
+    console.log('CartID:', vCartID);
+    console.log('Status:', vStatus);
+    console.log('Currency:', vCurrency);
+    console.log('Amount:', vAmount);
+    console.log('Description:', vDescription);
+    console.log('PaymentType:', vPaymentType);
+    console.log('EPKEY (TOKEN):', epkey);
+
+    try {
+      // Prepare callback data with timestamp
+      const timestamp = new Date().toISOString();
+      const callbackData = {
+        CID: vCID,
+        POID: vPOID,
+        cartid: vCartID,
+        status: vStatus,
+        currency: vCurrency,
+        amount: vAmount,
+        signature: vSignature,
+        description: vDescription,
+        PaymentType: vPaymentType,
+        epkey: epkey,  // Store the token
+        timestamp: timestamp,
+        source: 'tokenization_callback'
+      };
+
+      // Store callback data in Firestore (use cartid as document ID)
+      if (vCartID) {
+        await this.writeWithRetry(
+          fireStore.collection("gkash_tokenization").doc(vCartID),
+          callbackData
+        );
+        console.log(`Tokenization callback stored for cartid: ${vCartID}`);
+        
+        // Log the token extraction for visibility
+        if (epkey) {
+          console.log(`✅ TOKEN EXTRACTED: ${epkey} for cartid: ${vCartID}`);
+          console.log('⚠️ IMPORTANT: Store this epkey in your database for future recurring payments!');
+        } else {
+          console.log('⚠️ WARNING: No epkey (token) found in callback response');
+        }
+      } else {
+        console.log('⚠️ WARNING: No cartid found, cannot store callback data');
+      }
+
+      // Always return "OK" to acknowledge receipt (GKash requirement)
+      res.status(200).send("OK");
+    } catch (error) {
+      console.error('Error processing tokenization callback:', error);
+      // Even on error, return "OK" to prevent GKash from retrying
+      res.status(200).send("OK");
+    }
+  }
+
+  async remote_tokenizeReturn(req, res) {
+    console.log("tokenizereturn");
+    console.log(req.body);
+
+    // Extract callback data
+    // const vCID = req.body['CID'] ?? "";
+    // const vPOID = req.body['POID'] ?? "";
+    // const vCartID = req.body['cartid'] ?? "";
+    // const vStatus = req.body['status'] ?? "";
+    // const vCurrency = req.body['currency'] ?? "";
+    // const vAmount = req.body['amount'] ?? "";
+    // const vSignature = req.body['signature'] ?? "";
+    // const vDescription = req.body['description'] ?? "";
+    // const vPaymentType = req.body['PaymentType'] ?? "";
+    // const epkey = req.body['epkey'] ?? "";  // THIS IS THE TOKEN!
+
+    // console.log('Tokenization callback received:');
+    // console.log('CID:', vCID);
+    // console.log('POID:', vPOID);
+    // console.log('CartID:', vCartID);
+    // console.log('Status:', vStatus);
+    // console.log('Currency:', vCurrency);
+    // console.log('Amount:', vAmount);
+    // console.log('Description:', vDescription);
+    // console.log('PaymentType:', vPaymentType);
+    // console.log('EPKEY (TOKEN):', epkey);
+
+    try {
+      // Prepare callback data with timestamp
+      // const timestamp = new Date().toISOString();
+      // const callbackData = {
+      //   CID: vCID,
+      //   POID: vPOID,
+      //   cartid: vCartID,
+      //   status: vStatus,
+      //   currency: vCurrency,
+      //   amount: vAmount,
+      //   signature: vSignature,
+      //   description: vDescription,
+      //   PaymentType: vPaymentType,
+      //   epkey: epkey,  // Store the token
+      //   timestamp: timestamp,
+      //   source: 'tokenization_callback'
+      // };
+
+      // Store callback data in Firestore (use cartid as document ID)
+      // if (vCartID) {
+      //   await this.writeWithRetry(
+      //     fireStore.collection("gkash_tokenization").doc(vCartID),
+      //     callbackData
+      //   );
+      //   console.log(`Tokenization callback stored for cartid: ${vCartID}`);
+        
+      //   // Log the token extraction for visibility
+      //   if (epkey) {
+      //     console.log(`✅ TOKEN EXTRACTED: ${epkey} for cartid: ${vCartID}`);
+      //     console.log('⚠️ IMPORTANT: Store this epkey in your database for future recurring payments!');
+      //   } else {
+      //     console.log('⚠️ WARNING: No epkey (token) found in callback response');
+      //   }
+      // } else {
+      //   console.log('⚠️ WARNING: No cartid found, cannot store callback data');
+      // }
+
+      // Always return "OK" to acknowledge receipt (GKash requirement)
+      res.status(200).send("OK");
+    } catch (error) {
+      console.error('Error processing tokenization callback:', error);
+      // Even on error, return "OK" to prevent GKash from retrying
+      res.status(200).send("OK");
+    }
+  }
+
   async remote_cancelPayment(req, res)  {
 
-    const cSignatureKey = this.cSignatureKey; //"qdz7WDajSMaUOzo";
+    // Allow users to specify their own SignatureKey, with fallback to default
+    const cSignatureKey = req.body['SignatureKey'] ?? this.cSignatureKey;
     var cTID = this.cTID; // "M102-TD-63070";
     cTID = req.body['TerminalId'] ?? "";
    
@@ -687,14 +1090,76 @@ async remote_getQR(req,res)
 
 
   //ONE WAY SMS OTP related
+  /**
+   * Verifies the OTP verification token sent from the frontend
+   * @param {string} phoneNumber - The phone number from the request
+   * @param {string} verificationToken - The verification token from the request
+   * @returns {boolean} - True if token is valid, false otherwise
+   */
+  verifyOtpToken(phoneNumber, verificationToken) {
+    try {
+      // IMPORTANT: This should match the public key used in Flutter app (constants.dart)
+      const OTP_VERIFICATION_SECRET_KEY = '6LdjBzcsAAAAAEMQwYSw6sd2ThtZG5EQxtD9OSHa';
+      
+      // Generate the expected token using the same method as frontend
+      // HMAC-SHA256 of phoneNumber using secret key
+      const key = Buffer.from(OTP_VERIFICATION_SECRET_KEY, 'utf8');
+      const message = Buffer.from(phoneNumber, 'utf8');
+      
+      // Generate HMAC-SHA256
+      const hmac = crypto.createHmac('sha256', key);
+      hmac.update(message);
+      const digest = hmac.digest();
+      
+      // Encode to base64 (same as frontend)
+      const expectedToken = digest.toString('base64');
+      
+      // Compare tokens (use timing-safe comparison to prevent timing attacks)
+      return crypto.timingSafeEqual(
+        Buffer.from(verificationToken, 'base64'),
+        Buffer.from(expectedToken, 'base64')
+      );
+    } catch (error) {
+      console.error('❌ [OTP TOKEN] Error verifying OTP token:', error);
+      return false;
+    }
+  }
+
   async handleSendONEOTP(req, res) {
     const phoneNumber = req.body.phonenumber;
+    const verificationToken = req.body.verification_token;
+    
+    // Print verification_token if received
+    if (verificationToken) {
+      console.log('🔑 [OTP TOKEN] Received verification_token:', verificationToken);
+    } else {
+      console.log('⚠️ [OTP TOKEN] No verification_token provided in request');
+    }
+    
     if (!phoneNumber) {
       res.status(400).json({ 
         otp: "",
         message: 'Phone number is required.' 
       });
       return;
+    }
+    
+    // Verify OTP token if provided
+    if (verificationToken) {
+      const isValidToken = this.verifyOtpToken(phoneNumber, verificationToken);
+      console.log('🔑 [OTP TOKEN] Token verification result:', isValidToken ? 'VALID' : 'INVALID');
+      
+      if (!isValidToken) {
+        console.log('❌ [OTP TOKEN] Invalid verification token - rejecting request');
+        res.status(401).json({ 
+          otp: "",
+          message: 'Invalid verification token.' 
+        });
+        return;
+      }
+      console.log('✅ [OTP TOKEN] Verification token is valid');
+    } else {
+      console.log('⚠️ [OTP TOKEN] No verification token provided - skipping token verification');
     }
   
     try {
@@ -1030,7 +1495,38 @@ async testSendOTP()
       //console.log("payment crm redirected to " + redirectTo);
   }
 
-  async paymentCRMReturn (req, res, isBeta){
+  /**
+   * Get the base URL for a given version
+   * @param {string} version - Version identifier (ab3b2, code8, cloud9, best10, market)
+   * @param {boolean} isBeta - Whether this is a beta endpoint
+   * @returns {string} Base URL for the version
+   */
+  getVersionBaseUrl(version, isBeta) {
+    // If version is specified, use it
+    if (version) {
+      const versionMap = {
+        'ab3b2': 'foodio-online-ab3b2.web.app',
+        'code8': 'foodio-online-code8.web.app',
+        'cloud9': 'foodio-online-cloud9.web.app',
+        'best10': 'foodio-online-best10.web.app',
+        'market': 'foodio-market.web.app'
+      };
+      
+      const baseUrl = versionMap[version.toLowerCase()];
+      if (baseUrl) {
+        return `https://${baseUrl}`;
+      }
+    }
+    
+    // Default behavior: best10 for non-beta, cloud9 for beta
+    if (isBeta) {
+      return 'https://foodio-online-cloud9.web.app';
+    } else {
+      return 'https://foodio-online-best10.web.app';
+    }
+  }
+
+  async paymentCoinReturn (req, res, isBeta, version){
 
     const dateTime = new UtilDateTime();
     
@@ -1040,6 +1536,8 @@ async testSendOTP()
 
     // Access individual parameters
     const storeId = queryParams.STOREID || 'defaultStore'; 
+    // Extract version from query params or body if not provided as parameter
+    const versionParam = version || queryParams.version || req.body.version || undefined;
     console.log("storeid:" + storeId);
 
       
@@ -1079,13 +1577,9 @@ async testSendOTP()
     );
 
     // Setup redirect URLs
-    var urlSuccessHeader = "https://foodio-online-best10.web.app/#/crmsuccess/" + storeId + "/" + vCartID + "/" ;
-    var urlFailHeader = "https://foodio-online-best10.web.app/#/crmfailed/" + storeId + "/" + vCartID + "/" ;
-
-    if(isBeta) {
-      urlSuccessHeader = "https://foodio-online-cloud9.web.app/#/crmsuccess/" + storeId + "/" + vCartID + "/" ;
-      urlFailHeader = "https://foodio-online-cloud9.web.app/#/crmfailed/" + storeId + "/" + vCartID + "/" ;
-    }
+    const baseUrl = this.getVersionBaseUrl(versionParam, isBeta);
+    var urlSuccessHeader = baseUrl + "/#/coinsuccess/" + storeId + "/" + vCartID + "/" ;
+    var urlFailHeader = baseUrl + "/#/coinfailed/" + storeId + "/" + vCartID + "/" ;
 
     var redirectTo = urlSuccessHeader;
 
@@ -1124,7 +1618,131 @@ async testSendOTP()
           deleteOrderTemp: false       // Keep order_temp for debugging
         };
         
-        const result = await this.processOrderTransaction(storeId, vCartID, gkashResult, crmOptions);
+        const result = await this.processOrderTransaction(storeId, vCartID, gkashResult, crmOptions, 'COIN');
+        
+        if (result.status === 'success') {
+          console.log("Order transaction processed successfully:", result.message);
+          // Redirect to success page
+          res.redirect(redirectTo);
+          console.log("payment and order processing successful, redirected with status " + vStatus);
+          console.log("redirected to " + redirectTo);
+        } else {
+          console.error("Order transaction failed:", result.error);
+          // Redirect to failed page since order processing failed
+          res.redirect(urlFailHeader);
+          console.log("payment successful but order processing failed, redirected to failed page");
+          console.log("redirected to " + urlFailHeader);
+        }
+      }
+      else
+      {
+        res.redirect(redirectTo);
+        console.log("payment and order processing successful, redirected with status " + vStatus);
+        console.log("redirected to " + redirectTo);
+      }
+
+    } catch (error) {
+      console.error("Error processing order transaction:", error);
+      // Redirect to failed page since order processing failed
+      res.redirect(urlFailHeader);
+      console.log("payment successful but order processing error, redirected to failed page");
+      console.log("redirected to " + urlFailHeader);
+    }
+  }
+
+  async paymentCRMReturn (req, res, isBeta, version){
+
+    const dateTime = new UtilDateTime();
+    
+     // Parse the query parameters
+    const parsedUrl = url.parse(req.url);
+    const queryParams = querystring.parse(parsedUrl.query);
+
+    // Access individual parameters
+    const storeId = queryParams.STOREID || 'defaultStore'; 
+    // Extract version from query params or body if not provided as parameter
+    const versionParam = version || queryParams.version || req.body.version || undefined;
+    console.log("storeid:" + storeId);
+
+      
+    let vCID =  req.body['CID'] ?? "";
+    let vPOID = req.body['POID'] ?? "";
+    let vCartID = req.body['cartid'] ?? "";
+    let vStatus = req.body['status'] ?? "";
+    let vCurrency = req.body['currency'] ?? "";
+    let vAmount = req.body['amount'] ?? "";
+    let vSignature = req.body['signature'] ?? "";
+    let vDescription = req.body['description'] ?? "";
+    let vPaymentType = req.body['PaymentType'] ?? "";
+
+    console.log('vCID:', vCID);
+    console.log('vPOID:', vPOID);
+    console.log('vCartID:', vCartID);
+    console.log('vStatus:', vStatus);
+    console.log('vCurrency:', vCurrency);
+    console.log('vAmount:', vAmount);
+    console.log('vSignature:', vSignature);
+    console.log('vDescription:', vDescription);
+    console.log('vPaymentType:', vPaymentType);
+
+    // Write GKash transaction log
+    writeGKashTransaction(storeId, dateTime.getCurrentDateString(),
+      {
+        CID: vCID,
+        POID: vPOID,
+        CARTID : vCartID,
+        STATUS: vStatus,
+        CURRENCY: vCurrency,
+        AMOUNT: vAmount,
+        SIGNATURE: vSignature,
+        DESC: vDescription,
+        PAYMENT_TYPE : vPaymentType
+       }
+    );
+
+    // Setup redirect URLs
+    const baseUrl = this.getVersionBaseUrl(versionParam, isBeta);
+    var urlSuccessHeader = baseUrl + "/#/crmsuccess/" + storeId + "/" + vCartID + "/" ;
+    var urlFailHeader = baseUrl + "/#/crmfailed/" + storeId + "/" + vCartID + "/" ;
+
+    var redirectTo = urlSuccessHeader;
+
+    // Check if payment was successful
+    if(vStatus.includes("88") == false) {
+      redirectTo = urlFailHeader;
+      res.redirect(redirectTo);
+      console.log("payment failed, redirected with status " + vStatus);
+      console.log("payment redirected to " + redirectTo);
+      return;
+    }
+
+    // Payment was successful, process the order transaction
+    try {
+      console.log("Payment successful, processing order transaction...");
+      
+      const gkashResult = {
+        CID: vCID,
+        POID: vPOID,
+        CARTID : vCartID,
+        STATUS: vStatus,
+        CURRENCY: vCurrency,
+        AMOUNT: vAmount,
+        SIGNATURE: vSignature,
+        DESC: vDescription,
+        PAYMENT_TYPE : vPaymentType
+      };
+
+      // Process the order transaction using the new method with CRM-specific options
+      if(true)
+      {
+        const crmOptions = {
+          enablePrinting: false,        // Enable receipt printing
+          enablePickingList: false,     // Generate picking lists
+          enableFullProcessing: true,  // Enable all processing features
+          deleteOrderTemp: false       // Keep order_temp for debugging
+        };
+        
+        const result = await this.processOrderTransaction(storeId, vCartID, gkashResult, crmOptions, 'CRM');
         
         if (result.status === 'success') {
           console.log("Order transaction processed successfully:", result.message);
@@ -1157,7 +1775,7 @@ async testSendOTP()
   }
 
 
-  async paymentTBReturn (req, res, isBeta){
+  async paymentTBReturn (req, res, isBeta, version){
   const dateTime = new UtilDateTime();
     // const {
     //   CID,
@@ -1183,6 +1801,151 @@ async testSendOTP()
 
     // Access individual parameters
     const storeId = queryParams.STOREID || 'defaultStore';
+    // Extract version from query params or body if not provided as parameter
+    const versionParam = version || queryParams.version || req.body.version || undefined;
+    console.log("storeid:" + storeId);
+
+
+    let vCID =  req.body['CID'] ?? "";
+    let vPOID = req.body['POID'] ?? "";
+    let vCartID = req.body['cartid'] ?? "";
+    let vStatus = req.body['status'] ?? "";
+    let vCurrency = req.body['currency'] ?? "";
+    let vAmount = req.body['amount'] ?? "";
+    let vSignature = req.body['signature'] ?? "";
+    let vDescription = req.body['description'] ?? "";
+    let vPaymentType = req.body['PaymentType'] ?? "";
+
+    console.log("paymentTBReturn return called");
+    console.log('vCID:', vCID);
+    console.log('vPOID:', vPOID);
+    console.log('vCartID:', vCartID);
+    console.log('vStatus:', vStatus);
+    console.log('vCurrency:', vCurrency);
+    console.log('vAmount:', vAmount);
+    console.log('vSignature:', vSignature);
+    console.log('vDescription:', vDescription);
+    console.log('vPaymentType:', vPaymentType);
+
+
+
+    writeGKashTransaction(storeId, dateTime.getCurrentDateString(),
+      {
+        CID: vCID,
+        POID: vPOID,
+        CARTID : vCartID,
+        STATUS: vStatus,
+        CURRENCY: vCurrency,
+        AMOUNT: vAmount,
+        SIGNATURE: vSignature,
+        DESC: vDescription,
+        PAYMENT_TYPE : vPaymentType
+       }
+
+      );
+
+
+      const baseUrl = this.getVersionBaseUrl(versionParam, isBeta);
+      var urlSuccessHeader = baseUrl + "/#/tbsuccess/" + storeId + "/" + vCartID + "/" ;
+      var urlFailHeader = baseUrl + "/#/tbfailed/" + storeId + "/" + vCartID + "/" ;
+      var redirectTo = urlSuccessHeader;
+
+    // Check if payment was successful
+    if(vStatus.includes("88") == false) {
+      redirectTo = urlFailHeader;
+      res.redirect(redirectTo);
+      console.log("payment failed, redirected with status " + vStatus);
+      console.log("payment redirected to " + redirectTo);
+      return;
+    }
+
+    // Payment was successful, process the order transaction
+    try {
+      console.log("VM Payment successful, processing order transaction...");
+      
+      const gkashResult = {
+        CID: vCID,
+        POID: vPOID,
+        CARTID : vCartID,
+        STATUS: vStatus,
+        CURRENCY: vCurrency,
+        AMOUNT: vAmount,
+        SIGNATURE: vSignature,
+        DESC: vDescription,
+        PAYMENT_TYPE : vPaymentType
+      };
+
+      // Process the order transaction using the new method with VM-specific options
+      if(true)
+      {
+                 const vmOptions = {
+           enablePrinting: false,       // Disable receipt printing for vending
+           enablePickingList: false,    // Disable picking lists for vending
+           enableFullProcessing: true,  // Enable all processing features
+           deleteOrderTemp: false        // Clean up order_temp after processing
+         };
+        
+        const result = await this.processOrderTransaction(storeId, vCartID, gkashResult, vmOptions, 'TB');
+        
+        if (result.status === 'success') {
+          console.log("VM Order transaction processed successfully:", result.message);
+          // Redirect to success page
+          res.redirect(redirectTo);
+          console.log("VM payment and order processing successful, redirected with status " + vStatus);
+          console.log("VM redirected to " + redirectTo);
+        } else {
+          console.error("VM Order transaction failed:", result.error);
+          // Redirect to failed page since order processing failed
+          res.redirect(urlFailHeader);
+          console.log("VM payment successful but order processing failed, redirected to failed page");
+          console.log("VM redirected to " + urlFailHeader);
+        }
+      }
+      else
+      {
+        res.redirect(redirectTo);
+        console.log("VM payment and order processing successful, redirected with status " + vStatus);
+        console.log("VM redirected to " + redirectTo);
+      }
+
+    } catch (error) {
+      console.error("VM Error processing order transaction:", error);
+      // Redirect to failed page since order processing failed
+      res.redirect(urlFailHeader);
+      console.log("VM payment successful but order processing error, redirected to failed page");
+      console.log("VM redirected to " + urlFailHeader);
+    }
+
+  }
+
+ async paymentVMReturn (req, res, isBeta, version){
+  const dateTime = new UtilDateTime();
+    // const {
+    //   CID,
+    //   POID,
+    //   status,
+    //   cartid,
+    //   currency,
+    //   amount,
+    //   signature,
+    //   description,
+    //   PaymentType,
+    // } = req.body;
+    // let refId =  req.body['CID'] ?? "";
+    // console.log("**** payment return called: req");
+    // console.log(refId);
+    // console.log("**** payment return called: res");
+    // console.log(res);
+     // res.send("***payment return called");
+
+     // Parse the query parameters
+    const parsedUrl = url.parse(req.url);
+    const queryParams = querystring.parse(parsedUrl.query);
+
+    // Access individual parameters
+    const storeId = queryParams.STOREID || 'defaultStore';
+    // Extract version from query params or body if not provided as parameter
+    const versionParam = version || queryParams.version || req.body.version || undefined;
     console.log("storeid:" + storeId);
 
 
@@ -1224,14 +1987,9 @@ async testSendOTP()
       );
 
 
-      var urlSuccessHeader = "https://foodio-online-best10.web.app/#/tbsuccess/" + storeId + "/" + vCartID + "/" ;
-      var urlFailHeader = "https://foodio-online-best10.web.app/#/tbfailed/" + storeId + "/" + vCartID + "/" ;
-
-      if(isBeta)
-      {
-        urlSuccessHeader = "https://foodio-online-cloud9.web.app/#/tbsuccess/" + storeId + "/" + vCartID + "/" ;
-             urlFailHeader = "https://foodio-online-cloud9.web.app/#/tbfailed/" + storeId + "/" + vCartID + "/" ;
-      }
+      const baseUrl = this.getVersionBaseUrl(versionParam, isBeta);
+      var urlSuccessHeader = baseUrl + "/#/success/" + storeId + "/" + vCartID + "/" ;
+      var urlFailHeader = baseUrl + "/#/failed/" + storeId + "/" + vCartID + "/" ;
       var redirectTo = urlSuccessHeader;
 
     // Check if payment was successful
@@ -1269,7 +2027,7 @@ async testSendOTP()
            deleteOrderTemp: false        // Clean up order_temp after processing
          };
         
-        const result = await this.processOrderTransaction(storeId, vCartID, gkashResult, vmOptions);
+        const result = await this.processOrderTransaction(storeId, vCartID, gkashResult, vmOptions, 'VM');
         
         if (result.status === 'success') {
           console.log("VM Order transaction processed successfully:", result.message);
@@ -1302,152 +2060,7 @@ async testSendOTP()
 
   }
 
- async paymentVMReturn (req, res, isBeta){
-  const dateTime = new UtilDateTime();
-    // const {
-    //   CID,
-    //   POID,
-    //   status,
-    //   cartid,
-    //   currency,
-    //   amount,
-    //   signature,
-    //   description,
-    //   PaymentType,
-    // } = req.body;
-    // let refId =  req.body['CID'] ?? "";
-    // console.log("**** payment return called: req");
-    // console.log(refId);
-    // console.log("**** payment return called: res");
-    // console.log(res);
-     // res.send("***payment return called");
-
-     // Parse the query parameters
-    const parsedUrl = url.parse(req.url);
-    const queryParams = querystring.parse(parsedUrl.query);
-
-    // Access individual parameters
-    const storeId = queryParams.STOREID || 'defaultStore';
-    console.log("storeid:" + storeId);
-
-
-    let vCID =  req.body['CID'] ?? "";
-    let vPOID = req.body['POID'] ?? "";
-    let vCartID = req.body['cartid'] ?? "";
-    let vStatus = req.body['status'] ?? "";
-    let vCurrency = req.body['currency'] ?? "";
-    let vAmount = req.body['amount'] ?? "";
-    let vSignature = req.body['signature'] ?? "";
-    let vDescription = req.body['description'] ?? "";
-    let vPaymentType = req.body['PaymentType'] ?? "";
-
-    console.log('vCID:', vCID);
-    console.log('vPOID:', vPOID);
-    console.log('vCartID:', vCartID);
-    console.log('vStatus:', vStatus);
-    console.log('vCurrency:', vCurrency);
-    console.log('vAmount:', vAmount);
-    console.log('vSignature:', vSignature);
-    console.log('vDescription:', vDescription);
-    console.log('vPaymentType:', vPaymentType);
-
-
-
-    writeGKashTransaction(storeId, dateTime.getCurrentDateString(),
-      {
-        CID: vCID,
-        POID: vPOID,
-        CARTID : vCartID,
-        STATUS: vStatus,
-        CURRENCY: vCurrency,
-        AMOUNT: vAmount,
-        SIGNATURE: vSignature,
-        DESC: vDescription,
-        PAYMENT_TYPE : vPaymentType
-       }
-
-      );
-
-
-      var urlSuccessHeader = "https://foodio-online-best10.web.app/#/success/" + storeId + "/" + vCartID + "/" ;
-      var urlFailHeader = "https://foodio-online-best10.web.app/#/failed/" + storeId + "/" + vCartID + "/" ;
-
-      if(isBeta)
-      {
-        urlSuccessHeader = "https://foodio-online-cloud9.web.app/#/success/" + storeId + "/" + vCartID + "/" ;
-             urlFailHeader = "https://foodio-online-cloud9.web.app/#/failed/" + storeId + "/" + vCartID + "/" ;
-      }
-      var redirectTo = urlSuccessHeader;
-
-    // Check if payment was successful
-    if(vStatus.includes("88") == false) {
-      redirectTo = urlFailHeader;
-      res.redirect(redirectTo);
-      console.log("payment failed, redirected with status " + vStatus);
-      console.log("payment redirected to " + redirectTo);
-      return;
-    }
-
-    // Payment was successful, process the order transaction
-    try {
-      console.log("VM Payment successful, processing order transaction...");
-      
-      const gkashResult = {
-        CID: vCID,
-        POID: vPOID,
-        CARTID : vCartID,
-        STATUS: vStatus,
-        CURRENCY: vCurrency,
-        AMOUNT: vAmount,
-        SIGNATURE: vSignature,
-        DESC: vDescription,
-        PAYMENT_TYPE : vPaymentType
-      };
-
-      // Process the order transaction using the new method with VM-specific options
-      if(true)
-      {
-                 const vmOptions = {
-           enablePrinting: false,       // Disable receipt printing for vending
-           enablePickingList: false,    // Disable picking lists for vending
-           enableFullProcessing: true,  // Enable all processing features
-           deleteOrderTemp: false        // Clean up order_temp after processing
-         };
-        
-        const result = await this.processOrderTransaction(storeId, vCartID, gkashResult, vmOptions);
-        
-        if (result.status === 'success') {
-          console.log("VM Order transaction processed successfully:", result.message);
-          // Redirect to success page
-          res.redirect(redirectTo);
-          console.log("VM payment and order processing successful, redirected with status " + vStatus);
-          console.log("VM redirected to " + redirectTo);
-        } else {
-          console.error("VM Order transaction failed:", result.error);
-          // Redirect to failed page since order processing failed
-          res.redirect(urlFailHeader);
-          console.log("VM payment successful but order processing failed, redirected to failed page");
-          console.log("VM redirected to " + urlFailHeader);
-        }
-      }
-      else
-      {
-        res.redirect(redirectTo);
-        console.log("VM payment and order processing successful, redirected with status " + vStatus);
-        console.log("VM redirected to " + redirectTo);
-      }
-
-    } catch (error) {
-      console.error("VM Error processing order transaction:", error);
-      // Redirect to failed page since order processing failed
-      res.redirect(urlFailHeader);
-      console.log("VM payment successful but order processing error, redirected to failed page");
-      console.log("VM redirected to " + urlFailHeader);
-    }
-
-  }
-
-  async processOrderTransaction(storeId, orderId, gkashResult, options = {}) {
+  async processOrderTransaction(storeId, orderId, gkashResult, options = {}, caller = 'UNKNOWN') {
     const dateTime = new UtilDateTime();
     
     // Process options with defaults
@@ -1457,9 +2070,12 @@ async testSendOTP()
       enableFullProcessing = true,  // Whether to enable all processing features
       deleteOrderTemp = false       // Whether to delete order_temp after processing
     } = options;
+
+    let isCOIN = (caller === "COIN");
     
     try {
       console.log('🚀 [DEBUG] Starting processOrderTransaction for storeId:', storeId, 'orderId:', orderId);
+      console.log('🚀 [DEBUG] Caller:', caller);
       console.log('🚀 [DEBUG] Options:', JSON.stringify(options));
       console.log('🚀 [DEBUG] GKash Result:', JSON.stringify(gkashResult));
 
@@ -1539,6 +2155,8 @@ async testSendOTP()
       }
       console.log('✅ [DEBUG] Step 2 Complete: Order found with ID:', currentOrderModel.id);
 
+
+
       // Step 3: Validate order
       console.log('🔍 [DEBUG] Step 3: Validating order...');
       if (!this.isValidOrder(currentOrderModel)) {
@@ -1565,7 +2183,7 @@ async testSendOTP()
         console.log('💳 [DEBUG] Step 4.5: Processing credit payment...');
         await this.processCreditPayment(currentOrderModel, phoneString);
         console.log('✅ [DEBUG] Step 4.5 Complete: Credit payment processed');
-      } else if (enableFullProcessing && currentOrderModel.paymenttype.toUpperCase() !== "FREE" && currentOrderModel.paymenttype.toUpperCase() !== "COD") {
+      } else if (enableFullProcessing && (currentOrderModel.paymenttype || "").toUpperCase() !== "FREE" && (currentOrderModel.paymenttype || "").toUpperCase() !== "COD") {
         console.log('⏳ [DEBUG] Step 4.5: Waiting for GKash order confirmation...');
         console.log('💰 [DEBUG] Payment type:', currentOrderModel.paymenttype, '- requires GKash confirmation');
         try {
@@ -1600,10 +2218,10 @@ async testSendOTP()
         await this.saveOrderToCollections(storeId, currentOrderModel, phoneString);
       }
       
-      // Always save to myInvois collection
+      // Always save to myInvois collection (non-blocking)
       if (enableFullProcessing && (currentOrderModel.paymenttype !== "COD") ) {
         console.log('📄 [DEBUG] Saving to myInvois collection...');
-        await this.saveToMyInvois(storeId, currentOrderModel);
+        this.saveToMyInvois(storeId, currentOrderModel);
       }
       else
       {
@@ -1637,6 +2255,8 @@ async testSendOTP()
         console.log('⏭️ [DEBUG] Step 8.5 Skipped: No free vouchers or invalid phone number');
       }
 
+
+
       // Step 9: Add loyalty points
       console.log('⭐ [DEBUG] Step 9: Adding loyalty points...');
       const pointsAdded = await this.addOrderWithLoyaltyPoints(phoneString, currentOrderModel, currentStoreModel);
@@ -1645,8 +2265,8 @@ async testSendOTP()
       // Step 9.2: Award stamp card progress (if eligible)
       try {
         if (phoneString !== "0") {
-          console.log('🟩 [DEBUG] Step 9.2: Awarding stamp card (if eligible)... ',   parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice));
-          const orderTotalForStamp = parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice);
+          console.log('🟩 [DEBUG] Step 9.2: Awarding stamp card (if eligible)... ',   parseFloat(currentOrderModel.totalpaid ));
+          const orderTotalForStamp =  parseFloat(currentOrderModel.totalpaid ); //parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice);
           await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid);
           console.log('✅ [DEBUG] Step 9.2 Complete: Stamp card award step executed');
         } else {
@@ -1669,7 +2289,7 @@ async testSendOTP()
       }
 
       // Step 10.5: Generate ESL picking list (for non-vending orders)
-      if (enableFullProcessing && enablePickingList && !isVendingOrder) {
+      if (enableFullProcessing && enablePickingList && !isVendingOrder && !isCOIN) {
         console.log('📋 [DEBUG] Step 10.5: Generating ESL picking list...');
         await this.generatePickingList(storeId, currentOrderModel, currentStoreModel);
         console.log('✅ [DEBUG] Step 10.5 Complete: ESL picking list generated');
@@ -1678,7 +2298,7 @@ async testSendOTP()
       }
 
       // Step 10.6: Handle Feie receipt printing (for non-vending orders)
-      if (enableFullProcessing && enablePrinting && !isVendingOrder) {
+      if (enableFullProcessing && enablePrinting && !isVendingOrder && !isCOIN) {
         console.log('🖨️ [DEBUG] Step 10.6: Processing Feie receipt printing...');
         await this.handleFeieReceipt(currentOrderModel, currentStoreModel);
         console.log('✅ [DEBUG] Step 10.6 Complete: Feie receipts processed');
@@ -1687,7 +2307,7 @@ async testSendOTP()
       }
 
       // Step 10.7: Retrieve pickup code for vending orders
-      if (enableFullProcessing && isVendingOrder && currentOrderModel.vendingid) {
+      if (enableFullProcessing && isVendingOrder && currentOrderModel.vendingid && !isCOIN) {
         console.log('🔑 [DEBUG] Step 10.7: Retrieving pickup code for vending order...');
         await this.retrievePickupCode(currentOrderModel, phoneString);
         console.log('✅ [DEBUG] Step 10.7 Complete: Pickup code retrieved');
@@ -1700,11 +2320,37 @@ async testSendOTP()
         console.log('⏭️ [DEBUG] Step 10.7 Skipped: No pickup code retrieval needed');
       }
 
+
+      // Step 10.8: Check SQL Account integration and create invoice if enabled
+            const storeData = storeResult.data();
+            if (storeData && storeData.integratesqlaccount === true) {
+              console.log('💼 [DEBUG] Step 10.8: SQL Account integration enabled, creating cash sales...');
+              console.log(currentOrderModel);
+              try {
+                const invoiceResult = await this.sqlAccountRouter.helperCreateCashSalesFromOrder({
+                  order: currentOrderModel,
+                  storeId: storeId
+                });
+                console.log('📄 [DEBUG] SQL Account Invoice Creation Result:', JSON.stringify(invoiceResult, null, 2));
+              } catch (error) {
+                console.error('❌ [DEBUG] SQL Account Invoice Creation Error:', error);
+              }
+            } else {
+              console.log('⏭️ [DEBUG] Step 2.5 Skipped: SQL Account integration not enabled');
+            }
+
       // Step 11: Update order_temp with the latest order model
       console.log('🔄 [DEBUG] Step 11: Updating order_temp with latest order model... ' + storeId + " " + orderId);
 
       await this.updateOrderTempMyReport(storeId, orderId, currentOrderModel);
-      console.log('✅ [DEBUG] Step 11 Complete: order_temp updated with processed data');
+      console.log('✅ [DEBUG] Step 11 Complete: order_temp updated to cart order with processed data');
+       await this.updateCurrentOrderToUser(currentOrderModel, caller); //this will save order to user -> cart_order
+       console.log('✅ [DEBUG] Step 11.1 Complete: current gkash order to user updated with processed data');
+       
+       // Step 11.2: Process blindbox voucher if present
+       console.log('🎁 [DEBUG] Step 11.2: Processing blindbox voucher...');
+       await this.processBlindboxVoucher(currentOrderModel, phoneString);
+       console.log('✅ [DEBUG] Step 11.2 Complete: blindbox voucher processing done');
 
       // Step 12: Cleanup order (delete order_temp if requested)
       if (enableFullProcessing && deleteOrderTemp) {
@@ -1738,6 +2384,660 @@ async testSendOTP()
       console.error('💥 [DEBUG] FATAL ERROR in processOrderTransaction:', error);
       console.error('💥 [DEBUG] Error stack:', error.stack);
       return { id: "", status: 'error', error: error.message || error };
+    }
+  }
+
+
+  async processPOSOrderTransaction(storeId, orderId, gkashResult, options = {}, caller = 'UNKNOWN') {
+    const dateTime = new UtilDateTime();
+    
+    // Process options with defaults
+    const {
+      enablePrinting = false,        // Whether to enable receipt printing
+      enablePickingList = false,     // Whether to generate picking lists
+      enableFullProcessing = true,  // Whether to enable all processing features
+      deleteOrderTemp = false       // Whether to delete order_temp after processing
+    } = options;
+    
+    try {
+      console.log('🚀 [POS DEBUG] Starting processOrderTransaction for storeId:', storeId, 'orderId:', orderId);
+      console.log('🚀 [POS DEBUG] Caller:', caller);
+      console.log('🚀 [POS DEBUG] Options:', JSON.stringify(options));
+      //console.log('🚀 [POS DEBUG] GKash Result:', JSON.stringify(gkashResult));
+
+      // Step 1: Load store data
+      console.log('📦 [POS DEBUG] Step 1: Loading store data...');
+      const storeResult = await fireStore.collection('store').doc(storeId).get();
+      if (!storeResult.exists) {
+        console.log('❌ [POS DEBUG] Store not found:', storeId);
+        return { id: "", status: 'store_not_found', error: "store not found" };
+      }
+      const currentStoreModel = this.convertToStoreModel(storeResult);
+      console.log('✅ [POS DEBUG] Step 1 Complete: Store loaded -', currentStoreModel.title || storeId);
+
+      // Step 2: Load order data with retry logic (similar to Dart version)
+      console.log('🔍 [POS DEBUG] Step 2: Loading order data with retry logic...');
+      let currentOrderModel = null;
+      let orderFound = false;
+
+      // Alternate between order_temp and order collections for 3 cycles
+      for (let cycle = 1; cycle <= 3; cycle++) {
+        try {
+          // console.log(`🔄 [POS DEBUG] Cycle ${cycle}: Checking order_temp...`);
+          
+          // // Check order_temp first
+          // let orderResult = await fireStore.collection('store')
+          //   .doc(storeId)
+          //   .collection("order_temp")
+          //   .doc(orderId)
+          //   .get();
+
+          // if (orderResult.exists) {
+          //   currentOrderModel = orderResult.data();
+          //   currentOrderModel.id = orderResult.id; // Ensure ID is set
+          //   orderFound = true;
+          //   console.log(`✅ [POS DEBUG] Order found in order_temp on cycle ${cycle}`);
+          //   break;
+          // }
+
+          // // Wait 0.1 seconds before checking order collection
+          // console.log(`⏱️ [POS DEBUG] Waiting 0.1s before checking order collection...`);
+          // await new Promise(resolve => setTimeout(resolve, 100));
+
+          console.log(`🔄 [POS DEBUG] Cycle ${cycle}: Checking order...`);
+          
+          // Check order collection
+          let orderResult = await fireStore.collection('store')
+            .doc(storeId)
+            .collection("order")
+            .doc(orderId)
+            .get();
+
+          if (orderResult.exists) {
+            currentOrderModel = orderResult.data();
+            currentOrderModel.id = orderResult.id; // Ensure ID is set
+            orderFound = true;
+            console.log(`✅ [POS DEBUG] Order found in order on cycle ${cycle}`);
+            break;
+          }
+
+          // Wait 1 second before next cycle (except after cycle 3)
+          if (cycle < 3) {
+            console.log(`⏱️ [POS DEBUG] Waiting 1s before next cycle...`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+
+        } catch (e) {
+          console.log(`❌ [POS DEBUG] Error on cycle ${cycle}:`, e);
+          if (cycle < 3) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
+      }
+
+      if (!orderFound || !currentOrderModel) {
+        console.log('❌ [POS DEBUG] Step 2 Failed: No matching order found for orderId:', orderId);
+        return { id: "", status: 'order_not_found', error: "order not found" };
+      }
+      console.log('✅ [POS DEBUG] Step 2 Complete: Order found with ID:', currentOrderModel.id);
+
+      // Step 3: Validate order
+      console.log('🔍 [POS DEBUG] Step 3: Validating order...');
+      if (!this.isValidOrder(currentOrderModel)) {
+        console.log('❌ [POS DEBUG] Step 3 Failed: Invalid order:', orderId);
+        return { id: "", status: 'invalid_order', error: "order is not valid" };
+      }
+      console.log('✅ [POS DEBUG] Step 3 Complete: Order validation passed - Items count:', currentOrderModel.orderitems?.length || 0);
+
+      // Step 4: Load user model if phone number exists
+      console.log('👤 [POS DEBUG] Step 4: Loading user model...');
+      const phoneString = this.getPhoneString(currentOrderModel);
+      console.log('📞 [POS DEBUG] Phone string extracted:', phoneString);
+      let currentUserModel = null;
+      if (phoneString !== "0") {
+        currentUserModel = await this.loadUserModel(phoneString);
+        console.log('✅ [POS DEBUG] Step 4 Complete: User model loaded for phone:', phoneString);
+      } else {
+        console.log('⚠️ [POS DEBUG] Step 4 Skipped: No valid phone number found');
+      }
+
+      // Step 4.5: Process payment based on type (matching Dart logic)
+      // console.log("deciding payment type for order:", currentOrderModel.paymenttype);
+      // if (enableFullProcessing && currentOrderModel.paymenttype === "CREDIT") {
+      //   console.log('💳 [DEBUG] Step 4.5: Processing credit payment...');
+      //   await this.processCreditPayment(currentOrderModel, phoneString);
+      //   console.log('✅ [DEBUG] Step 4.5 Complete: Credit payment processed');
+      // } else if (enableFullProcessing && currentOrderModel.paymenttype.toUpperCase() !== "FREE" && currentOrderModel.paymenttype.toUpperCase() !== "COD") {
+      //   console.log('⏳ [DEBUG] Step 4.5: Waiting for GKash order confirmation...');
+      //   console.log('💰 [DEBUG] Payment type:', currentOrderModel.paymenttype, '- requires GKash confirmation');
+      //   try {
+      //     const gkashResult = await this.waitForGKashOrder(storeId, orderId, currentOrderModel);
+      //     console.log('✅ [DEBUG] Step 4.5 Complete: GKash order confirmed');
+      //   } catch (error) {
+      //     console.error('❌ [DEBUG] Step 4.5 Failed: GKash order timeout or error:', error.message);
+      //     throw error; // Re-throw to handle at higher level
+      //   }
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 4.5 Skipped: Payment type', currentOrderModel.paymenttype, '- no GKash waiting needed');
+      //   currentOrderModel.paymentstatus = 0; //kPaid
+      // }
+
+      // Step 5: Increment store counter and assign order ID
+      // console.log('🔢 [DEBUG] Step 5: Incrementing store counter and assigning order ID...');
+      // await this.incrementStoreCounter(currentStoreModel, currentOrderModel);
+      // console.log('✅ [DEBUG] Step 5 Complete: Order ID assigned -', currentOrderModel.orderid);
+
+      // Step 6: Update transaction details
+      // console.log('💳 [DEBUG] Step 6: Updating transaction details...');
+      // await this.updateTransactionDetails(currentOrderModel, gkashResult);
+      // console.log('✅ [DEBUG] Step 6 Complete: Transaction details updated - Payment Status:', currentOrderModel.paymentstatus);
+
+      // Step 7: Save order based on payment type
+      // console.log('💾 [DEBUG] Step 7: Saving order based on payment type...');
+      // if (currentOrderModel.paymenttype === "COD") {
+      //   console.log('🛒 [DEBUG] Saving COD order to counter_order collection...');
+      //   await this.saveCounterOrder(storeId, currentOrderModel);
+      // } else {
+      //   console.log('🌐 [DEBUG] Saving online order to multiple collections...');
+      //   await this.saveOrderToCollections(storeId, currentOrderModel, phoneString);
+      // }
+      
+      // Always save to myInvois collection
+      // if (enableFullProcessing && (currentOrderModel.paymenttype !== "COD") ) {
+      //   console.log('📄 [DEBUG] Saving to myInvois collection...');
+      //   await this.saveToMyInvois(storeId, currentOrderModel);
+      // }
+      // else
+      // {
+      //   console.log('📄 [DEBUG] Skipping myInvois collection as it is COD');
+      // }
+      // console.log('✅ [DEBUG] Step 7 Complete: Order saved appropriately');
+
+      // Step 8: Handle vouchers and credits (only for non-vending orders during purchase)
+      // console.log('🎫 [POS DEBUG] Step 8: Handling vouchers and credits...');
+      const isVendingOrder = false ; //(currentOrderModel.devicenumber && currentOrderModel.merchantid);
+      // console.log('🤖 [POS DEBUG] Is Vending Order:', isVendingOrder);
+      
+      if (!isVendingOrder) {
+        console.log('🎫 [POS DEBUG] Processing voucher items for regular order...');
+        await this.handleVoucherItems(currentOrderModel, phoneString);
+        console.log('💰 [POS DEBUG] Processing credit items for regular order...');
+        await this.handleCreditItems(currentOrderModel, phoneString);
+      } else {
+        console.log('🎫 [POS DEBUG] Redeeming assigned vouchers for vending order...');
+        await this.redeemAssignedVouchers(currentOrderModel, phoneString);
+        
+      }
+      console.log('✅ [POS DEBUG] Step 5 Complete: Vouchers and credits processed');
+
+      // Step 5.5: Handle free vouchers (if provided in order model)
+      if (currentOrderModel.freevouchers && Array.isArray(currentOrderModel.freevouchers) && currentOrderModel.freevouchers.length > 0 && phoneString !== "0") {
+        console.log('🎁 [POS DEBUG] Step 5.5: Processing free vouchers...');
+        await this.handleFreeVouchers(currentOrderModel, phoneString);
+        console.log('✅ [POS DEBUG] Step 5.5 Complete: Free vouchers processed');
+      } else {
+        console.log('⏭️ [POS DEBUG] Step 5.5 Skipped: No free vouchers or invalid phone number');
+      }
+
+
+
+      // Step 6: Add loyalty points
+      console.log('⭐ [POS DEBUG] Step 6: Adding loyalty points...');
+      const pointsAdded = await this.addOrderWithLoyaltyPoints(phoneString, currentOrderModel, currentStoreModel);
+      console.log('✅ [POS DEBUG] Step 6 Complete: Loyalty points added -', pointsAdded, 'points');
+
+      // Step 7: Award stamp card progress (if eligible)
+      try {
+        if (phoneString !== "0") {
+          console.log('🟩 [POS DEBUG] Step 7: Awarding stamp card (if eligible)... ',   parseFloat(currentOrderModel.totalpaid ));
+          const orderTotalForStamp =  parseFloat(currentOrderModel.totalpaid ); //parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice);
+          await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid);
+          console.log('✅ [POS DEBUG] Step 7 Complete: Stamp card award step executed');
+        } else {
+          console.log('⏭️ [POS DEBUG] Step 7 Skipped: No valid phone number for stamp card');
+        }
+      } catch (stampErr) {
+        console.error('❌ [POS DEBUG] Step 7 Failed: Error awarding stamp card:', stampErr);
+      }
+
+      // Step 10: Handle vending machine specific logic
+      // if (isVendingOrder) {
+      //   // console.log('🤖 [DEBUG] Step 10: Processing vending order specifics...');
+      //   // console.log('📦 [DEBUG] Saving to pickup collection...');
+      //   // await this.saveToPickupCollection(currentOrderModel);
+      //   console.log('📞 [DEBUG] Triggering vending payment callback...');
+      //   await this.triggerVendingPaymentCallback(currentOrderModel, currentStoreModel);
+      //   console.log('✅ [DEBUG] Step 10 Complete: Vending order processing done');
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 10 Skipped: Not a vending order');
+      // }
+
+      // Step 10.5: Generate ESL picking list (for non-vending orders)
+      // if (enableFullProcessing && enablePickingList && !isVendingOrder) {
+      //   console.log('📋 [DEBUG] Step 10.5: Generating ESL picking list...');
+      //   await this.generatePickingList(storeId, currentOrderModel, currentStoreModel);
+      //   console.log('✅ [DEBUG] Step 10.5 Complete: ESL picking list generated');
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 10.5 Skipped: ESL picking list not needed');
+      // }
+
+      // Step 10.6: Handle Feie receipt printing (for non-vending orders)
+      // if (enableFullProcessing && enablePrinting && !isVendingOrder) {
+      //   console.log('🖨️ [DEBUG] Step 10.6: Processing Feie receipt printing...');
+      //   await this.handleFeieReceipt(currentOrderModel, currentStoreModel);
+      //   console.log('✅ [DEBUG] Step 10.6 Complete: Feie receipts processed');
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 10.6 Skipped: Feie printing not needed');
+      // }
+
+      // Step 10.7: Retrieve pickup code for vending orders
+      // if (enableFullProcessing && isVendingOrder && currentOrderModel.vendingid) {
+      //   console.log('🔑 [DEBUG] Step 10.7: Retrieving pickup code for vending order...');
+      //   await this.retrievePickupCode(currentOrderModel, phoneString);
+      //   console.log('✅ [DEBUG] Step 10.7 Complete: Pickup code retrieved');
+
+      //   console.log('🤖 [DEBUG] Step 10.7: Processing vending order specifics...');
+      //   console.log('📦 [DEBUG] Step 10.7: Saving to pickup collection...');
+      //   await this.saveToPickupCollection(currentOrderModel);
+
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 10.7 Skipped: No pickup code retrieval needed');
+      // }
+
+      // Step 11: Update order_temp with the latest order model
+      // console.log('🔄 [DEBUG] Step 11: Updating order_temp with latest order model... ' + storeId + " " + orderId);
+
+      // await this.updateOrderTempMyReport(storeId, orderId, currentOrderModel);
+      // console.log('✅ [DEBUG] Step 11 Complete: order_temp updated with processed data');
+      //  await this.updateCurrentOrderToUser(currentOrderModel, caller);
+      //  console.log('✅ [DEBUG] Step 11.1 Complete: current gkash order to user updated with processed data');
+       
+      //  // Step 11.2: Process blindbox voucher if present
+      //  console.log('🎁 [DEBUG] Step 11.2: Processing blindbox voucher...');
+      //  await this.processBlindboxVoucher(currentOrderModel, phoneString);
+      //  console.log('✅ [DEBUG] Step 11.2 Complete: blindbox voucher processing done');
+
+      // // Step 12: Cleanup order (delete order_temp if requested)
+      // if (enableFullProcessing && deleteOrderTemp) {
+      //   console.log('🧹 [DEBUG] Step 12: Cleaning up order_temp...');
+      //   await this.cleanupOrder(storeId, orderId, phoneString);
+      //   console.log('✅ [DEBUG] Step 12 Complete: Order cleanup done');
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 12 Skipped: Order cleanup not requested');
+      // }
+
+      console.log('🎉 [POS DEBUG] ========================');
+      console.log('🎉 [POS DEBUG] ALL STEPS COMPLETE: Order transaction processed successfully!');
+      console.log('🎉 [POS DEBUG] ========================');
+      console.log('📊 [POS DEBUG] === PROCESSING SUMMARY ===');
+      console.log('📊 [POS DEBUG] Store ID:', storeId);
+      console.log('📊 [POS DEBUG] Store Counter Used:', currentStoreModel.storecounter);
+      console.log('📊 [POS DEBUG] Original Order Document ID:', orderId);
+      console.log('📊 [POS DEBUG] Generated Order Number:', currentOrderModel.orderid);
+      console.log('📊 [POS DEBUG] Payment Amount:', gkashResult.AMOUNT, gkashResult.CURRENCY || 'MYR');
+      console.log('📊 [POS DEBUG] Payment Type:', gkashResult.PAYMENT_TYPE);
+      console.log('📊 [POS DEBUG] User Phone:', phoneString);
+      console.log('📊 [POS DEBUG] Order Items Processed:', currentOrderModel.orderitems?.length || 0);
+      console.log('📊 [POS DEBUG] Is Vending Order:', isVendingOrder);
+      console.log('📊 [POS DEBUG] Loyalty Points Added:', pointsAdded);
+      console.log('📊 [POS DEBUG] Order_temp Updated: store/' + storeId + '/order_temp/' + orderId);
+      console.log('📊 [POS DEBUG] === END SUMMARY ===');
+      
+      return { id: currentOrderModel.id, status: 'success', message: "order processed successfully" };
+
+    } catch (error) {
+      console.error('💥 [POS DEBUG] FATAL ERROR in processOrderTransaction:', error);
+      console.error('💥 [POS DEBUG] Error stack:', error.stack);
+      return { id: "", status: 'error', error: error.message || error };
+    }
+  }
+
+
+
+  //this is for game play order processing from coin machine
+  //durin game play, user wont earn any loyalty points, as points already granted during the credit reload.
+  async processGamePlayOrderTransaction(storeId, orderId, gkashResult, options = {}, caller = 'COIN', currentOrderModel = null) {
+    const dateTime = new UtilDateTime();
+    
+    // Process options with defaults
+    const {
+      enablePrinting = false,        // Whether to enable receipt printing
+      enablePickingList = false,     // Whether to generate picking lists
+      enableFullProcessing = true,  // Whether to enable all processing features
+      deleteOrderTemp = false       // Whether to delete order_temp after processing
+    } = options;
+    
+    try {
+      console.log('🚀 [GAME PLAY DEBUG] Starting processOrderTransaction for storeId:', storeId, 'orderId:', orderId);
+      console.log('🚀 [GAME PLAY DEBUG] Caller:', caller);
+      console.log('🚀 [GAME PLAY DEBUG] Options:', JSON.stringify(options));
+      //console.log('🚀 [POS DEBUG] GKash Result:', JSON.stringify(gkashResult));
+
+      // Step 2: Use provided order model or load from Firestore with retry logic (fallback)
+      if (currentOrderModel) {
+        console.log('✅ [GAME PLAY DEBUG] Step 2: Using order model from request parameters');
+        // Ensure ID is set
+        if (!currentOrderModel.id) {
+          currentOrderModel.id = orderId;
+        }
+        console.log('✅ [GAME PLAY DEBUG] Step 2 Complete: Order model ready with ID:', currentOrderModel.id);
+      } else {
+        // Fallback: Load order data with retry logic (similar to Dart version)
+        console.log('🔍 [GAME PLAY DEBUG] Step 2: Loading order data with retry logic...');
+        let orderFound = false;
+
+        // Alternate between order_temp and order collections for 3 cycles
+        for (let cycle = 1; cycle <= 3; cycle++) {
+          try {
+            // console.log(`🔄 [POS DEBUG] Cycle ${cycle}: Checking order_temp...`);
+            
+            // Check order_temp first
+            var orderResult = await fireStore.collection('store')
+              .doc(storeId)
+              .collection("order_temp")
+              .doc(orderId)
+              .get();
+
+            if (orderResult.exists) {
+              currentOrderModel = orderResult.data();
+              currentOrderModel.id = orderResult.id; // Ensure ID is set
+              orderFound = true;
+              console.log(`✅ [POS DEBUG] Order found in order_temp on cycle ${cycle}`);
+              break;
+            }
+
+            // // Wait 0.1 seconds before checking order collection
+            // console.log(`⏱️ [POS DEBUG] Waiting 0.1s before checking order collection...`);
+            // await new Promise(resolve => setTimeout(resolve, 100));
+
+            console.log(`🔄 [GAME PLAY DEBUG] Cycle ${cycle}: Checking order...`);
+            
+            // Check order collection
+            orderResult = await fireStore.collection('store')
+              .doc(storeId)
+              .collection("order")
+              .doc(orderId)
+              .get();
+
+            if (orderResult.exists) {
+              currentOrderModel = orderResult.data();
+              currentOrderModel.id = orderResult.id; // Ensure ID is set
+              orderFound = true;
+              console.log(`✅ [GAME PLAY DEBUG] Order found in order on cycle ${cycle}`);
+              break;
+            }
+
+            // Wait 1 second before next cycle (except after cycle 3)
+            if (cycle < 3) {
+              console.log(`⏱️ [GAME PLAY DEBUG] Waiting 1s before next cycle...`);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+
+          } catch (e) {
+            console.log(`❌ [GAME PLAY DEBUG] Error on cycle ${cycle}:`, e);
+            if (cycle < 3) {
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          }
+        }
+
+        if (!orderFound || !currentOrderModel) {
+          console.log('❌ [GAME PLAY DEBUG] Step 2 Failed: No matching order found for orderId:', orderId);
+          return { id: "", status: 'order_not_found', error: "order not found" };
+        }
+        console.log('✅ [GAME PLAY DEBUG] Step 2 Complete: Order found with ID:', currentOrderModel.id);
+      }
+
+      // Step 3: Validate order
+      console.log('🔍 [GAME PLAY DEBUG] Step 3: Validating order...');
+      if (!this.isValidOrder(currentOrderModel)) {
+        console.log('❌ [GAME PLAY DEBUG] Step 3 Failed: Invalid order:', orderId);
+        return { id: "", status: 'invalid_order', error: "order is not valid" };
+      }
+      console.log('✅ [GAME PLAY DEBUG] Step 3 Complete: Order validation passed - Items count:', currentOrderModel.orderitems?.length || 0);
+
+      // Step 4: Load user model if phone number exists
+      console.log('👤 [GAME PLAY DEBUG] Step 4: Loading user model...');
+      const phoneString = this.getPhoneString(currentOrderModel);
+      console.log('📞 [GAME PLAY DEBUG] Phone string extracted:', phoneString);
+      // let currentUserModel = null;
+      // if (phoneString !== "0") {
+      //   currentUserModel = await this.loadUserModel(phoneString);
+      //   console.log('✅ [GAME PLAY DEBUG] Step 4 Complete: User model loaded for phone:', phoneString);
+      // } else {
+      //   console.log('⚠️ [GAME PLAY DEBUG] Step 4 Skipped: No valid phone number found');
+      // }
+
+      // Step 4.5: Process payment based on type (matching Dart logic)
+      console.log("deciding payment type for order:", currentOrderModel.paymenttype);
+      if (enableFullProcessing && currentOrderModel.paymenttype === "CREDIT") {
+        console.log('💳 [GAME PLAY DEBUG] Step 4.5: Processing credit payment...');
+        await this.processCreditPayment(currentOrderModel, phoneString);
+        console.log('✅ [GAME PLAY DEBUG] Step 4.5 Complete: Credit payment processed');
+      } else if (enableFullProcessing && currentOrderModel.paymenttype.toUpperCase() !== "FREE" && currentOrderModel.paymenttype.toUpperCase() !== "COD") {
+        console.log('⏳ [GAME PLAY DEBUG] Step 4.5: Waiting for GKash order confirmation...');
+        console.log('💰 [GAME PLAY DEBUG] Payment type:', currentOrderModel.paymenttype, '- requires GKash confirmation');
+        try {
+          const gkashResult = await this.waitForGKashOrder(storeId, orderId, currentOrderModel);
+          console.log('✅ [GAME PLAY DEBUG] Step 4.5 Complete: GKash order confirmed');
+        } catch (error) {
+          console.error('❌ [GAME PLAY DEBUG] Step 4.5 Failed: GKash order timeout or error:', error.message);
+          throw error; // Re-throw to handle at higher level
+        }
+      } else {
+        console.log('⏭️ [GAME PLAY DEBUG] Step 4.5 Skipped: Payment type', currentOrderModel.paymenttype, '- no GKash waiting needed');
+        currentOrderModel.paymentstatus = 0; //kPaid
+      }
+
+      // Step 5: Start order saving process asynchronously (non-blocking) to speed up payment response
+      console.log('⚡ [GAME PLAY] Step 5: Starting async order save process...');
+      this.gameplaysaveordertransaction(storeId, orderId, currentOrderModel,  gkashResult, phoneString, enableFullProcessing, caller, options).catch(err => {
+        console.error('❌ [GAME PLAY] Error in async order save process:', err);
+      });
+      console.log('✅ [GAME PLAY] Step 5 Complete: Order save process started (non-blocking)');
+      
+      // Return immediately after payment confirmation to speed up response
+      return { id: currentOrderModel.id, status: 'success', message: "order processed successfully" };
+
+    } catch (error) {
+      console.error('💥 [GAME PLAY DEBUG] FATAL ERROR in processOrderTransaction:', error);
+      console.error('💥 [GAME PLAY DEBUG] Error stack:', error.stack);
+      return { id: "", status: 'error', error: error.message || error };
+    }
+  }
+
+  /**
+   * Separate function to handle order saving logic asynchronously
+   * This allows payment response to return faster while order processing continues in background
+   */
+  async gameplaysaveordertransaction(storeId, orderId, currentOrderModel, gkashResult, phoneString, enableFullProcessing, caller, options = {}) {
+    const {
+      enablePrinting = false,
+      enablePickingList = false,
+      deleteOrderTemp = false
+    } = options;
+
+    try {
+      console.log('💾 [GAME PLAY SAVE] Starting order save transaction...');
+      console.log('💾 [GAME PLAY SAVE] Store ID:', storeId);
+      console.log('💾 [GAME PLAY SAVE] Order ID:', orderId);
+
+      // Step 1: Load store data
+      console.log('📦 [GAME PLAY DEBUG] : Loading store data...');
+      const storeResult = await fireStore.collection('store').doc(storeId).get();
+      if (!storeResult.exists) {
+        console.log('❌ [GAME PLAY DEBUG] Store not found:', storeId);
+        return { id: "", status: 'store_not_found', error: "store not found" };
+      }
+      const currentStoreModel = this.convertToStoreModel(storeResult);
+      console.log('✅ [GAME PLAY DEBUG] Step 1 Complete: Store loaded -', currentStoreModel.title || storeId);
+
+      //Step 5: Increment store counter and assign order ID
+      console.log('🔢 [GAME PLAY SAVE] Step 5: Incrementing store counter and assigning order ID...');
+      await this.incrementStoreCounter(currentStoreModel, currentOrderModel);
+      console.log('✅ [GAME PLAY SAVE] Step 5 Complete: Order ID assigned -', currentOrderModel.orderid);
+
+      // Step 6: Update transaction details
+      // console.log('💳 [DEBUG] Step 6: Updating transaction details...');
+      // await this.updateTransactionDetails(currentOrderModel, gkashResult);
+      // console.log('✅ [DEBUG] Step 6 Complete: Transaction details updated - Payment Status:', currentOrderModel.paymentstatus);
+
+      // Step 7: Save order based on payment type
+      // console.log('💾 [DEBUG] Step 7: Saving order based on payment type...');
+      // if (currentOrderModel.paymenttype === "COD") {
+      //   console.log('🛒 [DEBUG] Saving COD order to counter_order collection...');
+      //   await this.saveCounterOrder(storeId, currentOrderModel);
+      // } else {
+      //   console.log('🌐 [DEBUG] Saving online order to multiple collections...');
+      //   await this.saveOrderToCollections(storeId, currentOrderModel, phoneString);
+      // }
+      
+      // Always save to myInvois collection (non-blocking)
+      if (enableFullProcessing && (currentOrderModel.paymenttype !== "COD") ) {
+        console.log('📄 [GAME PLAY SAVE] Saving to myInvois collection...');
+        this.saveToMyInvois(storeId, currentOrderModel);
+      }
+      else
+      {
+        console.log('📄 [GAME PLAY SAVE] Skipping myInvois collection as it is COD');
+      }
+      // console.log('✅ [DEBUG] Step 7 Complete: Order saved appropriately');
+
+      // Step 8: Handle vouchers and credits (only for non-vending orders during purchase)
+      // console.log('🎫 [POS DEBUG] Step 8: Handling vouchers and credits...');
+      const isVendingOrder = false ; //(currentOrderModel.devicenumber && currentOrderModel.merchantid);
+      // console.log('🤖 [POS DEBUG] Is Vending Order:', isVendingOrder);
+      
+      // if (!isVendingOrder) {
+      //   console.log('🎫 [GAME PLAY DEBUG] Processing voucher items for regular order...');
+      //   await this.handleVoucherItems(currentOrderModel, phoneString);
+      //   console.log('💰 [GAME PLAY DEBUG] Processing credit items for regular order...');
+      //   await this.handleCreditItems(currentOrderModel, phoneString);
+      // } else {
+      //   console.log('🎫 [GAME PLAY DEBUG] Redeeming assigned vouchers for vending order...');
+      //   await this.redeemAssignedVouchers(currentOrderModel, phoneString);
+        
+      // }
+      // console.log('✅ [GAME PLAY DEBUG] Step 5 Complete: Vouchers and credits processed');
+
+      // Step 5.5: Handle free vouchers (if provided in order model)
+      // if (currentOrderModel.freevouchers && Array.isArray(currentOrderModel.freevouchers) && currentOrderModel.freevouchers.length > 0 && phoneString !== "0") {
+      //   console.log('🎁 [GAME PLAY DEBUG] Step 5.5: Processing free vouchers...');
+      //   await this.handleFreeVouchers(currentOrderModel, phoneString);
+      //   console.log('✅ [GAME PLAY DEBUG] Step 5.5 Complete: Free vouchers processed');
+      // } else {
+      //   console.log('⏭️ [GAME PLAY DEBUG] Step 5.5 Skipped: No free vouchers or invalid phone number');
+      // }
+
+
+
+      // Step 6: Add loyalty points
+      console.log('⭐ [GAME PLAY SAVE] Step 6: SKIP loyalty points...');
+      //const pointsAdded = await this.addOrderWithLoyaltyPoints(phoneString, currentOrderModel, currentStoreModel);
+      //console.log('✅ [POS DEBUG] Step 6 Complete: Loyalty points added -', pointsAdded, 'points');
+      const pointsAdded = 0; // Loyalty points skipped for game play orders
+
+      // Step 7: Award stamp card progress (if eligible)
+      // try {
+      //   if (phoneString !== "0") {
+      //     console.log('🟩 [GAME PLAY DEBUG] Step 7: Awarding stamp card (if eligible)... ',   parseFloat(currentOrderModel.totalpaid ));
+      //     const orderTotalForStamp =  parseFloat(currentOrderModel.totalpaid ); //parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice);
+      //     await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid);
+      //     console.log('✅ [GAME PLAY DEBUG] Step 7 Complete: Stamp card award step executed');
+      //   } else {
+      //     console.log('⏭️ [GAME PLAY DEBUG] Step 7 Skipped: No valid phone number for stamp card');
+      //   }
+      // } catch (stampErr) {
+      //   console.error('❌ [GAME PLAY DEBUG] Step 7 Failed: Error awarding stamp card:', stampErr);
+      // }
+
+      // Step 10: Handle vending machine specific logic
+      // if (isVendingOrder) {
+      //   // console.log('🤖 [DEBUG] Step 10: Processing vending order specifics...');
+      //   // console.log('📦 [DEBUG] Saving to pickup collection...');
+      //   // await this.saveToPickupCollection(currentOrderModel);
+      //   console.log('📞 [DEBUG] Triggering vending payment callback...');
+      //   await this.triggerVendingPaymentCallback(currentOrderModel, currentStoreModel);
+      //   console.log('✅ [DEBUG] Step 10 Complete: Vending order processing done');
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 10 Skipped: Not a vending order');
+      // }
+
+      // Step 10.5: Generate ESL picking list (for non-vending orders)
+      // if (enableFullProcessing && enablePickingList && !isVendingOrder) {
+      //   console.log('📋 [DEBUG] Step 10.5: Generating ESL picking list...');
+      //   await this.generatePickingList(storeId, currentOrderModel, currentStoreModel);
+      //   console.log('✅ [DEBUG] Step 10.5 Complete: ESL picking list generated');
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 10.5 Skipped: ESL picking list not needed');
+      // }
+
+      // Step 10.6: Handle Feie receipt printing (for non-vending orders)
+      // if (enableFullProcessing && enablePrinting && !isVendingOrder) {
+      //   console.log('🖨️ [DEBUG] Step 10.6: Processing Feie receipt printing...');
+      //   await this.handleFeieReceipt(currentOrderModel, currentStoreModel);
+      //   console.log('✅ [DEBUG] Step 10.6 Complete: Feie receipts processed');
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 10.6 Skipped: Feie printing not needed');
+      // }
+
+      // Step 10.7: Retrieve pickup code for vending orders
+      // if (enableFullProcessing && isVendingOrder && currentOrderModel.vendingid) {
+      //   console.log('🔑 [DEBUG] Step 10.7: Retrieving pickup code for vending order...');
+      //   await this.retrievePickupCode(currentOrderModel, phoneString);
+      //   console.log('✅ [DEBUG] Step 10.7 Complete: Pickup code retrieved');
+
+      //   console.log('🤖 [DEBUG] Step 10.7: Processing vending order specifics...');
+      //   console.log('📦 [DEBUG] Step 10.7: Saving to pickup collection...');
+      //   await this.saveToPickupCollection(currentOrderModel);
+
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 10.7 Skipped: No pickup code retrieval needed');
+      // }
+
+      // Step 11: Update order_temp with the latest order model
+      // console.log('🔄 [DEBUG] Step 11: Updating order_temp with latest order model... ' + storeId + " " + orderId);
+
+       await this.updateOrderTempMyReport(storeId, orderId, currentOrderModel);
+       console.log('✅ [GAME PLAY SAVE] Step 11 Complete: order_temp updated with processed data');
+       await this.saveCurrentOrderToUser(currentOrderModel, caller); //this will save order to user -> order
+       console.log('✅ [GAME PLAY SAVE] Step 11.1 Complete: current gkash order to user updated with processed data');
+       
+      //  // Step 11.2: Process blindbox voucher if present
+      //  console.log('🎁 [DEBUG] Step 11.2: Processing blindbox voucher...');
+      //  await this.processBlindboxVoucher(currentOrderModel, phoneString);
+      //  console.log('✅ [DEBUG] Step 11.2 Complete: blindbox voucher processing done');
+
+      // // Step 12: Cleanup order (delete order_temp if requested)
+      // if (enableFullProcessing && deleteOrderTemp) {
+      //   console.log('🧹 [GAME PLAY] Step 12: Cleaning up order_temp...');
+     //    await this.cleanupOrder(storeId, orderId, phoneString);
+      //   console.log('✅ [GAME PLAY] Step 12 Complete: Order cleanup done');
+      // } else {
+      //   console.log('⏭️ [GAME PLAY] Step 12 Skipped: Order cleanup not requested');
+      // }
+
+      console.log('🎉 [GAME PLAY SAVE] ========================');
+      console.log('🎉 [GAME PLAY SAVE] ALL STEPS COMPLETE: Order transaction saved successfully!');
+      console.log('🎉 [GAME PLAY SAVE] ========================');
+      console.log('📊 [GAME PLAY SAVE] === PROCESSING SUMMARY ===');
+      console.log('📊 [GAME PLAY SAVE] Store ID:', storeId);
+      console.log('📊 [GAME PLAY SAVE] Store Counter Used:', currentStoreModel.storecounter);
+      console.log('📊 [GAME PLAY SAVE] Original Order Document ID:', orderId);
+      console.log('📊 [GAME PLAY SAVE] Generated Order Number:', currentOrderModel.orderid);
+      console.log('📊 [GAME PLAY SAVE] Payment Amount:', gkashResult.AMOUNT, gkashResult.CURRENCY || 'MYR');
+      console.log('📊 [GAME PLAY SAVE] Payment Type:', gkashResult.PAYMENT_TYPE);
+      console.log('📊 [GAME PLAY SAVE] User Phone:', phoneString);
+      console.log('📊 [GAME PLAY SAVE] Order Items Processed:', currentOrderModel.orderitems?.length || 0);
+      console.log('📊 [GAME PLAY SAVE] Is Vending Order:', isVendingOrder);
+      console.log('📊 [GAME PLAY SAVE] Loyalty Points Added:', pointsAdded);
+      console.log('📊 [GAME PLAY SAVE] Order_temp Updated: store/' + storeId + '/order_temp/' + orderId);
+      console.log('📊 [GAME PLAY SAVE] === END SUMMARY ===');
+      
+    } catch (error) {
+      console.error('💥 [GAME PLAY SAVE] FATAL ERROR in gameplaysaveordertransaction:', error);
+      console.error('💥 [GAME PLAY SAVE] Error stack:', error.stack);
+      // Don't throw - this is async and errors are logged
     }
   }
 
@@ -1808,8 +3108,13 @@ async testSendOTP()
     orderModel.messageid = messageId;
     orderModel.totalpaid = gkashResult.AMOUNT;
     orderModel.epayamount = gkashResult.AMOUNT;
-    orderModel.epaymenttype = gkashResult.PAYMENT_TYPE;
-    orderModel.paymenttype = gkashResult.PAYMENT_TYPE;
+    
+    if(((orderModel.paymenttype || "").toUpperCase() != "CREDIT") && ((orderModel.paymenttype || "").toUpperCase() != "FREE"))
+    {
+      orderModel.epaymenttype = gkashResult.PAYMENT_TYPE;
+      orderModel.paymenttype = gkashResult.PAYMENT_TYPE;
+    }
+    
     orderModel.epaymentdetail = gkashResult;
     orderModel.transactiondetail = gkashResult;
     //orderModel.ordertype = 1;
@@ -1866,7 +3171,7 @@ console.log("set payment status :", orderModel.paymentstatus);
   }
 
   async saveOrderToCollections(storeId, orderModel, phoneString) {
-    console.log("Saving order to collections");
+    console.log("Saving order to collections to " + phoneString);
     
     const orderData = orderModel;
     
@@ -1933,6 +3238,7 @@ console.log("set payment status :", orderModel.paymentstatus);
         console.log(`🎫 [VOUCHER] ========== Processing Voucher Item ${index + 1} ==========`);
         console.log("🎫 [VOUCHER] Item Title:", orderItem.title);
         console.log("🎫 [VOUCHER] Item Menu ID:", orderItem.menuid);
+        console.log("🎫 [VOUCHER] Item Menu voucher ID:", orderItem.menuvoucherid);
         console.log("🎫 [VOUCHER] Item Quantity:", orderItem.qty);
         console.log("🎫 [VOUCHER] Voucher String:", orderItem.voucherstring);
         console.log("🎫 [VOUCHER] Store ID:", orderItem.storeid);
@@ -1943,35 +3249,36 @@ console.log("set payment status :", orderModel.paymentstatus);
           console.log("🎫 [VOUCHER] User Document Path:", `FU_${phoneString}`);
           
           // Query existing vouchers
-          console.log("🎫 [VOUCHER] Querying for existing vouchers with menuid:", orderItem.menuid);
+          console.log("🎫 [VOUCHER] Querying for existing vouchers with menuid:", orderItem.menuid + " voucher menu id " + orderItem.menuvoucherid);
           
           // DEBUG: List all voucher menu IDs from collection for debugging
           console.log("🎫 [VOUCHER] === DEBUGGING: Listing all voucher menu IDs ===");
           const allVouchersDebug = await userRef.collection("vouchers").get();
           console.log("🎫 [VOUCHER] Total vouchers in collection:", allVouchersDebug.size);
           
-          const menuIdsFound = [];
+          //const menuIdsFound = [];
           allVouchersDebug.forEach(doc => {
             const data = doc.data();
-            if (data.menuId !== undefined) {
-              menuIdsFound.push({
-                voucherId: data.id,
-                menuId: data.menuId,
-                menuIdType: typeof data.menuId,
-                title: data.title
-              });
-            } else {
-              console.log("🎫 [VOUCHER] Voucher without menuId field:", data.id, "Title:", data.title);
-            }
+//            if (data.menuvoucherid !== undefined) {
+//              menuIdsFound.push({
+//                menuVoucherId : data.menuvoucherid,
+//                voucherId: data.id,
+//                menuId: data.menuId,
+//                menuIdType: typeof data.menuId,
+//                title: data.title
+//              });
+//            } else {
+              console.log("🎫 [VOUCHER] Voucher with menu voucher id field:", data.menuVoucherId, "Title:", data.title);
+            //}
           });
           
-          console.log("🎫 [VOUCHER] All menu IDs found:", menuIdsFound);
-          console.log("🎫 [VOUCHER] Looking for menuId:", orderItem.menuid, "Type:", typeof orderItem.menuid);
+          //console.log("🎫 [VOUCHER] All menu IDs found:", menuIdsFound);
+          //console.log("🎫 [VOUCHER] Looking for menuId:", orderItem.menuid, "Type:", typeof orderItem.menuid);
           console.log("🎫 [VOUCHER] === END DEBUGGING ===");
           
           const vouchersSnapshot = await userRef
             .collection("vouchers")
-            .where('menuId', '==', orderItem.menuid)
+            .where('menuVoucherId', '==', orderItem.menuvoucherid)
             .get();
           
           console.log("🎫 [VOUCHER] Found", vouchersSnapshot.size, "existing vouchers");
@@ -1983,6 +3290,7 @@ console.log("set payment status :", orderModel.paymentstatus);
             
             console.log("🎫 [VOUCHER] === UPDATING EXISTING VOUCHER ===");
             console.log("🎫 [VOUCHER] Existing Voucher ID:", voucher.id);
+            console.log("🎫 [VOUCHER] Existing Voucher Menu ID (for search):", voucher.menuVoucherId );
             console.log("🎫 [VOUCHER] Existing Voucher Quantity:", voucher.quantity || 0);
             console.log("🎫 [VOUCHER] Existing Voucher Title:", voucher.title);
             console.log("🎫 [VOUCHER] Existing Voucher Expires At:", voucher.expiresAt);
@@ -1997,14 +3305,15 @@ console.log("set payment status :", orderModel.paymentstatus);
               if (qtyMatch) {
                 const parsedQty = parseInt(qtyMatch[1]) || 1;
                 qty = parsedQty * (orderItem.quantity || 1);
-                console.log("🎫 [VOUCHER] Parsed QTY from string:", parsedQty, "x", (orderItem.qty || 1), "=", qty);
+                console.log(parsedQty + " x " + (orderItem.quantity || 1) + " = " + qty);
+                console.log("🎫 [VOUCHER] Parsed QTY from string:", parsedQty, "x", (orderItem.quantity || 1), "=", qty);
               } else {
                 console.log("🎫 [VOUCHER] QTY pattern found but no match - using default");
                 qty = orderItem.qty || 1;
               }
             } else {
               console.log("🎫 [VOUCHER] No QTY pattern in voucherString - using orderItem.qty");
-              qty = orderItem.qty || 1;
+              qty = orderItem.quantity || 1;
             }
             
             console.log("🎫 [VOUCHER] Final calculated quantity to add:", qty);
@@ -2016,6 +3325,7 @@ console.log("set payment status :", orderModel.paymentstatus);
             const updateData = {
               quantity: newQuantity,
               isredeemed: false,
+              isRedeemed: false,
               redeemedAt: null
             };
             
@@ -2082,6 +3392,7 @@ console.log("set payment status :", orderModel.paymentstatus);
             const newVoucher = {
               id: voucherId,
               menuId: orderItem.menuid,
+              menuVoucherId : orderItem.menuvoucherid,
               title: orderItem.title,
               voucherString: orderItem.voucherstring || "",
               storeId: orderItem.storeid,
@@ -2092,6 +3403,7 @@ console.log("set payment status :", orderModel.paymentstatus);
               orderId: orderModel.id,
               quantity: qty,
               logo: orderItem.img || "",
+              isBlindbox: orderItem?.isblindbox ?? false,
               giveOnLogin: false,
               giveOnSignup: false,
               isRedeemed: false,
@@ -2314,6 +3626,7 @@ console.log("set payment status :", orderModel.paymentstatus);
       console.log("✅ [VOUCHERS] Vouchers batch committed");
 
       // Phase 2b: copy relevant stamp cards from crm_stamp_card into user/stampcard
+      console.log("🎫 [STAMP] ===== STARTING STAMP CARD COPYING ===== " + userId);
       console.log("💾 [STAMP] ===== COPYING RELEVANT STAMP CARDS =====");
       const stampBatch = fireStore.batch();
       await this._copyRelevantStampCardsToUser(userRef, stampBatch, loyaltyCardIds);
@@ -2772,6 +4085,256 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
+  /**
+   * API Endpoint: Award Order Loyalty
+   * POST /awardOrderLoyalty
+   * Body: { storeId: "S_xxxxx", orderId: "O_xxxxx", userPhoneNumber: "1234567890" }
+   * 
+   * Loads an order from Firestore, retrieves the machine model using devicenumber and merchantid,
+   * checks if the user owns the loyalty cards, copies them if not, and awards loyalty points and stamps.
+   */
+  async handleAwardOrderLoyalty(req, res) {
+    console.log("🎁 [AWARD_ORDER_LOYALTY] ========== AWARD ORDER LOYALTY ENDPOINT ==========");
+    
+    try {
+      const { storeId, orderId, userPhoneNumber } = req.body;
+      
+      // Validate required parameters
+      if (!storeId) {
+        console.log("❌ [AWARD_ORDER_LOYALTY] Missing required parameter: storeId");
+        return res.status(400).json({
+          success: false,
+          error: "Missing required parameter: storeId"
+        });
+      }
+      
+      if (!orderId) {
+        console.log("❌ [AWARD_ORDER_LOYALTY] Missing required parameter: orderId");
+        return res.status(400).json({
+          success: false,
+          error: "Missing required parameter: orderId"
+        });
+      }
+      
+      if (!userPhoneNumber) {
+        console.log("❌ [AWARD_ORDER_LOYALTY] Missing required parameter: userPhoneNumber");
+        return res.status(400).json({
+          success: false,
+          error: "Missing required parameter: userPhoneNumber"
+        });
+      }
+
+      // Normalize phone number - strip FU_ prefix if present
+      const normalizedPhoneNumber = userPhoneNumber.startsWith('FU_') 
+        ? userPhoneNumber.substring(3) 
+        : userPhoneNumber;
+
+      console.log("🎁 [AWARD_ORDER_LOYALTY] Request parameters:");
+      console.log("🎁 [AWARD_ORDER_LOYALTY] - Store ID:", storeId);
+      console.log("🎁 [AWARD_ORDER_LOYALTY] - Order ID:", orderId);
+      console.log("🎁 [AWARD_ORDER_LOYALTY] - User Phone Number (raw):", userPhoneNumber);
+      console.log("🎁 [AWARD_ORDER_LOYALTY] - User Phone Number (normalized):", normalizedPhoneNumber);
+
+      // Call the core logic function
+      const result = await this.awardOrderLoyalty(storeId, orderId, normalizedPhoneNumber);
+
+      console.log("✅ [AWARD_ORDER_LOYALTY] Award order loyalty completed successfully");
+      res.status(200).json(result);
+      
+    } catch (error) {
+      console.error("❌ [AWARD_ORDER_LOYALTY] Error in award order loyalty endpoint:", error);
+      console.error("❌ [AWARD_ORDER_LOYALTY] Error stack:", error.stack);
+      
+      res.status(500).json({
+        success: false,
+        error: error.message || "Internal server error"
+      });
+    }
+  }
+
+  /**
+   * Core logic function to award loyalty for an existing order
+   * @param {string} storeId - The store ID (e.g., "S_xxxxx")
+   * @param {string} orderId - The order ID (e.g., "O_xxxxx")
+   * @param {string} userPhoneNumber - The user's phone number
+   * @returns {Promise<Object>} Result object with success status and details
+   */
+  async awardOrderLoyalty(storeId, orderId, userPhoneNumber) {
+    console.log("🎁 [AWARD_LOYALTY] ========== STARTING AWARD ORDER LOYALTY ==========");
+    console.log("🎁 [AWARD_LOYALTY] Store ID:", storeId);
+    console.log("🎁 [AWARD_LOYALTY] Order ID:", orderId);
+    console.log("🎁 [AWARD_LOYALTY] User Phone Number:", userPhoneNumber);
+
+    try {
+      // Step 1: Format the store ID and order ID for Firestore path
+      const formattedStoreId = storeId.startsWith('S_') ? storeId : `S_${storeId}`;
+      const formattedOrderId = orderId.startsWith('O_') ? orderId : `O_${orderId}`;
+      
+      console.log("🎁 [AWARD_LOYALTY] Step 1: Loading order from Firestore...");
+      console.log("🎁 [AWARD_LOYALTY] Path: myreport/" + formattedStoreId + "/order/" + formattedOrderId);
+
+      // Step 2: Load the order from myreport/{storeId}/order/{orderId}
+      const orderDoc = await fireStore
+        .collection('myreport')
+        .doc(formattedStoreId)
+        .collection('order')
+        .doc(formattedOrderId)
+        .get();
+
+      if (!orderDoc.exists) {
+        console.log("❌ [AWARD_LOYALTY] Order not found in Firestore");
+        return {
+          success: false,
+          error: "Order not found",
+          storeId: formattedStoreId,
+          orderId: formattedOrderId
+        };
+      }
+
+      const orderModel = orderDoc.data();
+      console.log("✅ [AWARD_LOYALTY] Step 1 Complete: Order loaded successfully");
+      console.log("🎁 [AWARD_LOYALTY] Order Total Paid:", orderModel.totalpaid);
+
+      // Step 3: Extract devicenumber and merchantid from the order
+      const deviceNumber = orderModel.devicenumber;
+      const merchantId = orderModel.merchantid;
+      
+      console.log("🎁 [AWARD_LOYALTY] Step 2: Extracting device info...");
+      console.log("🎁 [AWARD_LOYALTY] Device Number:", deviceNumber);
+      console.log("🎁 [AWARD_LOYALTY] Merchant ID:", merchantId);
+
+      if (!deviceNumber || !merchantId) {
+        console.log("❌ [AWARD_LOYALTY] Missing devicenumber or merchantid in order");
+        return {
+          success: false,
+          error: "Order does not have devicenumber or merchantid - not a vending order",
+          storeId: formattedStoreId,
+          orderId: formattedOrderId
+        };
+      }
+
+      // Step 4: Load the machine model from merchant_device collection
+      const merchantDeviceId = `${merchantId}_${deviceNumber}`;
+      console.log("🎁 [AWARD_LOYALTY] Step 3: Loading machine model...");
+      console.log("🎁 [AWARD_LOYALTY] Merchant Device ID:", merchantDeviceId);
+
+      const machineModelDoc = await fireStore
+        .collection('merchant_device')
+        .doc(merchantDeviceId)
+        .get();
+
+      if (!machineModelDoc.exists) {
+        console.log("❌ [AWARD_LOYALTY] Machine model not found in merchant_device collection");
+        return {
+          success: false,
+          error: "Machine model not found",
+          merchantDeviceId: merchantDeviceId
+        };
+      }
+
+      const machineModel = machineModelDoc.data();
+      console.log("✅ [AWARD_LOYALTY] Step 3 Complete: Machine model loaded successfully");
+      console.log("🎁 [AWARD_LOYALTY] Machine Model ID:", machineModel.id);
+      console.log("🎁 [AWARD_LOYALTY] Machine Title:", machineModel.title);
+
+      // Step 5: Get loyalty card IDs from machine model
+      const loyaltyCardIds = machineModel.loyaltycardids || [];
+      console.log("🎁 [AWARD_LOYALTY] Step 4: Getting loyalty card IDs...");
+      console.log("🎁 [AWARD_LOYALTY] Loyalty Card IDs:", loyaltyCardIds);
+
+      // Step 6: Format user ID and copy loyalty cards if needed
+      const userId = `FU_${userPhoneNumber}`;
+      console.log("🎁 [AWARD_LOYALTY] Step 5: Processing loyalty cards for user:", userId);
+
+      let loyaltyCardsResult = null;
+      if (loyaltyCardIds.length > 0) {
+        // Call the existing copyLoyaltyCardsToUser function
+        // This function already checks if user owns the cards and only copies missing ones
+        loyaltyCardsResult = await this.copyLoyaltyCardsToUser(userId, loyaltyCardIds, machineModel.id);
+        console.log("✅ [AWARD_LOYALTY] Step 5 Complete: Loyalty cards processed");
+      } else {
+        console.log("⏭️ [AWARD_LOYALTY] Step 5 Skipped: No loyalty card IDs configured for this machine");
+      }
+
+      // Step 7: Load store model for loyalty points calculation
+      console.log("🎁 [AWARD_LOYALTY] Step 6: Loading store model...");
+      const storeDoc = await fireStore
+        .collection('store')
+        .doc(orderModel.storeid || formattedStoreId)
+        .get();
+
+      let storeModel = null;
+      if (storeDoc.exists) {
+        storeModel = storeDoc.data();
+        console.log("✅ [AWARD_LOYALTY] Store model loaded:", storeModel.title);
+      } else {
+        console.log("⚠️ [AWARD_LOYALTY] Store model not found, using order data");
+        storeModel = { id: orderModel.storeid || formattedStoreId };
+      }
+
+      // Step 8: Award loyalty points
+      console.log("🎁 [AWARD_LOYALTY] Step 7: Awarding loyalty points...");
+      const pointsAdded = await this.addOrderWithLoyaltyPoints(userPhoneNumber, orderModel, storeModel);
+      console.log("✅ [AWARD_LOYALTY] Step 7 Complete: Loyalty points added -", pointsAdded, "points");
+
+      // Step 9: Award stamp card progress
+      console.log("🎁 [AWARD_LOYALTY] Step 8: Awarding stamp card progress...");
+      const orderTotalForStamp = parseFloat(orderModel.totalpaid || 0);
+      await this.awardStampForOrder(userPhoneNumber, formattedOrderId, orderTotalForStamp, orderModel.storeid || formattedStoreId);
+      console.log("✅ [AWARD_LOYALTY] Step 8 Complete: Stamp card progress awarded");
+
+
+      
+      console.log('🔄 [AWARD_ORDER_LOYALTY] Updating order_temp with latest order model... ' + formattedStoreId + " " + formattedOrderId);
+      await this.updateOrderTempMyReport(formattedStoreId, formattedOrderId, orderModel);
+
+      // Step 7: Save order based on payment type
+      await this.saveOrderToCollections(formattedStoreId, orderModel, userPhoneNumber);
+      //console.log('✅ [AWARD_ORDER_LOYALTY] Complete: order_temp updated to cart order with processed data');
+      //  await this.updateCurrentOrderToUser(orderModel); //this will save order to user -> cart_order
+      //  console.log('✅ [AWARD_ORDER_LOYALTY] Complete: current gkash order to user updated with processed data');
+
+        // Ensure userPhoneNumber starts with +, if not add it
+        const formattedPhoneNumber = userPhoneNumber.startsWith('+') ? userPhoneNumber : '+' + userPhoneNumber;
+        orderModel.userphonenumber = formattedPhoneNumber;
+
+       // Always save to myInvois collection (non-blocking)
+      console.log('✅ [AWARD_ORDER_LOYALTY] Save to myinvois');
+      this.saveToMyInvois(formattedStoreId, orderModel);
+    
+
+ // Step 10.7: Retrieve pickup code for vending orders
+     
+        // console.log('🔑 [AWARD_ORDER_LOYALTY]  Retrieving pickup code for vending order...');
+        // await this.retrievePickupCode(orderModel, userPhoneNumber);
+        // console.log('✅ [AWARD_ORDER_LOYALTY]  Complete: Pickup code retrieved');
+
+        // console.log('🤖 [AWARD_ORDER_LOYALTY] Processing vending order specifics...');
+        // console.log('📦 [AWARD_ORDER_LOYALTY]  Saving to pickup collection...');
+        // await this.saveToPickupCollection(orderModel);
+
+      console.log("🎁 [AWARD_LOYALTY] ========== AWARD ORDER LOYALTY COMPLETED ==========");
+
+      return {
+        success: true,
+        message: "Order loyalty awarded successfully",
+        storeId: formattedStoreId,
+        orderId: formattedOrderId,
+        userId: userId,
+        machineModelId: machineModel.id,
+        loyaltyCardIds: loyaltyCardIds,
+        loyaltyCardsResult: loyaltyCardsResult,
+        pointsAdded: pointsAdded,
+        orderTotal: orderTotalForStamp
+      };
+
+    } catch (error) {
+      console.error("❌ [AWARD_LOYALTY] Error in awardOrderLoyalty:", error);
+      console.error("❌ [AWARD_LOYALTY] Error stack:", error.stack);
+      throw error;
+    }
+  }
+
   async handleCreditItems(orderModel, phoneString) {
     console.log("Handling credit items");
     if (!orderModel.orderitems || phoneString === "0") return;
@@ -2882,7 +4445,8 @@ console.log("set payment status :", orderModel.paymentstatus);
 
   async addOrderWithLoyaltyPoints(phoneString, orderModel, storeModel) {
     if (!orderModel || !storeModel || phoneString === "0") {
-      console.log("Cannot add loyalty points - missing order, store model, or phone number");
+      console.log("Cannot add loyalty points - missing order, store model, or phone number, phoneString " + phoneString);
+      
       return 0;
     }
 
@@ -2966,6 +4530,396 @@ console.log("set payment status :", orderModel.paymentstatus);
       console.error("Error adding loyalty points:", e);
       // Don't throw error as loyalty points failure shouldn't stop the order process
       return 0;
+    }
+  }
+
+  /**
+   * Save pending points to Firestore
+   * Also saves order and pickup code to pending_points subcollections
+   * @param {string} phoneNumber - Phone number (may include + prefix)
+   * @param {number} points - Points to save
+   * @param {string} orderId - Order ID
+   * @param {string} storeId - Store ID
+   * @returns {Promise<boolean>} True on success, false on error
+   */
+  async savePendingPoints({ phoneNumber, points, orderId, storeId }) {
+    try {
+      // Remove + prefix if present for document ID format
+      const cleanPhone = phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
+      const documentId = `FU_+${cleanPhone}`;
+      
+      console.log('💾 [PENDING_POINTS] Saving pending points for:', documentId);
+      console.log('💾 [PENDING_POINTS] Points:', points, 'Order ID:', orderId, 'Store ID:', storeId);
+
+      // Fetch order from Firestore
+      let orderDoc = await fireStore
+        .collection('store')
+        .doc(storeId)
+        .collection('order')
+        .doc(orderId)
+        .get();
+
+      if (!orderDoc.exists) {
+
+        orderDoc = await fireStore
+        .collection('myreport')
+        .doc(storeId)
+        .collection('order')
+        .doc(orderId)
+        .get();
+
+        if (!orderDoc.exists) {
+            console.error('❌ [PENDING_POINTS] Order not found:', orderId);
+            return false;
+        }
+      }
+
+      const orderData = orderDoc.data();
+      console.log('✅ [PENDING_POINTS] Order fetched successfully');
+
+      // Prepare pending points document with order and pickup code data
+      const pendingPointsData = {
+        points: points,
+        orderId: orderId,
+        storeId: storeId,
+        createdAt: new Date().toISOString(),
+        orderData: orderData, // Store order data for later copying
+      };
+
+      // Check if order has pickup code data
+      if (orderData.pickupcode || orderData.pickupCode || (orderData.merchantid && orderData.devicenumber)) {
+        const pickupDocId = `${orderData.merchantid}_${orderData.devicenumber}`;
+        pendingPointsData.pickupDocId = pickupDocId;
+        pendingPointsData.pickupData = orderData; // Store pickup data for later copying
+        console.log('📦 [PENDING_POINTS] Pickup code data found, doc ID:', pickupDocId);
+      }
+
+      // Save pending points document
+      await fireStore.collection('pending_points').doc(documentId).set(pendingPointsData);
+      console.log('✅ [PENDING_POINTS] Pending points saved to:', documentId);
+
+      // Save order to pending_points subcollection
+      await fireStore
+        .collection('pending_points')
+        .doc(documentId)
+        .collection('order')
+        .doc(orderId)
+        .set(orderData);
+      console.log('✅ [PENDING_POINTS] Order saved to pending_points subcollection');
+
+      // Save pickup code to pending_points subcollection if it exists
+      // if (orderData.pickupcode || orderData.pickupCode || (orderData.merchantid && orderData.devicenumber)) {
+      //   const pickupDocId = `${orderData.merchantid}_${orderData.devicenumber}`;
+        
+      //   // Clean up undefined values before saving to Firebase
+      //   const cleanOrderModel = JSON.parse(JSON.stringify(orderData, (key, value) => {
+      //     return value === undefined ? null : value;
+      //   }));
+
+      //   await fireStore
+      //     .collection('pending_points')
+      //     .doc(documentId)
+      //     .collection('pickup')
+      //     .doc(pickupDocId)
+      //     .set(cleanOrderModel);
+      //   console.log('✅ [PENDING_POINTS] Pickup code saved to pending_points subcollection');
+      // }
+
+      return true;
+    } catch (e) {
+      console.error('❌ [PENDING_POINTS] Error saving pending points:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Claim pending points and add them to user's loyalty points
+   * Also copies order and pickup code from pending_points to userRef
+   * @param {string} userId - User ID (e.g., "FU_60123456789")
+   * @param {string} phoneNumber - Phone number (may include + prefix)
+   * @param {number} points - Points to claim
+   * @param {string} orderId - Order ID
+   * @param {string} storeId - Store ID
+   * @returns {Promise<Object>} Result object with success flag and pointsAdded or error
+   */
+  async claimPendingPoints({ userId, phoneNumber, points, orderId, storeId }) {
+    try {
+      console.log('🎁 [CLAIM_POINTS] Claiming pending points for user:', userId);
+      console.log('🎁 [CLAIM_POINTS] Points:', points, 'Order ID:', orderId, 'Store ID:', storeId);
+
+      // Convert points to number (to match UserModel loyalty points type)
+      const pointsToAdd = Number(points);
+
+      // Get store model to access companyId
+      let storeModel = null;
+      try {
+        const storeDoc = await fireStore.collection('store').doc(storeId).get();
+        if (storeDoc.exists) {
+          storeModel = storeDoc.data();
+        }
+      } catch (e) {
+        console.error('❌ [CLAIM_POINTS] Error loading store model:', e);
+      }
+
+      // Use Firestore transaction to update user document
+      const userDocRef = fireStore.collection('user').doc(userId);
+
+      await fireStore.runTransaction(async (transaction) => {
+        const userDoc = await transaction.get(userDocRef);
+
+        if (userDoc.exists) {
+          const userModel = UserModel.fromDocument(userDoc);
+
+          // Get store ID and company ID
+          const finalStoreId = storeModel?.id || storeId;
+          const companyId = storeModel?.companyid || storeModel?.companyId || '';
+
+          // Get current store points before adding
+          const currentStorePoints = userModel.getLoyaltyPoints(finalStoreId);
+
+          // Add points to store ID
+          userModel.addLoyaltyPoints(finalStoreId, pointsToAdd);
+          console.log(`✅ [CLAIM_POINTS] Added ${pointsToAdd} loyalty points to store ${finalStoreId}. Previous: ${currentStorePoints}, New total: ${userModel.getLoyaltyPoints(finalStoreId)}`);
+
+          // Handle company ID loyalty points if company ID exists and is different from store ID
+          if (companyId && companyId !== '' && companyId !== finalStoreId) {
+            const currentCompanyPoints = userModel.getLoyaltyPoints(companyId);
+
+            if (currentCompanyPoints > 0) {
+              // Company ID already has points, just add the new points
+              userModel.addLoyaltyPoints(companyId, pointsToAdd);
+              console.log(`✅ [CLAIM_POINTS] Added ${pointsToAdd} loyalty points to existing company ${companyId}. Previous: ${currentCompanyPoints}, New total: ${userModel.getLoyaltyPoints(companyId)}`);
+            } else {
+              // Company ID has no points, copy store ID points over and add new points
+              const newStorePoints = userModel.getLoyaltyPoints(finalStoreId); // This already includes the newly added points
+              userModel.addLoyaltyPoints(companyId, newStorePoints);
+              console.log(`✅ [CLAIM_POINTS] Copied store points and added new points to company ${companyId}. Total company points: ${userModel.getLoyaltyPoints(companyId)}`);
+            }
+          } else {
+            console.log('ℹ️ [CLAIM_POINTS] No valid company ID found or company ID same as store ID - skipping company loyalty points');
+          }
+
+          // Update user document in transaction
+          transaction.update(userDocRef, userModel.toMap());
+        } else {
+          throw new Error(`User document not found: ${userId}`);
+        }
+      });
+
+      // Get pending points document
+      const cleanPhone = phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
+      const pendingDocId = `FU_+${cleanPhone}`;
+      const pendingDoc = await fireStore.collection('pending_points').doc(pendingDocId).get();
+
+      if (pendingDoc.exists) {
+        const pendingData = pendingDoc.data();
+
+        // Copy order data from pending_points subcollection to userRef
+        const orderDoc = await fireStore
+          .collection('pending_points')
+          .doc(pendingDocId)
+          .collection('order')
+          .doc(orderId)
+          .get();
+
+        if (orderDoc.exists) {
+          const orderData = orderDoc.data();
+          // Copy order to user subfolder
+          await fireStore
+            .collection('user')
+            .doc(userId)
+            .collection('order')
+            .doc(orderId)
+            .set(orderData);
+          console.log('✅ [CLAIM_POINTS] Order copied to user subfolder');
+          
+          // Delete order from pending_points subcollection
+          await fireStore
+            .collection('pending_points')
+            .doc(pendingDocId)
+            .collection('order')
+            .doc(orderId)
+            .delete();
+          console.log('✅ [CLAIM_POINTS] Order deleted from pending_points subcollection');
+        }
+
+        // Copy pickup code data from pending_points subcollection to userRef
+        // if (pendingData.pickupDocId) {
+        //   const pickupDoc = await fireStore
+        //     .collection('pending_points')
+        //     .doc(pendingDocId)
+        //     .collection('pickup')
+        //     .doc(pendingData.pickupDocId)
+        //     .get();
+
+        //   if (pickupDoc.exists) {
+        //     const pickupData = pickupDoc.data();
+        //     // Clean up undefined values before saving to Firebase
+        //     const cleanPickupData = JSON.parse(JSON.stringify(pickupData, (key, value) => {
+        //       return value === undefined ? null : value;
+        //     }));
+
+        //     // Copy pickup to user subfolder
+        //     await fireStore
+        //       .collection('user')
+        //       .doc(userId)
+        //       .collection('pickup')
+        //       .doc(pendingData.pickupDocId)
+        //       .set(cleanPickupData);
+        //     console.log('✅ [CLAIM_POINTS] Pickup code copied to user subfolder');
+            
+        //     // Delete pickup from pending_points subcollection
+        //     await fireStore
+        //       .collection('pending_points')
+        //       .doc(pendingDocId)
+        //       .collection('pickup')
+        //       .doc(pendingData.pickupDocId)
+        //       .delete();
+        //     console.log('✅ [CLAIM_POINTS] Pickup code deleted from pending_points subcollection');
+        //   }
+        // }
+      }
+
+      // Delete the pending points document after successful update and cleanup
+      await this.deletePendingPoints(pendingDocId);
+
+      return {
+        success: true,
+        pointsAdded: points,
+      };
+    } catch (e) {
+      console.error('❌ [CLAIM_POINTS] Error claiming pending points:', e);
+      return {
+        success: false,
+        error: e.toString(),
+      };
+    }
+  }
+
+  /**
+   * Delete pending points document
+   * @param {string} userId - The user ID (e.g., "FU_+60123456789")
+   * @returns {Promise<void>}
+   */
+  async deletePendingPoints(userId) {
+    try {
+      await fireStore.collection('pending_points').doc(userId).delete();
+      console.log('✅ [DELETE_PENDING] Pending points deleted for:', userId);
+    } catch (e) {
+      console.error('❌ [DELETE_PENDING] Error deleting pending points:', e);
+    }
+  }
+
+  /**
+   * HTTP endpoint handler for saving pending points
+   * POST /pending-points/save
+   * Body: { phoneNumber, points, orderId, storeId }
+   */
+  async handleSavePendingPoints(req, res) {
+    try {
+      const { phoneNumber, points, orderId, storeId } = req.body;
+
+      // Validate required parameters
+      if (!phoneNumber || points === undefined || !orderId || !storeId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required parameters: phoneNumber, points, orderId, and storeId are required'
+        });
+      }
+
+      const result = await this.savePendingPoints({ phoneNumber, points, orderId, storeId });
+
+      if (result) {
+        res.status(200).json({
+          success: true,
+          message: 'Pending points saved successfully'
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: 'Failed to save pending points'
+        });
+      }
+    } catch (error) {
+      console.error('❌ [API] Error in handleSavePendingPoints:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        details: error.message
+      });
+    }
+  }
+
+  /**
+   * HTTP endpoint handler for claiming pending points
+   * POST /pending-points/claim
+   * Body: { userId, phoneNumber, points, orderId, storeId }
+   */
+  async handleClaimPendingPoints(req, res) {
+    try {
+      const { userId, phoneNumber, points, orderId, storeId } = req.body;
+
+      // Validate required parameters
+      if (!userId || !phoneNumber || points === undefined || !orderId || !storeId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required parameters: userId, phoneNumber, points, orderId, and storeId are required'
+        });
+      }
+
+      const result = await this.claimPendingPoints({ userId, phoneNumber, points, orderId, storeId });
+
+      if (result.success) {
+        res.status(200).json({
+          success: true,
+          message: 'Pending points claimed successfully',
+          pointsAdded: result.pointsAdded
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: result.error || 'Failed to claim pending points'
+        });
+      }
+    } catch (error) {
+      console.error('❌ [API] Error in handleClaimPendingPoints:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        details: error.message
+      });
+    }
+  }
+
+  /**
+   * HTTP endpoint handler for deleting pending points
+   * DELETE /pending-points/delete/:userId
+   * Params: userId (e.g., "FU_+60123456789")
+   */
+  async handleDeletePendingPoints(req, res) {
+    try {
+      const { userId } = req.params;
+
+      if (!userId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required parameter: userId'
+        });
+      }
+
+      await this.deletePendingPoints(userId);
+
+      res.status(200).json({
+        success: true,
+        message: 'Pending points deleted successfully'
+      });
+    } catch (error) {
+      console.error('❌ [API] Error in handleDeletePendingPoints:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        details: error.message
+      });
     }
   }
 
@@ -4023,20 +5977,25 @@ console.log("set payment status :", orderModel.paymentstatus);
       
       console.log('📊 [DEBUG] Saving order model to myInvois:', JSON.stringify(cleanOrderModel, null, 2));
         
-      // Save to both collections using batch write for atomicity
-      const batch = fireStore.batch();
-      batch.set(myInvoisRef, cleanOrderModel);
-      batch.set(myReportRef, cleanOrderModel);
-      
-      await batch.commit();
-      
-      console.log('✅ [DEBUG] Order saved to myinvois/{storeId}/order/{orderId}');
-      console.log('✅ [DEBUG] Order saved to myreport/{storeId}/order/{orderId}');
+      // Run both operations in parallel without blocking
+      Promise.all([
+        myInvoisRef.set(cleanOrderModel),
+        myReportRef.set(cleanOrderModel)
+      ])
+      .then(() => {
+        console.log('✅ [DEBUG] Order saved to myinvois/{storeId}/order/{orderId}');
+        console.log('✅ [DEBUG] Order saved to myreport/{storeId}/order/{orderId}');
+      })
+      .catch((error) => {
+        console.error('❌ [DEBUG] Error saving to myInvois/myreport:', error);
+        console.error('❌ [DEBUG] Order model data:', JSON.stringify(orderModel, null, 2));
+        // Don't throw error as this is not critical for the success flow
+      });
       
     } catch (error) {
-      console.error('❌ [DEBUG] Error saving to myInvois/myreport:', error);
+      console.error('❌ [DEBUG] Error preparing myInvois/myreport operations:', error);
       console.error('❌ [DEBUG] Order model data:', JSON.stringify(orderModel, null, 2));
-      throw error;
+      // Don't throw error as this is not critical for the success flow
     }
   }
 
@@ -4118,8 +6077,30 @@ console.log("set payment status :", orderModel.paymentstatus);
         console.log('🔑 [VENDING] Order check result:', JSON.stringify(orderResult, null, 2));
 
         // The internal handler returns { success, message, error } where message holds external API body
-        const payload = orderResult?.message ?? orderResult?.data ?? orderResult;
-        const pickupCode = payload?.pickup_code;
+
+//        console.log("orderResult.message " + orderResult?.message?? " " );
+//        console.log("orderResult.data " + orderResult?.data ?? " ");
+//        console.log("orderResult.pickup_code " + orderResult.pickup_code ?? " ");
+//        const payload = orderResult?.message ?? orderResult?.data ?? orderResult;
+//        console.log("payload.pickup_code " + payload?.pickup_code ?? " ");
+//        console.log("orderResult.message.pickup_code " + orderResult?.message?.pickup_code ?? " ");
+//        const pickupCode = payload?.pickup_code;
+
+        // Try multiple paths to find pickup_code
+          const payload = orderResult?.message ?? orderResult?.data ?? orderResult;
+          console.log("[VENDING] payload:", payload);
+          console.log("[VENDING] payload.pickup_code:", payload?.pickup_code ?? "undefined");
+          console.log("[VENDING] orderResult.message.pickup_code:", orderResult?.message?.pickup_code ?? "undefined");
+
+          // Extract pickup_code - try all possible locations
+          const pickupCode = payload?.pickup_code
+             || payload?.data?.pickup_code
+            || orderResult?.message?.pickup_code
+            || orderResult?.data?.pickup_code
+            || orderResult?.pickup_code;
+
+          console.log("✅[VENDING]  Final extracted pickupCode:", pickupCode ?? "NOT FOUND");
+
 
         if (pickupCode) {
           orderModel.pickupcode = pickupCode;
@@ -4161,6 +6142,140 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
+  async saveCurrentOrderToUser(orderModel, caller = 'UNKNOWN') {
+    console.log("🔄 [DEBUG] Updating current order to user collection");
+    console.log("🔄 [DEBUG] Order ID:", orderModel.id);
+    console.log("🔄 [DEBUG] Caller:", caller);
+    
+    try {
+      // Add fromserver field to the order model
+      orderModel.fromserver = caller;
+      
+      // Get user phone number
+      const phoneString = this.getPhoneString(orderModel);
+      console.log("📞 [DEBUG] Phone string for user update:", phoneString);
+      
+      if (phoneString !== "0") {
+        // Update the order in user's collection
+        const userOrderRef = fireStore.collection('user')
+          .doc(`FU_${phoneString}`)
+          .collection('order')
+          .doc(orderModel.id);
+          
+        // Update only specific parameters
+        // const updateData = {
+        //   ...orderModel,
+        //   serverprogress: 1
+        
+        // };
+        
+        await userOrderRef.set(orderModel, { merge: true });
+        console.log('✅ [DEBUG] Order updated in user collection with fromserver:', caller);
+      } else {
+        console.log('⚠️ [DEBUG] No valid phone number found, skipping user collection update');
+      }
+      
+    } catch (error) {
+      console.error('❌ [DEBUG] Error updating current order to user:', error);
+      // Don't throw error as this is not critical for the success flow
+    }
+  }
+
+  async updateCurrentOrderToUser(orderModel, caller = 'UNKNOWN') {
+    console.log("🔄 [DEBUG] Updating current order to user collection");
+    console.log("🔄 [DEBUG] Order ID:", orderModel.id);
+    console.log("🔄 [DEBUG] Caller:", caller);
+    
+    try {
+      // Add fromserver field to the order model
+      orderModel.fromserver = caller;
+      
+      // Get user phone number
+      const phoneString = this.getPhoneString(orderModel);
+      console.log("📞 [DEBUG] Phone string for user update:", phoneString);
+      
+      if (phoneString !== "0") {
+        // Update the order in user's collection
+        const userOrderRef = fireStore.collection('user')
+          .doc(`FU_${phoneString}`)
+          .collection('cart_order')
+          .doc("order");
+          
+        // Update only specific parameters
+        const updateData = {
+          ...orderModel,
+          serverprogress: 1
+        
+        };
+        
+        await userOrderRef.set(updateData, { merge: true });
+        console.log('✅ [DEBUG] Order updated in user collection with fromserver:', caller);
+      } else {
+        console.log('⚠️ [DEBUG] No valid phone number found, skipping user collection update');
+      }
+      
+    } catch (error) {
+      console.error('❌ [DEBUG] Error updating current order to user:', error);
+      // Don't throw error as this is not critical for the success flow
+    }
+  }
+
+  async processBlindboxVoucher(orderModel, phoneString) {
+    console.log("🎁 [DEBUG] Processing blindbox voucher information");
+    console.log("🎁 [DEBUG] Order ID:", orderModel.id);
+    console.log("🎁 [DEBUG] Phone String:", phoneString);
+    
+    try {
+      // Check if blindbox voucher ID exists in the order model
+      const blindboxVoucherId = orderModel.blindboxVoucherId || orderModel.blindbox_voucher_id;
+      
+      if (blindboxVoucherId) {
+        console.log("🎁 [DEBUG] Blindbox voucher ID found:", blindboxVoucherId);
+        
+        // Get Singapore local time
+        const singaporeTime = new Date().toLocaleString("en-SG", {
+          timeZone: "Asia/Singapore",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false
+        });
+        
+        // Prepare blindbox voucher data
+        const blindboxVoucherData = {
+          blindboxVoucherId: blindboxVoucherId,
+          blindboxVoucherRemark: orderModel.blindboxVoucherRemark || orderModel.blindbox_voucher_remark || "",
+          blindboxVoucherCreateDateTime: orderModel.blindboxVoucherCreateDateTime || orderModel.blindbox_voucher_create_datetime || new Date().toISOString(),
+          orderId: orderModel.id,
+          storeId: orderModel.storeid,
+          processedAt: singaporeTime
+        };
+        
+        console.log("🎁 [DEBUG] Blindbox voucher data:", JSON.stringify(blindboxVoucherData, null, 2));
+        
+        if (phoneString !== "0") {
+          // Save to bbitem collection
+          const bbitemRef = fireStore.collection('bbitem')
+            .doc(`FU_${phoneString}`);
+            
+          await bbitemRef.set(blindboxVoucherData);
+          console.log('✅ [DEBUG] Blindbox voucher saved to bbitem collection for user:', phoneString);
+        } else {
+          console.log('⚠️ [DEBUG] No valid phone number found, skipping blindbox voucher save');
+        }
+      } else {
+        console.log('⏭️ [DEBUG] No blindbox voucher ID found, skipping blindbox voucher processing');
+      }
+      
+    } catch (error) {
+      console.error('❌ [DEBUG] Error processing blindbox voucher:', error);
+      // Don't throw error as this is not critical for the success flow
+    }
+  }
+
   async updateOrderTempMyReport(storeId, orderId, orderModel) {
     console.log("🔄 [DEBUG] Updating order_temp with latest order model");
     console.log("🔄 [DEBUG] Store ID:", storeId);
@@ -4185,51 +6300,58 @@ console.log("set payment status :", orderModel.paymentstatus);
       console.log("📋 [DEBUG] Message ID:", orderModel.messageid);
       
       // Log order items summary
-      if (orderModel.orderitems && Array.isArray(orderModel.orderitems)) {
-        console.log("📋 [DEBUG] Order Items Count:", orderModel.orderitems.length);
-        orderModel.orderitems.forEach((item, index) => {
-          console.log(`📋 [DEBUG] Item ${index + 1}: ${item.title || 'No Title'} - Qty: ${item.qty || item.quantity || 1} - Price: ${item.price || 0} - OrderID: ${item.orderid}`);
-        });
-      } else {
-        console.log("📋 [DEBUG] No order items found");
-      }
+      // if (orderModel.orderitems && Array.isArray(orderModel.orderitems)) {
+      //   console.log("📋 [DEBUG] Order Items Count:", orderModel.orderitems.length);
+      //   orderModel.orderitems.forEach((item, index) => {
+      //     console.log(`📋 [DEBUG] Item ${index + 1}: ${item.title || 'No Title'} - Qty: ${item.qty || item.quantity || 1} - Price: ${item.price || 0} - OrderID: ${item.orderid}`);
+      //   });
+      // } else {
+      //   console.log("📋 [DEBUG] No order items found");
+      // }
       
       // Log payment details if available
-      if (orderModel.epaymentdetail) {
-        console.log("📋 [DEBUG] E-Payment Detail:", JSON.stringify(orderModel.epaymentdetail));
-      }
+      // if (orderModel.epaymentdetail) {
+      //   console.log("📋 [DEBUG] E-Payment Detail:", JSON.stringify(orderModel.epaymentdetail));
+      // }
       
       // Log transaction details if available
-      if (orderModel.transactiondetail) {
-        console.log("📋 [DEBUG] Transaction Detail:", JSON.stringify(orderModel.transactiondetail));
-      }
+      // if (orderModel.transactiondetail) {
+      //   console.log("📋 [DEBUG] Transaction Detail:", JSON.stringify(orderModel.transactiondetail));
+      // }
       
       // Log vending specific data if available
-      if (orderModel.devicenumber && orderModel.merchantid) {
-        console.log("📋 [DEBUG] === VENDING MACHINE DATA ===");
-        console.log("📋 [DEBUG] Device Number:", orderModel.devicenumber);
-        console.log("📋 [DEBUG] Merchant ID:", orderModel.merchantid);
-        console.log("📋 [DEBUG] Vending ID:", orderModel.vendingid);
-        console.log("📋 [DEBUG] Pickup Code:", orderModel.pickupcode);
-      }
+      // if (orderModel.devicenumber && orderModel.merchantid) {
+      //   console.log("📋 [DEBUG] === VENDING MACHINE DATA ===");
+      //   console.log("📋 [DEBUG] Device Number:", orderModel.devicenumber);
+      //   console.log("📋 [DEBUG] Merchant ID:", orderModel.merchantid);
+      //   console.log("📋 [DEBUG] Vending ID:", orderModel.vendingid);
+      //   console.log("📋 [DEBUG] Pickup Code:", orderModel.pickupcode);
+      // }
       
       console.log("📋 [DEBUG] === END OF ORDER DATA ===");
       
-      await fireStore.collection("store")
-        .doc(storeId)
-        .collection("order_temp")
-        .doc(orderId)
-        .set(orderModel);
-
-        await fireStore.collection("myreport")
-        .doc(storeId)
-        .collection("order")
-        .doc(orderId)
-        .set(orderModel);
-        
-      console.log("✅ [DEBUG] Successfully updated order_temp and myreport with processed order data");
-      console.log("✅ [DEBUG] Order_temp document path: store/" + storeId + "/order_temp/" + orderId);
-      console.log("✅ [DEBUG] Myreport document path: myreport/" + storeId + "/order/" + orderId);
+      // Run both operations in parallel without waiting
+      Promise.all([
+        fireStore.collection("store")
+          .doc(storeId)
+          .collection("order_temp")
+          .doc(orderId)
+          .set(orderModel),
+        fireStore.collection("myreport")
+          .doc(storeId)
+          .collection("order")
+          .doc(orderId)
+          .set(orderModel)
+      ])
+      .then(() => {
+        console.log("✅ [DEBUG] Successfully updated order_temp and myreport with processed order data");
+        console.log("✅ [DEBUG] Order_temp document path: store/" + storeId + "/order_temp/" + orderId);
+        console.log("✅ [DEBUG] Myreport document path: myreport/" + storeId + "/order/" + orderId);
+      })
+      .catch((error) => {
+        console.error("❌ [DEBUG] Error updating order_temp/myreport:", error);
+        console.error("❌ [DEBUG] Error details:", error.message);
+      });
     } catch (ex) {
       console.error("❌ [DEBUG] Error updating order_temp:", ex);
       console.error("❌ [DEBUG] Error details:", ex.message);
@@ -4465,7 +6587,7 @@ console.log("set payment status :", orderModel.paymentstatus);
   
 
 
-   paymentReturn (req, res, isBeta){
+   paymentReturn (req, res, isBeta, version){
 
     const dateTime = new UtilDateTime();
     // const {
@@ -4492,6 +6614,8 @@ console.log("set payment status :", orderModel.paymentstatus);
 
     // Access individual parameters
     const storeId = queryParams.STOREID || 'defaultStore'; 
+    // Extract version from query params or body if not provided as parameter
+    const versionParam = version || queryParams.version || req.body.version || undefined;
     console.log("storeid:" + storeId);
 
       
@@ -4533,14 +6657,9 @@ console.log("set payment status :", orderModel.paymentstatus);
       );
 
 
-      var urlSuccessHeader = "https://foodio-online-best10.web.app/#/success/" + storeId + "/" + vCartID + "/" ;
-      var urlFailHeader = "https://foodio-online-best10.web.app/#/failed/" + storeId + "/" + vCartID + "/" ;
-
-      if(isBeta)
-      {
-            urlSuccessHeader = "https://foodio-online-cloud9.web.app/#/success/" + storeId + "/" + vCartID + "/" ;
-            urlFailHeader = "https://foodio-online-cloud9.web.app/#/failed/" + storeId + "/" + vCartID + "/" ;
-      }
+      const baseUrl = this.getVersionBaseUrl(versionParam, isBeta);
+      var urlSuccessHeader = baseUrl + "/#/success/" + storeId + "/" + vCartID + "/" ;
+      var urlFailHeader = baseUrl + "/#/failed/" + storeId + "/" + vCartID + "/" ;
 
       var redirectTo = urlSuccessHeader;
   
@@ -4770,6 +6889,260 @@ console.log("set payment status :", orderModel.paymentstatus);
       
       // Call the processOrderTransaction method
       const result = await this.processOrderTransaction(storeId, orderId, finalGkashResult, processOptions);
+      
+      if (result.status === 'success') {
+        console.log('✅ [API] Order processing completed successfully');
+        res.status(200).json({
+          success: true,
+          message: 'Order processed successfully',
+          orderId: orderId,
+          storeId: storeId,
+          result: result
+        });
+      } else {
+        console.log('❌ [API] Order processing failed:', result.error);
+        res.status(400).json({
+          success: false,
+          error: result.error,
+          orderId: orderId,
+          storeId: storeId
+        });
+      }
+      
+    } catch (error) {
+      console.error('💥 [API] Error in direct order processing:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Internal server error during order processing',
+        details: error.message
+      });
+    }
+  }
+
+
+  /**
+   * Handle Game Play Order Processing
+   * 
+   * Flutter Web Example:
+   * ```dart
+   * import 'package:http/http.dart' as http;
+   * import 'dart:convert';
+   * 
+   * Future<void> processGamePlayOrder({
+   *   required String storeId,
+   *   required String orderId,
+   *   required Map<String, dynamic> order, // Order model from Firestore
+   *   Map<String, dynamic>? gkashResult,
+   *   Map<String, dynamic>? options,
+   * }) async {
+   *   final url = Uri.parse('https://your-api.com/processGamePlayOrder');
+   *   
+   *   final body = {
+   *     'storeId': storeId,
+   *     'orderId': orderId,
+   *     'order': order, // Pass the entire order object
+   *     'gkashResult': gkashResult,
+   *     'options': options ?? {},
+   *   };
+   * 
+   *   final response = await http.post(
+   *     url,
+   *     headers: {
+   *       'Content-Type': 'application/json',
+   *     },
+   *     body: jsonEncode(body),
+   *   );
+   * 
+   *   if (response.statusCode == 200) {
+   *     final result = jsonDecode(response.body);
+   *     print('Order processed: ${result['message']}');
+   *   } else {
+   *     throw Exception('Failed to process order: ${response.body}');
+   *   }
+   * }
+   * 
+   * // Usage:
+   * // Get order from Firestore first
+   * // final orderDoc = await FirebaseFirestore.instance
+   * //   .collection('store')
+   * //   .doc(storeId)
+   * //   .collection('order_temp')
+   * //   .doc(orderId)
+   * //   .get();
+   * // 
+   * // final orderData = orderDoc.data()!;
+   * // orderData['id'] = orderDoc.id;
+   * // 
+   * // await processGamePlayOrder(
+   * //   storeId: 'your-store-id',
+   * //   orderId: 'your-order-id',
+   * //   order: orderData,
+   * // );
+   * ```
+   */
+  async handleGamePlayProcessOrder(req, res) {
+    console.log('🚀 [API] ========== DIRECT GAME PLAY ORDER PROCESSING (NO GKASH PAYMENT) ==========');
+    
+    try {
+      // Extract parameters from request body
+      const { storeId, orderId, gkashResult = null, options = {}, order = null } = req.body;
+      
+      console.log('🚀 [GAME PLAY] Request parameters:');
+      console.log('🚀 [GAME PLAY] - Store ID:', storeId);
+      console.log('🚀 [GAME PLAY] - Order ID:', orderId);
+      console.log('🚀 [GAME PLAY] - GKash Result:', gkashResult ? JSON.stringify(gkashResult, null, 2) : 'NULL (No GKash payment needed)');
+      console.log('🚀 [GAME PLAY] - Options:', JSON.stringify(options, null, 2));
+      console.log('🚀 [GAME PLAY] - Order provided:', order ? 'YES' : 'NO');
+      
+      // Validate required parameters
+      if (!storeId) {
+        console.log('❌ [GAME PLAY] Missing required parameter: storeId');
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required parameter: storeId'
+        });
+      }
+      
+      if (!orderId) {
+        console.log('❌ [GAME PLAY] Missing required parameter: orderId');
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required parameter: orderId'
+        });
+      }
+      
+      // Use order from request if provided
+      const currentOrderModel = order;
+      if (currentOrderModel) {
+        console.log('✅ [GAME PLAY] Using order from request - skipping Firestore load');
+        // Ensure ID is set
+        if (!currentOrderModel.id) {
+          currentOrderModel.id = orderId;
+        }
+      } else {
+        console.log('ℹ️ [GAME PLAY] No order provided - will load from Firestore');
+      }
+      
+      // gkashResult is optional - can be null for FREE/COD/CREDIT orders
+      console.log('ℹ️ [GAME PLAY] GKash Result is optional for non-payment orders (FREE/COD/CREDIT)');
+      
+      // Set default options for direct API call
+      const processOptions = {
+        enablePrinting: false,
+        enablePickingList: false,
+        enableFullProcessing: true,
+        deleteOrderTemp: false,
+      };
+      
+      console.log('🚀 [GAME PLAY] Final processing options:', JSON.stringify(processOptions, null, 2));
+      
+      // Create empty gkashResult if none provided (for FREE/COD/CREDIT orders)
+      const finalGkashResult = gkashResult || {
+        CID: null,
+        POID: null,
+        CARTID: orderId,
+        STATUS: null,
+        CURRENCY: null,
+        AMOUNT: null,
+        SIGNATURE: null,
+        DESC: 'Game play order processing - no GKash payment',
+        PAYMENT_TYPE: 'CREDIT'
+      };
+      
+      console.log('🚀 [GAME PLAY] Final GKash Result:', JSON.stringify(finalGkashResult, null, 2));
+      
+      // Call the processOrderTransaction method with order model
+      const result = await this.processGamePlayOrderTransaction(storeId, orderId, finalGkashResult, processOptions, 'COIN', currentOrderModel);
+      
+      if (result.status === 'success') {
+        console.log('✅ [GAME PLAY] Order processing completed successfully');
+        res.status(200).json({
+          success: true,
+          message: 'Order processed successfully',
+          orderId: orderId,
+          storeId: storeId,
+          result: result
+        });
+      } else {
+        console.log('❌ [GAME PLAY] Order processing failed:', result.error);
+        res.status(400).json({
+          success: false,
+          error: result.error,
+          orderId: orderId,
+          storeId: storeId
+        });
+      }
+      
+    } catch (error) {
+      console.error('💥 [GAME PLAY] Error in direct order processing:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Internal server error during order processing',
+        details: error.message
+      });
+    }
+  }
+
+  async handlePOSProcessOrder(req, res) {
+    console.log('🚀 [API] ========== DIRECT POS ORDER PROCESSING (NO GKASH PAYMENT) ==========');
+    
+    try {
+      // Extract parameters from request body
+      const { storeId, orderId, gkashResult = null, options = {} } = req.body;
+      
+      console.log('🚀 [API] Request parameters:');
+      console.log('🚀 [API] - Store ID:', storeId);
+      console.log('🚀 [API] - Order ID:', orderId);
+      console.log('🚀 [API] - GKash Result:', gkashResult ? JSON.stringify(gkashResult, null, 2) : 'NULL (No GKash payment needed)');
+      console.log('🚀 [API] - Options:', JSON.stringify(options, null, 2));
+      
+      // Validate required parameters
+      if (!storeId) {
+        console.log('❌ [API] Missing required parameter: storeId');
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required parameter: storeId'
+        });
+      }
+      
+      if (!orderId) {
+        console.log('❌ [API] Missing required parameter: orderId');
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required parameter: orderId'
+        });
+      }
+      
+      // gkashResult is optional - can be null for FREE/COD/CREDIT orders
+      console.log('ℹ️ [API] GKash Result is optional for non-payment orders (FREE/COD/CREDIT)');
+      
+      // Set default options for direct API call
+      const processOptions = {
+        enablePrinting: false,
+        enablePickingList: false,
+        enableFullProcessing: true,
+        deleteOrderTemp: false,
+      };
+      
+      console.log('🚀 [API] Final processing options:', JSON.stringify(processOptions, null, 2));
+      
+      // Create empty gkashResult if none provided (for FREE/COD/CREDIT orders)
+      const finalGkashResult = gkashResult || {
+        CID: null,
+        POID: null,
+        CARTID: orderId,
+        STATUS: null,
+        CURRENCY: null,
+        AMOUNT: null,
+        SIGNATURE: null,
+        DESC: 'Direct order processing - no GKash payment',
+        PAYMENT_TYPE: 'COD'
+      };
+      
+      console.log('🚀 [API] Final GKash Result:', JSON.stringify(finalGkashResult, null, 2));
+      
+      // Call the processOrderTransaction method
+      const result = await this.processPOSOrderTransaction(storeId, orderId, finalGkashResult, processOptions);
       
       if (result.status === 'success') {
         console.log('✅ [API] Order processing completed successfully');
@@ -5867,6 +8240,90 @@ console.log("set payment status :", orderModel.paymentstatus);
         message: 'Failed to list voucher limits',
         error: error.message
       };
+    }
+  }
+
+  async paymentQuery(req, res) {
+    console.log('🔍 [PAYMENT-QUERY] ========== PAYMENT QUERY REQUEST ==========');
+    console.log('🔍 [PAYMENT-QUERY] Request body:', JSON.stringify(req.body, null, 2));
+    
+    try {
+      const { version, CID, cartid, currency, amount, signature } = req.body;
+      
+      // Validate required fields
+      if (!version || !CID || !cartid || !currency || !amount || !signature) {
+        console.log('❌ [PAYMENT-QUERY] Missing required fields');
+        return res.status(400).json({
+          success: false,
+          message: 'Missing required fields: version, CID, cartid, currency, amount, signature'
+        });
+      }
+      
+      console.log('🔍 [PAYMENT-QUERY] Querying payment for:');
+      console.log('🔍 [PAYMENT-QUERY] - Version:', version);
+      console.log('🔍 [PAYMENT-QUERY] - CID:', CID);
+      console.log('🔍 [PAYMENT-QUERY] - Cart ID:', cartid);
+      console.log('🔍 [PAYMENT-QUERY] - Currency:', currency);
+      console.log('🔍 [PAYMENT-QUERY] - Amount:', amount);
+      console.log('🔍 [PAYMENT-QUERY] - Signature:', signature);
+      
+      // Prepare query data
+      const queryData = {
+        version: version,
+        CID: CID,
+        cartid: cartid,
+        currency: currency,
+        amount: amount,
+        signature: signature
+      };
+      
+      console.log('🔍 [PAYMENT-QUERY] Making request to GKash API...');
+     
+      // Make request to GKash API
+      const response = await axios.post('https://api.gkash.my/api/payment/query', queryData, {
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000 // 30 second timeout
+      });
+      
+      console.log('🔍 [PAYMENT-QUERY] Response received:');
+      console.log('🔍 [PAYMENT-QUERY] - Status:', response.status);
+      console.log('🔍 [PAYMENT-QUERY] - Data:', JSON.stringify(response.data, null, 2));
+      
+      // Return the response from GKash API
+      res.status(response.status).json(response.data);
+      
+    } catch (error) {
+      console.error('❌ [PAYMENT-QUERY] Error occurred:');
+      console.error('❌ [PAYMENT-QUERY] - Message:', error.message);
+      console.error('❌ [PAYMENT-QUERY] - Status:', error.response?.status);
+      console.error('❌ [PAYMENT-QUERY] - Response:', error.response?.data);
+      
+      // Handle different types of errors
+      if (error.response) {
+        // API returned an error response
+        res.status(error.response.status).json({
+          success: false,
+          message: 'Payment query failed',
+          error: error.response.data,
+          status: error.response.status
+        });
+      } else if (error.request) {
+        // Request was made but no response received
+        res.status(500).json({
+          success: false,
+          message: 'No response from payment API',
+          error: 'Network timeout or connection error'
+        });
+      } else {
+        // Something else happened
+        res.status(500).json({
+          success: false,
+          message: 'Internal server error',
+          error: error.message
+        });
+      }
     }
   }
 

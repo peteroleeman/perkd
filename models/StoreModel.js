@@ -1,5 +1,11 @@
 import React, { Component } from 'react';
 
+//myinvois api environment
+const kStoreModelMyInvoisApiEnv = "myinvoisapienv";
+
+//sql account integration
+const kStoreModelIntegrateSqlAccount = "integratesqlaccount";
+
 class StoreModel extends Component {
     
     constructor(props) {
@@ -21,6 +27,12 @@ class StoreModel extends Component {
         this.shopifydomain = props.shopifydomain;
         this.shopifytoken = props.shopifytoken;
         this.soldoutimg = props.soldoutimg;
+
+        //myinvois api environment ('production' or 'preprod')
+        this.myInvoisApiEnv = props.myinvoisapienv || "preprod";
+        
+        //sql account integration (true = enabled, false = disabled)
+        this.integrateSqlAccount = props.integratesqlaccount || false;
     }
 
     

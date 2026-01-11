@@ -144,48 +144,67 @@ class OdooRouter {
         // Fetch documents from the main collection
         const results = await fireStore.collection(parentPromo).get();
 
-
-        //Iterate through each document and clear store promo first before writing in
+        // Step 1: Collect all unique stores that need to be cleared
+        const storesToClear = new Set();
         for (const doc of results.docs) {
-          var promoRaw = doc.data();
-          for (var odooStore of (promoRaw?.store_merchant_code ?? []))
-            {
-              const existingPromoDocs = await fireStore.collection(parentPromo)
+          const promoRaw = doc.data();
+          const storeCodes = promoRaw?.store_merchant_code ?? [];
+          storeCodes.forEach(store => storesToClear.add(store));
+        }
+
+        console.log(`Clearing promos for ${storesToClear.size} stores...`);
+
+        // Step 2: Parallelize all deletion operations
+        const deletePromises = Array.from(storesToClear).map(async (odooStore) => {
+          try {
+            const existingPromoDocs = await fireStore.collection(parentPromo)
               .doc(odooStore)
               .collection('promo')
               .get();
-               // Delete existing promo documents
-                const deletePromises = existingPromoDocs.docs.map(async (promoDoc) => {
-                  await promoDoc.ref.delete();
-                });
-        
-                // Wait for all deletions to complete
-                await Promise.all(deletePromises);
-            }
-        }
-
-    
-        // Iterate through each document
-        for (const doc of results.docs) {
-          // Get data for each document 
-          var promoRaw = doc.data();
-    
-          //addDebugLog( "prmoRaw suspend: " + promoRaw.suspend);
-          if(promoRaw.suspend == false)
-          {
-            // Check if store_merchant_code exists and is an array
-            for (var odooStore of (promoRaw?.store_merchant_code ?? [])) {
             
-      
-              // Now add the new promo document
-              await fireStore.collection(parentPromo)
+            // Delete all documents in parallel for this store
+            const storeDeletePromises = existingPromoDocs.docs.map(promoDoc => promoDoc.ref.delete());
+            await Promise.all(storeDeletePromises);
+          } catch (error) {
+            console.error(`Error deleting promos for store ${odooStore}:`, error);
+            // Continue with other stores even if one fails
+          }
+        });
+
+        // Wait for all store deletions to complete
+        await Promise.all(deletePromises);
+
+        console.log("All store promos cleared, starting writes...");
+
+        // Step 3: Collect all write operations
+        const writePromises = [];
+        for (const doc of results.docs) {
+          const promoRaw = doc.data();
+          
+          //addDebugLog("prmoRaw suspend: " + promoRaw.suspend);
+          
+          if (promoRaw.suspend == false) {
+            const storeCodes = promoRaw?.store_merchant_code ?? [];
+            
+            // Create write promises for all stores in parallel
+            for (const odooStore of storeCodes) {
+              const writePromise = fireStore.collection(parentPromo)
                 .doc(odooStore)
                 .collection('promo')
-                .doc(promoRaw?.discount_id) // Changed from promo to promoRaw
-                .set(promoRaw); // Set the entire promo data
+                .doc(promoRaw?.discount_id)
+                .set(promoRaw)
+                .catch(error => {
+                  console.error(`Error writing promo ${promoRaw?.discount_id} to store ${odooStore}:`, error);
+                  // Continue with other writes even if one fails
+                });
+              
+              writePromises.push(writePromise);
             }
-           }
+          }
         }
+
+        // Step 4: Execute all writes in parallel
+        await Promise.all(writePromises);
     
         console.log('Promo collections cleared and updated successfully');
     

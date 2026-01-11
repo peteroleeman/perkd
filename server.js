@@ -13,10 +13,14 @@ var bodyParser = require('body-parser');
 var OdooRouter = require('./odoorouter');
 var DemoOdooRouter = require("./demoodoorouter");
 var VendingRouter = require("./vendingrouter");
+var CoinRouter = require("./coinrouter");
 var RHBRouter = require("./rhbrouter");
 var MyInvoisRouter = require("./myinvoisrouter");
 var MyReportRouter = require("./myreportrouter");
+var SqlAccountRouter = require("./sqlaccountrouter");
 var UserRouter = require("./userrouter");
+var KaotimHQRouter = require("./kaotimhqrouter");
+
 var TicketRouter = require("./ticketrouter");
 var PosRouter = require('./posrouter');
 var GrabRouter = require('./grabrouter');
@@ -178,6 +182,10 @@ app.use('/gkash', myGKash.getRouter());
 const myVending = new VendingRouter();
 app.use('/vending', myVending.getRouter());
 
+//for coin
+const myCoin = new CoinRouter();
+app.use('/coin', myCoin.getRouter());
+
 //for rhb
 const myRHB = new RHBRouter();
 app.use('/rhb', myRHB.getRouter());
@@ -190,9 +198,17 @@ app.use('/myinvois', myInvois.getRouter());
 const myReport = new MyReportRouter();
 app.use('/myreport', myReport.getRouter());
 
+//for sqlaccount
+const sqlAccount = new SqlAccountRouter();
+app.use('/sqlaccount', sqlAccount.getRouter());
+
 //for user
 const myUser = new UserRouter();
 app.use('/user', myUser.getRouter());
+
+//for kaotimhq
+const myKaotimHQ = new KaotimHQRouter();
+app.use('/kaotimhq', myKaotimHQ.getRouter());
 
 //for ticket service
 const myTicket = new TicketRouter();

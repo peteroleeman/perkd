@@ -70,10 +70,14 @@ class UserRouter {
     
     // Build the WHERE clause for filtering
     let whereClause = 'WHERE operation != \'DELETE\' AND document_id LIKE \'FU_%\'';
+//    if (userid) {
+//      // Create a pattern to match the userId in the document_name
+//      whereClause += ` AND document_name LIKE '%/user/${userid}/%'`;
+//    }
     if (userid) {
-      // Create a pattern to match the userId in the document_name
-      whereClause += ` AND document_name LIKE '%/user/${userid}/%'`;
-    }
+        // Create a pattern to match the userId in the document_name
+        whereClause = `WHERE operation != 'DELETE' AND document_name LIKE '%/user/FU_${userid}/%'`;
+      }
 
     // Build query with pagination and filtering
     const query = `
@@ -148,8 +152,9 @@ class UserRouter {
       let whereClause = 'WHERE operation != \'DELETE\' AND document_id LIKE \'FU_%\'';
       if (userid) {
         // Create a pattern to match the userId in the document_name
-        whereClause += ` AND document_name LIKE '%/user/${userid}/%'`;
+        whereClause = `WHERE operation != 'DELETE' AND document_name LIKE '%/user/FU_${userid}/%'`;
       }
+
 
       // Enhanced query to get the latest records based on timestamp
       // Using a subquery with window functions to rank records by timestamp
@@ -255,10 +260,15 @@ class UserRouter {
     
     // Build the WHERE clause for filtering
     let whereClause = 'WHERE operation != \'DELETE\' AND document_id LIKE \'O_%\'';
+//    if (userid) {
+//      // Create a pattern to match the userId in the document_name
+//      whereClause += ` AND document_name LIKE '%/user/${userid}/%'`;
+//
+//    }
     if (userid) {
-      // Create a pattern to match the userId in the document_name
-      whereClause += ` AND document_name LIKE '%/user/${userid}/%'`;
-    }
+        // Create a pattern to match the userId in the document_name
+        whereClause = `WHERE operation != 'DELETE' AND document_name LIKE '%/user/FU_${userid}/%'`;
+      }
 
     // Build query with pagination and filtering
     const query = `
@@ -331,9 +341,13 @@ class UserRouter {
 
       // Build the WHERE clause for filtering
       let whereClause = 'WHERE operation != \'DELETE\' AND document_id LIKE \'O_%\'';
-      if (userid) {
+//      if (userid) {
+//        // Create a pattern to match the userId in the document_name
+//        whereClause += ` AND document_name LIKE '%/user/${userid}/%'`;
+//      }
+if (userid) {
         // Create a pattern to match the userId in the document_name
-        whereClause += ` AND document_name LIKE '%/user/${userid}/%'`;
+        whereClause = `WHERE operation != 'DELETE' AND document_name LIKE '%/user/FU_${userid}/%'`;
       }
 
       // Enhanced query to get the latest records based on timestamp

@@ -172,11 +172,8 @@ class InvoiceHeader {
       <cbc:ID schemeID="TIN">${this.supplierTIN}</cbc:ID>
     </cac:PartyIdentification>
      
-      ${this.supplierCompanyID && this.supplierCompanyID.trim() !== '' 
-        ? `<cac:PartyIdentification><cbc:ID schemeID="BRN">${this.supplierCompanyID}</cbc:ID></cac:PartyIdentification>`
-        : (this.supplierNRIC && this.supplierNRIC.trim() !== '' 
-          ? `<cac:PartyIdentification><cbc:ID schemeID="NRIC">${this.supplierNRIC}</cbc:ID></cac:PartyIdentification>` 
-          : '')}
+       ${this.supplierNRIC && this.supplierNRIC.trim() !== '' ? `<cac:PartyIdentification><cbc:ID schemeID="NRIC">${this.supplierNRIC}</cbc:ID></cac:PartyIdentification>` : ''}
+      ${this.supplierCompanyID && this.supplierCompanyID.trim() !== '' ? `<cac:PartyIdentification><cbc:ID schemeID="BRN">${this.supplierCompanyID}</cbc:ID></cac:PartyIdentification>` : ''}
       ${this.supplierSSTRegistrationNo && this.supplierSSTRegistrationNo !== 'NA' ? `<cac:PartyIdentification><cbc:ID schemeID="SST">${this.supplierSSTRegistrationNo}</cbc:ID></cac:PartyIdentification>` : ''}
       ${this.supplierTourismTaxNo && this.supplierTourismTaxNo !== 'NA' ? `<cac:PartyIdentification><cbc:ID schemeID="TTX">${this.supplierTourismTaxNo}</cbc:ID></cac:PartyIdentification>` : ''}
     <cac:PostalAddress>
