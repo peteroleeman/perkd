@@ -17,6 +17,7 @@ var CoinRouter = require("./coinrouter");
 var RHBRouter = require("./rhbrouter");
 var MyInvoisRouter = require("./myinvoisrouter");
 var MyReportRouter = require("./myreportrouter");
+var KaotimLogRouter = require("./kaotimlogrouter");
 var SqlAccountRouter = require("./sqlaccountrouter");
 var UserRouter = require("./userrouter");
 var KaotimHQRouter = require("./kaotimhqrouter");
@@ -28,6 +29,7 @@ var GrabRouter = require('./grabrouter');
 
 var {Logging} = require('@google-cloud/logging');
 const GKashRouter = require("./gkashrouter");
+const SmsRouter = require("./smsrouter");
 var projectId = 'foodio-ab3b2'; // Your Google Cloud Platform project ID
 var logName = 'perkd-log'; // The name of the log to write to
 var logging = new Logging({projectId});
@@ -178,6 +180,10 @@ app.use('/odoodemo', myOdooDemo.getRouter());
 const myGKash = new GKashRouter();
 app.use('/gkash', myGKash.getRouter());
 
+//for sms (One Way SMS API, same verification token as gkash OTP)
+const smsRouter = new SmsRouter();
+app.use('/sms', smsRouter.getRouter());
+
 //for vending
 const myVending = new VendingRouter();
 app.use('/vending', myVending.getRouter());
@@ -209,6 +215,10 @@ app.use('/user', myUser.getRouter());
 //for kaotimhq
 const myKaotimHQ = new KaotimHQRouter();
 app.use('/kaotimhq', myKaotimHQ.getRouter());
+
+//for kaotim activity log
+const kaotimLog = new KaotimLogRouter();
+app.use('/kaotimlog', kaotimLog.getRouter());
 
 //for ticket service
 const myTicket = new TicketRouter();

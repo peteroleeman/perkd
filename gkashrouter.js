@@ -22,6 +22,8 @@ const {
   writeGKashTransaction
 } = require("./storeController");
 
+const KaotimActivityLogger = require("./util/kaotim_activity_logger");
+
 class GKashRouter {
 
 
@@ -78,6 +80,11 @@ class GKashRouter {
        const parsedUrl = url.parse(req.url, true);
        const version = parsedUrl.query.version || req.body.version || undefined;
        this.paymentVMReturn(req, res, false, version);
+     });
+     this.router.post('/kaotimreturn', (req, res) => {
+       const parsedUrl = url.parse(req.url, true);
+       const version = parsedUrl.query.version || req.body.version || undefined;
+       this.paymentKaotimReturn(req, res, false, version);
      });
 
      // Beta endpoints (isBeta = true)
@@ -1774,6 +1781,206 @@ async testSendOTP()
     }
   }
 
+  /**
+   * Payment return handler for Kaotim credit top-up
+   * Routes to /kaotimsuccess/:storeid/:orderid/:userid or /kaotimfailed/:storeid/:orderid/:userid
+   */
+  async paymentKaotimReturn(req, res, isBeta, version) {
+    const dateTime = new UtilDateTime();
+    
+    // Parse the query parameters
+    const parsedUrl = url.parse(req.url);
+    const queryParams = querystring.parse(parsedUrl.query);
+
+    // Access individual parameters
+    const storeId = queryParams.STOREID || 'defaultStore';
+    const userId = queryParams.USERID || '';
+    // Extract version from query params or body if not provided as parameter
+    const versionParam = version || queryParams.version || req.body.version || undefined;
+    console.log("[KAOTIM] storeid:" + storeId + " userid:" + userId);
+
+    let vCID = req.body['CID'] ?? "";
+    let vPOID = req.body['POID'] ?? "";
+    let vCartID = req.body['cartid'] ?? "";
+    let vStatus = req.body['status'] ?? "";
+    let vCurrency = req.body['currency'] ?? "";
+    let vAmount = req.body['amount'] ?? "";
+    let vSignature = req.body['signature'] ?? "";
+    let vDescription = req.body['description'] ?? "";
+    let vPaymentType = req.body['PaymentType'] ?? "";
+
+    console.log('[KAOTIM] vCID:', vCID);
+    console.log('[KAOTIM] vPOID:', vPOID);
+    console.log('[KAOTIM] vCartID:', vCartID);
+    console.log('[KAOTIM] vStatus:', vStatus);
+    console.log('[KAOTIM] vCurrency:', vCurrency);
+    console.log('[KAOTIM] vAmount:', vAmount);
+    console.log('[KAOTIM] vSignature:', vSignature);
+    console.log('[KAOTIM] vDescription:', vDescription);
+    console.log('[KAOTIM] vPaymentType:', vPaymentType);
+
+    // Write GKash transaction log
+    writeGKashTransaction(storeId, dateTime.getCurrentDateString(),
+      {
+        CID: vCID,
+        POID: vPOID,
+        CARTID: vCartID,
+        STATUS: vStatus,
+        CURRENCY: vCurrency,
+        AMOUNT: vAmount,
+        SIGNATURE: vSignature,
+        DESC: vDescription,
+        PAYMENT_TYPE: vPaymentType,
+        SOURCE: 'KAOTIM'
+      }
+    );
+
+    // Setup redirect URLs for Kaotim
+    const baseUrl = this.getVersionBaseUrl(versionParam, isBeta);
+    var urlSuccessHeader = baseUrl + "/#/kaotimsuccess/" + storeId + "/" + vCartID + "/" + userId;
+    var urlFailHeader = baseUrl + "/#/kaotimfailed/" + storeId + "/" + vCartID + "/" + userId;
+
+    var redirectTo = urlSuccessHeader;
+
+    // Check if payment was successful
+    if (vStatus.includes("88") == false) {
+      // Log failed payment activity
+      await KaotimActivityLogger.logActivity({
+        storeId: storeId,
+        activityType: KaotimActivityLogger.ACTIVITY_TOPUP_CREDIT_FAILED,
+        description: `Credit top-up failed or cancelled. Status: ${vStatus}`,
+        jsonData: {
+          CID: vCID,
+          POID: vPOID,
+          cartId: vCartID,
+          status: vStatus,
+          currency: vCurrency,
+          amount: vAmount,
+          paymentType: vPaymentType
+        },
+        user: { id: userId }
+      });
+
+      redirectTo = urlFailHeader;
+      res.redirect(redirectTo);
+      console.log("[KAOTIM] payment failed, redirected with status " + vStatus);
+      console.log("[KAOTIM] payment redirected to " + redirectTo);
+      return;
+    }
+
+    // Payment was successful, process the order transaction
+    try {
+      console.log("[KAOTIM] Payment successful, processing order transaction...");
+      
+      const gkashResult = {
+        CID: vCID,
+        POID: vPOID,
+        CARTID: vCartID,
+        STATUS: vStatus,
+        CURRENCY: vCurrency,
+        AMOUNT: vAmount,
+        SIGNATURE: vSignature,
+        DESC: vDescription,
+        PAYMENT_TYPE: vPaymentType,
+        SOURCE: 'KAOTIM'
+      };
+
+      // Process the order transaction using the new method with Kaotim-specific options
+      if (true) {
+        const kaotimOptions = {
+          enablePrinting: false,        // Disable receipt printing for Kaotim
+          enablePickingList: false,     // No picking lists for credit top-up
+          enableFullProcessing: true,   // Enable all processing features
+          deleteOrderTemp: false        // Keep order_temp for debugging
+        };
+        
+        const result = await this.processKaotimOrderTransaction(storeId, vCartID, gkashResult, kaotimOptions, 'KAOTIM');
+        
+        if (result.status === 'success') {
+          console.log("[KAOTIM] Order transaction processed successfully:", result.message);
+          
+          // Log successful payment activity
+          await KaotimActivityLogger.logActivity({
+            storeId: storeId,
+            activityType: KaotimActivityLogger.ACTIVITY_TOPUP_CREDIT_PASSED,
+            description: `Credit top-up successful: ${vAmount} ${vCurrency}`,
+            jsonData: {
+              CID: vCID,
+              POID: vPOID,
+              cartId: vCartID,
+              status: vStatus,
+              currency: vCurrency,
+              amount: vAmount,
+              paymentType: vPaymentType,
+              orderResult: result
+            },
+            user: { id: userId }
+          });
+
+          // Redirect to success page
+          res.redirect(redirectTo);
+          console.log("[KAOTIM] payment and order processing successful, redirected with status " + vStatus);
+          console.log("[KAOTIM] redirected to " + redirectTo);
+        } else {
+          console.error("[KAOTIM] Order transaction failed:", result.error);
+          
+          // Log failed order processing activity
+          await KaotimActivityLogger.logActivity({
+            storeId: storeId,
+            activityType: KaotimActivityLogger.ACTIVITY_TOPUP_CREDIT_FAILED,
+            description: `Credit top-up payment successful but order processing failed`,
+            jsonData: {
+              CID: vCID,
+              POID: vPOID,
+              cartId: vCartID,
+              status: vStatus,
+              currency: vCurrency,
+              amount: vAmount,
+              paymentType: vPaymentType,
+              orderResult: result.error
+            },
+            user: { id: userId }
+          });
+
+          // Redirect to failed page since order processing failed
+          res.redirect(urlFailHeader);
+          console.log("[KAOTIM] payment successful but order processing failed, redirected to failed page");
+          console.log("[KAOTIM] redirected to " + urlFailHeader);
+        }
+      } else {
+        res.redirect(redirectTo);
+        console.log("[KAOTIM] payment and order processing successful, redirected with status " + vStatus);
+        console.log("[KAOTIM] redirected to " + redirectTo);
+      }
+
+    } catch (error) {
+      console.error("[KAOTIM] Error processing order transaction:", error);
+      
+      // Log error activity
+      await KaotimActivityLogger.logActivity({
+        storeId: storeId,
+        activityType: KaotimActivityLogger.ACTIVITY_TOPUP_CREDIT_FAILED,
+        description: `Credit top-up payment successful but order processing error`,
+        jsonData: {
+          CID: vCID,
+          POID: vPOID,
+          cartId: vCartID,
+          status: vStatus,
+          currency: vCurrency,
+          amount: vAmount,
+          paymentType: vPaymentType,
+          orderResult: error.message || String(error)
+        },
+        user: { id: userId }
+      });
+
+      // Redirect to failed page since order processing failed
+      res.redirect(urlFailHeader);
+      console.log("[KAOTIM] payment successful but order processing error, redirected to failed page");
+      console.log("[KAOTIM] redirected to " + urlFailHeader);
+    }
+  }
+
 
   async paymentTBReturn (req, res, isBeta, version){
   const dateTime = new UtilDateTime();
@@ -2060,6 +2267,339 @@ async testSendOTP()
 
   }
 
+
+  async processKaotimOrderTransaction(storeId, orderId, gkashResult, options = {}, caller = 'UNKNOWN') {
+    const dateTime = new UtilDateTime();
+    
+    // Process options with defaults
+    const {
+      enablePrinting = false,        // Whether to enable receipt printing
+      enablePickingList = false,     // Whether to generate picking lists
+      enableFullProcessing = true,  // Whether to enable all processing features
+      deleteOrderTemp = false       // Whether to delete order_temp after processing
+    } = options;
+
+    //let isCOIN = (caller === "COIN");
+    
+    try {
+      console.log('🚀 [DEBUG] Starting processOrderTransaction for storeId:', storeId, 'orderId:', orderId);
+      console.log('🚀 [DEBUG] Caller:', caller);
+      console.log('🚀 [DEBUG] Options:', JSON.stringify(options));
+      console.log('🚀 [DEBUG] GKash Result:', JSON.stringify(gkashResult));
+
+      // Step 1: Load store data
+      console.log('📦 [DEBUG] Step 1: Loading store data...');
+      const storeResult = await fireStore.collection('store').doc(storeId).get();
+      if (!storeResult.exists) {
+        console.log('❌ [DEBUG] Store not found:', storeId);
+        return { id: "", status: 'store_not_found', error: "store not found" };
+      }
+      const currentStoreModel = this.convertToStoreModel(storeResult);
+      console.log('✅ [DEBUG] Step 1 Complete: Store loaded -', currentStoreModel.title || storeId);
+
+      // Step 2: Load order data with retry logic (similar to Dart version)
+      console.log('🔍 [DEBUG] Step 2: Loading order data with retry logic...');
+      let currentOrderModel = null;
+      let orderFound = false;
+
+      // Alternate between order_temp and order collections for 3 cycles
+      for (let cycle = 1; cycle <= 3; cycle++) {
+        try {
+          console.log(`🔄 [DEBUG] Cycle ${cycle}: Checking order_temp...`);
+          
+          // Check order_temp first
+          let orderResult = await fireStore.collection('store')
+            .doc(storeId)
+            .collection("order_temp")
+            .doc(orderId)
+            .get();
+
+          if (orderResult.exists) {
+            currentOrderModel = orderResult.data();
+            currentOrderModel.id = orderResult.id; // Ensure ID is set
+            orderFound = true;
+            console.log(`✅ [DEBUG] Order found in order_temp on cycle ${cycle}`);
+            break;
+          }
+
+          // Wait 0.1 seconds before checking order collection
+          console.log(`⏱️ [DEBUG] Waiting 0.1s before checking order collection...`);
+          await new Promise(resolve => setTimeout(resolve, 100));
+
+          console.log(`🔄 [DEBUG] Cycle ${cycle}: Checking order...`);
+          
+          // Check order collection
+          orderResult = await fireStore.collection('store')
+            .doc(storeId)
+            .collection("order")
+            .doc(orderId)
+            .get();
+
+          if (orderResult.exists) {
+            currentOrderModel = orderResult.data();
+            currentOrderModel.id = orderResult.id; // Ensure ID is set
+            orderFound = true;
+            console.log(`✅ [DEBUG] Order found in order on cycle ${cycle}`);
+            break;
+          }
+
+          // Wait 1 second before next cycle (except after cycle 3)
+          if (cycle < 3) {
+            console.log(`⏱️ [DEBUG] Waiting 1s before next cycle...`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+
+        } catch (e) {
+          console.log(`❌ [DEBUG] Error on cycle ${cycle}:`, e);
+          if (cycle < 3) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
+      }
+
+      if (!orderFound || !currentOrderModel) {
+        console.log('❌ [DEBUG] Step 2 Failed: No matching order found for orderId:', orderId);
+        return { id: "", status: 'order_not_found', error: "order not found" };
+      }
+      console.log('✅ [DEBUG] Step 2 Complete: Order found with ID:', currentOrderModel.id);
+
+
+
+      // Step 3: Validate order
+      console.log('🔍 [DEBUG] Step 3: Validating order...');
+      if (!this.isValidOrder(currentOrderModel)) {
+        console.log('❌ [DEBUG] Step 3 Failed: Invalid order:', orderId);
+        return { id: "", status: 'invalid_order', error: "order is not valid" };
+      }
+      console.log('✅ [DEBUG] Step 3 Complete: Order validation passed - Items count:', currentOrderModel.orderitems?.length || 0);
+
+      // Step 4: Load user model if phone number exists
+      console.log('👤 [DEBUG] Step 4: Loading user model...');
+      const phoneString = this.getPhoneString(currentOrderModel);
+      console.log('📞 [DEBUG] Phone string extracted:', phoneString);
+      let currentUserModel = null;
+      if (phoneString !== "0") {
+        currentUserModel = await this.loadUserModel(phoneString);
+        console.log('✅ [DEBUG] Step 4 Complete: User model loaded for phone:', phoneString);
+      } else {
+        console.log('⚠️ [DEBUG] Step 4 Skipped: No valid phone number found');
+      }
+
+      // Step 4.5: Process payment based on type (matching Dart logic)
+      console.log("deciding payment type for order:", currentOrderModel.paymenttype);
+      if (enableFullProcessing && currentOrderModel.paymenttype === "CREDIT") {
+        console.log('💳 [DEBUG] Step 4.5: Processing credit payment...');
+        await this.processCreditPayment(currentOrderModel, phoneString);
+        console.log('✅ [DEBUG] Step 4.5 Complete: Credit payment processed');
+      } else if (enableFullProcessing && (currentOrderModel.paymenttype || "").toUpperCase() !== "FREE" && (currentOrderModel.paymenttype || "").toUpperCase() !== "COD") {
+        console.log('⏳ [DEBUG] Step 4.5: Waiting for GKash order confirmation...');
+        console.log('💰 [DEBUG] Payment type:', currentOrderModel.paymenttype, '- requires GKash confirmation');
+        try {
+          const gkashResult = await this.waitForGKashOrder(storeId, orderId, currentOrderModel);
+          console.log('✅ [DEBUG] Step 4.5 Complete: GKash order confirmed');
+        } catch (error) {
+          console.error('❌ [DEBUG] Step 4.5 Failed: GKash order timeout or error:', error.message);
+          throw error; // Re-throw to handle at higher level
+        }
+      } else {
+        console.log('⏭️ [DEBUG] Step 4.5 Skipped: Payment type', currentOrderModel.paymenttype, '- no GKash waiting needed');
+        currentOrderModel.paymentstatus = 0; //kPaid
+      }
+
+      // Step 5: Increment store counter and assign order ID
+      console.log('🔢 [DEBUG] Step 5: Incrementing store counter and assigning order ID...');
+      await this.incrementStoreCounter(currentStoreModel, currentOrderModel);
+      console.log('✅ [DEBUG] Step 5 Complete: Order ID assigned -', currentOrderModel.orderid);
+
+      // Step 6: Update transaction details
+      // console.log('💳 [DEBUG] Step 6: Updating transaction details...');
+      // await this.updateTransactionDetails(currentOrderModel, gkashResult);
+      // console.log('✅ [DEBUG] Step 6 Complete: Transaction details updated - Payment Status:', currentOrderModel.paymentstatus);
+
+      // Step 7: Save order based on payment type
+      // console.log('💾 [DEBUG] Step 7: Saving order based on payment type...');
+      // if (currentOrderModel.paymenttype === "COD") {
+      //   console.log('🛒 [DEBUG] Saving COD order to counter_order collection...');
+      //   await this.saveCounterOrder(storeId, currentOrderModel);
+      // } else {
+      //   console.log('🌐 [DEBUG] Saving online order to multiple collections...');
+      //   await this.saveOrderToCollections(storeId, currentOrderModel, phoneString);
+      // }
+      
+      // Always save to myInvois collection (non-blocking)
+      // if (enableFullProcessing && (currentOrderModel.paymenttype !== "COD") ) {
+      //   console.log('📄 [DEBUG] Saving to myInvois collection...');
+      //   this.saveToMyInvois(storeId, currentOrderModel);
+      // }
+      // else
+      // {
+      //   console.log('📄 [DEBUG] Skipping myInvois collection as it is COD');
+      // }
+      // console.log('✅ [DEBUG] Step 7 Complete: Order saved appropriately');
+
+      // Step 8: Handle vouchers and credits (only for non-vending orders during purchase)
+      // console.log('🎫 [DEBUG] Step 8: Handling vouchers and credits...');
+      // const isVendingOrder = (currentOrderModel.devicenumber && currentOrderModel.merchantid);
+      // console.log('🤖 [DEBUG] Is Vending Order:', isVendingOrder);
+      
+      // if (!isVendingOrder) {
+      //   console.log('🎫 [DEBUG] Processing voucher items for regular order...');
+      //   await this.handleVoucherItems(currentOrderModel, phoneString);
+         console.log('💰 [DEBUG] Processing credit items for regular order...');
+         await this.handleCreditItems(currentOrderModel, phoneString);
+      // } else {
+      //   console.log('🎫 [DEBUG] Redeeming assigned vouchers for vending order...');
+      //   await this.redeemAssignedVouchers(currentOrderModel, phoneString);
+        
+      // }
+      // console.log('✅ [DEBUG] Step 8 Complete: Vouchers and credits processed');
+
+      // Step 8.5: Handle free vouchers (if provided in order model)
+      // if (currentOrderModel.freevouchers && Array.isArray(currentOrderModel.freevouchers) && currentOrderModel.freevouchers.length > 0 && phoneString !== "0") {
+      //   console.log('🎁 [DEBUG] Step 8.5: Processing free vouchers...');
+      //   await this.handleFreeVouchers(currentOrderModel, phoneString);
+      //   console.log('✅ [DEBUG] Step 8.5 Complete: Free vouchers processed');
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 8.5 Skipped: No free vouchers or invalid phone number');
+      // }
+
+
+
+      // Step 9: Add loyalty points
+      // console.log('⭐ [DEBUG] Step 9: Adding loyalty points...');
+      // const pointsAdded = await this.addOrderWithLoyaltyPoints(phoneString, currentOrderModel, currentStoreModel);
+      // console.log('✅ [DEBUG] Step 9 Complete: Loyalty points added -', pointsAdded, 'points');
+
+      // Step 9.2: Award stamp card progress (if eligible)
+      // try {
+      //   if (phoneString !== "0") {
+      //     console.log('🟩 [DEBUG] Step 9.2: Awarding stamp card (if eligible)... ',   parseFloat(currentOrderModel.totalpaid ));
+      //     const orderTotalForStamp =  parseFloat(currentOrderModel.totalpaid ); //parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice);
+      //     await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid, currentStoreModel?.companyid || currentStoreModel?.companyId || '');
+      //     console.log('✅ [DEBUG] Step 9.2 Complete: Stamp card award step executed');
+      //   } else {
+      //     console.log('⏭️ [DEBUG] Step 9.2 Skipped: No valid phone number for stamp card');
+      //   }
+      // } catch (stampErr) {
+      //   console.error('❌ [DEBUG] Step 9.2 Failed: Error awarding stamp card:', stampErr);
+      // }
+
+      // Step 10: Handle vending machine specific logic
+      // if (isVendingOrder) {
+      //   // console.log('🤖 [DEBUG] Step 10: Processing vending order specifics...');
+      //   // console.log('📦 [DEBUG] Saving to pickup collection...');
+      //   // await this.saveToPickupCollection(currentOrderModel);
+      //   console.log('📞 [DEBUG] Triggering vending payment callback...');
+      //   await this.triggerVendingPaymentCallback(currentOrderModel, currentStoreModel);
+      //   console.log('✅ [DEBUG] Step 10 Complete: Vending order processing done');
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 10 Skipped: Not a vending order');
+      // }
+
+      // Step 10.5: Generate ESL picking list (for non-vending orders)
+      // if (enableFullProcessing && enablePickingList && !isVendingOrder && !isCOIN) {
+      //   console.log('📋 [DEBUG] Step 10.5: Generating ESL picking list...');
+      //   await this.generatePickingList(storeId, currentOrderModel, currentStoreModel);
+      //   console.log('✅ [DEBUG] Step 10.5 Complete: ESL picking list generated');
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 10.5 Skipped: ESL picking list not needed');
+      // }
+
+      // Step 10.6: Handle Feie receipt printing (for non-vending orders)
+      // if (enableFullProcessing && enablePrinting && !isVendingOrder && !isCOIN) {
+      //   console.log('🖨️ [DEBUG] Step 10.6: Processing Feie receipt printing...');
+      //   await this.handleFeieReceipt(currentOrderModel, currentStoreModel);
+      //   console.log('✅ [DEBUG] Step 10.6 Complete: Feie receipts processed');
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 10.6 Skipped: Feie printing not needed');
+      // }
+
+      // Step 10.7: Retrieve pickup code for vending orders
+      // if (enableFullProcessing && isVendingOrder && currentOrderModel.vendingid && !isCOIN) {
+      //   console.log('🔑 [DEBUG] Step 10.7: Retrieving pickup code for vending order...');
+      //   await this.retrievePickupCode(currentOrderModel, phoneString);
+      //   console.log('✅ [DEBUG] Step 10.7 Complete: Pickup code retrieved');
+
+      //   console.log('🤖 [DEBUG] Step 10.7: Processing vending order specifics...');
+      //   console.log('📦 [DEBUG] Step 10.7: Saving to pickup collection...');
+      //   await this.saveToPickupCollection(currentOrderModel);
+
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 10.7 Skipped: No pickup code retrieval needed');
+      // }
+
+
+      // Step 10.8: Check SQL Account integration and create invoice if enabled
+            // const storeData = storeResult.data();
+            // if (storeData && storeData.integratesqlaccount === true) {
+            //   console.log('💼 [DEBUG] Step 10.8: SQL Account integration enabled, creating cash sales...');
+            //   console.log(currentOrderModel);
+            //   try {
+            //     const invoiceResult = await this.sqlAccountRouter.helperCreateCashSalesFromOrder({
+            //       order: currentOrderModel,
+            //       storeId: storeId
+            //     });
+            //     console.log('📄 [DEBUG] SQL Account Invoice Creation Result:', JSON.stringify(invoiceResult, null, 2));
+            //   } catch (error) {
+            //     console.error('❌ [DEBUG] SQL Account Invoice Creation Error:', error);
+            //   }
+            // } else {
+            //   console.log('⏭️ [DEBUG] Step 2.5 Skipped: SQL Account integration not enabled');
+            // }
+
+      // Step 11: Update order_temp with the latest order model
+      console.log('🔄 [DEBUG] Step 11: Updating order_temp with latest order model... ' + storeId + " " + orderId);
+        fireStore.collection("store")
+          .doc(storeId)
+          .collection("order_temp")
+          .doc(orderId)
+          .set(currentOrderModel);
+
+      // await this.updateOrderTempMyReport(storeId, orderId, currentOrderModel);
+      // console.log('✅ [DEBUG] Step 11 Complete: order_temp updated to cart order with processed data');
+      //  await this.updateCurrentOrderToUser(currentOrderModel, caller); //this will save order to user -> cart_order
+      //  console.log('✅ [DEBUG] Step 11.1 Complete: current gkash order to user updated with processed data');
+       
+      //  // Step 11.2: Process blindbox voucher if present
+      //  console.log('🎁 [DEBUG] Step 11.2: Processing blindbox voucher...');
+      //  await this.processBlindboxVoucher(currentOrderModel, phoneString);
+      //  console.log('✅ [DEBUG] Step 11.2 Complete: blindbox voucher processing done');
+
+      // Step 12: Cleanup order (delete order_temp if requested)
+      // if (enableFullProcessing && deleteOrderTemp) {
+      //   console.log('🧹 [DEBUG] Step 12: Cleaning up order_temp...');
+      //   await this.cleanupOrder(storeId, orderId, phoneString);
+      //   console.log('✅ [DEBUG] Step 12 Complete: Order cleanup done');
+      // } else {
+      //   console.log('⏭️ [DEBUG] Step 12 Skipped: Order cleanup not requested');
+      // }
+
+      console.log('🎉 [DEBUG] ========================');
+      console.log('🎉 [DEBUG] ALL STEPS COMPLETE: Order transaction processed successfully!');
+      console.log('🎉 [DEBUG] ========================');
+      console.log('📊 [DEBUG] === PROCESSING SUMMARY ===');
+      console.log('📊 [DEBUG] Store ID:', storeId);
+      console.log('📊 [DEBUG] Store Counter Used:', currentStoreModel.storecounter);
+      console.log('📊 [DEBUG] Original Order Document ID:', orderId);
+      console.log('📊 [DEBUG] Generated Order Number:', currentOrderModel.orderid);
+      console.log('📊 [DEBUG] Payment Amount:', gkashResult.AMOUNT, gkashResult.CURRENCY || 'MYR');
+      console.log('📊 [DEBUG] Payment Type:', gkashResult.PAYMENT_TYPE);
+      console.log('📊 [DEBUG] User Phone:', phoneString);
+      console.log('📊 [DEBUG] Order Items Processed:', currentOrderModel.orderitems?.length || 0);
+      //console.log('📊 [DEBUG] Is Vending Order:', isVendingOrder);
+      //console.log('📊 [DEBUG] Loyalty Points Added:', pointsAdded);
+      console.log('📊 [DEBUG] Order_temp Updated: store/' + storeId + '/order_temp/' + orderId);
+      console.log('📊 [DEBUG] === END SUMMARY ===');
+      
+      return { id: currentOrderModel.id, status: 'success', message: "order processed successfully" };
+
+    } catch (error) {
+      console.error('💥 [DEBUG] FATAL ERROR in processOrderTransaction:', error);
+      console.error('💥 [DEBUG] Error stack:', error.stack);
+      return { id: "", status: 'error', error: error.message || error };
+    }
+  }
+
   async processOrderTransaction(storeId, orderId, gkashResult, options = {}, caller = 'UNKNOWN') {
     const dateTime = new UtilDateTime();
     
@@ -2267,7 +2807,7 @@ async testSendOTP()
         if (phoneString !== "0") {
           console.log('🟩 [DEBUG] Step 9.2: Awarding stamp card (if eligible)... ',   parseFloat(currentOrderModel.totalpaid ));
           const orderTotalForStamp =  parseFloat(currentOrderModel.totalpaid ); //parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice);
-          await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid);
+          await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid, currentStoreModel?.companyid || currentStoreModel?.companyId || '');
           console.log('✅ [DEBUG] Step 9.2 Complete: Stamp card award step executed');
         } else {
           console.log('⏭️ [DEBUG] Step 9.2 Skipped: No valid phone number for stamp card');
@@ -2591,7 +3131,7 @@ async testSendOTP()
         if (phoneString !== "0") {
           console.log('🟩 [POS DEBUG] Step 7: Awarding stamp card (if eligible)... ',   parseFloat(currentOrderModel.totalpaid ));
           const orderTotalForStamp =  parseFloat(currentOrderModel.totalpaid ); //parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice);
-          await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid);
+          await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid, currentStoreModel?.companyid || currentStoreModel?.companyId || '');
           console.log('✅ [POS DEBUG] Step 7 Complete: Stamp card award step executed');
         } else {
           console.log('⏭️ [POS DEBUG] Step 7 Skipped: No valid phone number for stamp card');
@@ -2942,7 +3482,7 @@ async testSendOTP()
       //   if (phoneString !== "0") {
       //     console.log('🟩 [GAME PLAY DEBUG] Step 7: Awarding stamp card (if eligible)... ',   parseFloat(currentOrderModel.totalpaid ));
       //     const orderTotalForStamp =  parseFloat(currentOrderModel.totalpaid ); //parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice);
-      //     await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid);
+      //     await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid, currentStoreModel?.companyid || currentStoreModel?.companyId || '');
       //     console.log('✅ [GAME PLAY DEBUG] Step 7 Complete: Stamp card award step executed');
       //   } else {
       //     console.log('⏭️ [GAME PLAY DEBUG] Step 7 Skipped: No valid phone number for stamp card');
@@ -4280,7 +4820,7 @@ console.log("set payment status :", orderModel.paymentstatus);
       // Step 9: Award stamp card progress
       console.log("🎁 [AWARD_LOYALTY] Step 8: Awarding stamp card progress...");
       const orderTotalForStamp = parseFloat(orderModel.totalpaid || 0);
-      await this.awardStampForOrder(userPhoneNumber, formattedOrderId, orderTotalForStamp, orderModel.storeid || formattedStoreId);
+      await this.awardStampForOrder(userPhoneNumber, formattedOrderId, orderTotalForStamp, orderModel.storeid || formattedStoreId, storeModel?.companyid || storeModel?.companyId || '');
       console.log("✅ [AWARD_LOYALTY] Step 8 Complete: Stamp card progress awarded");
 
 
@@ -4633,6 +5173,50 @@ console.log("set payment status :", orderModel.paymentstatus);
   }
 
   /**
+   * Save pending points (vending): save the order model to pending_points only.
+   * Does not fetch order from store; caller provides orderData.
+   * @param {string} phoneNumber - Phone number (may include + prefix)
+   * @param {number} points - Points to save
+   * @param {string} orderId - Order ID
+   * @param {string} storeId - Store ID
+   * @param {Object} orderData - Order model/data to save under pending_points
+   * @returns {Promise<boolean>} True on success, false on error
+   */
+  async savePendingPointsVending({ phoneNumber, points, orderId, storeId, orderData }) {
+    try {
+      const cleanPhone = phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
+      const documentId = `FU_+${cleanPhone}`;
+
+      console.log('💾 [PENDING_POINTS_VENDING] Saving pending points for:', documentId);
+      console.log('💾 [PENDING_POINTS_VENDING] Points:', points, 'Order ID:', orderId, 'Store ID:', storeId);
+
+      const pendingPointsData = {
+        points,
+        orderId,
+        storeId,
+        createdAt: new Date().toISOString(),
+        orderData,
+      };
+
+      await fireStore.collection('pending_points').doc(documentId).set(pendingPointsData);
+      console.log('✅ [PENDING_POINTS_VENDING] Pending points saved to:', documentId);
+
+      await fireStore
+        .collection('pending_points')
+        .doc(documentId)
+        .collection('order')
+        .doc(orderId)
+        .set(orderData);
+      console.log('✅ [PENDING_POINTS_VENDING] Order saved to pending_points subcollection');
+
+      return true;
+    } catch (e) {
+      console.error('❌ [PENDING_POINTS_VENDING] Error saving pending points:', e);
+      return false;
+    }
+  }
+
+  /**
    * Claim pending points and add them to user's loyalty points
    * Also copies order and pickup code from pending_points to userRef
    * @param {string} userId - User ID (e.g., "FU_60123456789")
@@ -4939,7 +5523,7 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async awardStampForOrder(phoneString, orderId, orderTotal, storeId) {
+  async awardStampForOrder(phoneString, orderId, orderTotal, storeId, companyId = '') {
     try {
       const userId = `FU_${phoneString}`;
       console.log('🟩 [STAMP] awardStampForOrder: start', {
@@ -4947,9 +5531,43 @@ console.log("set payment status :", orderModel.paymentstatus);
         phoneString,
         orderId,
         orderTotal: Number(orderTotal || 0),
-        storeId
+        storeId,
+        companyId
       });
-      const cardsQuery = await fireStore
+
+      let awardedCompanyCardId = null;
+
+      // Phase 1: Try to award stamp based on companyId
+      if (companyId && companyId !== '') {
+        console.log('🟩 [STAMP] Phase 1: Querying by companyId:', companyId);
+        const companyCardsQuery = await fireStore
+          .collection('user')
+          .doc(userId)
+          .collection('stampcard')
+          .where('status', '==', 'in_progress')
+          .where('companyId', '==', companyId)
+          .get();
+
+        if (!companyCardsQuery.empty) {
+          console.log('🟩 [STAMP] Phase 1: Found', companyCardsQuery.size, 'company stamp cards');
+          awardedCompanyCardId = await this._tryAwardStamp(
+            companyCardsQuery.docs,
+            userId,
+            orderId,
+            orderTotal,
+            null,
+            'company'
+          );
+        } else {
+          console.log('🟨 [STAMP] Phase 1: No in-progress stamp cards for companyId:', companyId);
+        }
+      } else {
+        console.log('🟩 [STAMP] Phase 1: Skipped (no companyId provided)');
+      }
+
+      // Phase 2: Try to award stamp based on storeId (excluding company card if already awarded)
+      console.log('🟩 [STAMP] Phase 2: Querying by storeId:', storeId);
+      const storeCardsQuery = await fireStore
         .collection('user')
         .doc(userId)
         .collection('stampcard')
@@ -4957,112 +5575,129 @@ console.log("set payment status :", orderModel.paymentstatus);
         .where('storeId', '==', storeId)
         .get();
 
-      if (cardsQuery.empty) {
-        console.log(`🟨 [STAMP] No in-progress stamp cards for user: ${userId} and storeId: ${storeId}`);
-        return;
-      }
-
-      console.log('🟩 [STAMP] In-progress cards found for $userId: ', cardsQuery.size);
-
-      for (const cardDoc of cardsQuery.docs) {
-        const cardRef = cardDoc.ref;
-        let awarded = false;
-        let skipReason = 'none';
-        const preCard = cardDoc.data() || {};
-        console.log('🟩 [STAMP] Evaluating card', cardDoc.id, {
-          status: preCard.status,
-          conditionType: preCard.conditionType,
-          storeId: preCard.storeId,
-          thresholdAmount: preCard.conditionParams?.thresholdAmount,
-          totalStamps: preCard.totalStamps,
-          expiresAt: preCard.expiresAt,
-          stampsLength: Array.isArray(preCard.stamps) ? preCard.stamps.length : 0,
-          relatedOrderIdsCount: Array.isArray(preCard.relatedOrderIds) ? preCard.relatedOrderIds.length : 0
-        });
-
-        await fireStore.runTransaction(async (trx) => {
-          const snap = await trx.get(cardRef);
-          if (!snap.exists) { skipReason = 'card_not_found'; return; }
-          const card = snap.data() || {};
-
-          if (card.status !== 'in_progress') { skipReason = 'status_not_in_progress'; return; }
-
-          let isExpired = false;
-          try {
-            if (card.expiresAt && typeof card.expiresAt.toDate === 'function') {
-              isExpired = new Date() > card.expiresAt.toDate();
-            }
-          } catch (_) {
-            // ignore
-          }
-          if (isExpired) { skipReason = 'card_expired'; return; }
-
-          const relatedOrderIds = Array.isArray(card.relatedOrderIds) ? card.relatedOrderIds.slice() : [];
-          if (relatedOrderIds.includes(orderId)) { skipReason = 'order_already_counted'; return; }
-
-          if (card.conditionType !== 'spend_threshold') { skipReason = 'unsupported_conditionType'; return; }
-          const threshold = Number(card.conditionParams && card.conditionParams.thresholdAmount ? card.conditionParams.thresholdAmount : 0);
-          const numericOrderTotal = Number(orderTotal || 0);
-          console.log('🟩 [STAMP] Threshold check:', { orderTotal: numericOrderTotal, threshold });
-          if (numericOrderTotal < threshold || threshold <= 0) { skipReason = 'below_threshold'; return; }
-
-          const stamps = Array.isArray(card.stamps) ? card.stamps.slice() : [];
-          const emptyIndices = [];
-          for (let i = 0; i < stamps.length; i++) {
-            if (!stamps[i] || !stamps[i].earnedAt) { emptyIndices.push(i); }
-          }
-          const maxAwardableByAmount = Math.floor(numericOrderTotal / threshold);
-          const stampsToAward = Math.min(maxAwardableByAmount, emptyIndices.length);
-          console.log('🟩 [STAMP] Stamp slot selection:', { totalSlots: stamps.length, emptySlots: emptyIndices.length, maxAwardableByAmount, stampsToAward });
-          if (stampsToAward <= 0) { skipReason = emptyIndices.length === 0 ? 'no_empty_stamp_slot' : 'below_threshold'; return; }
-
-          for (let i = 0; i < stampsToAward; i++) {
-            const idx = emptyIndices[i];
-            stamps[idx] = {
-              index: stamps[idx] && stamps[idx].index != null ? stamps[idx].index : idx,
-              earnedAt: new Date(),
-              orderId: orderId
-            };
-          }
-
-          const earnedCount = stamps.filter(s => !!(s && s.earnedAt)).length;
-          const totalStamps = Number(card.totalStamps || 0);
-
-          const updates = {
-            stamps: stamps,
-            relatedOrderIds: relatedOrderIds.includes(orderId) ? relatedOrderIds : relatedOrderIds.concat([orderId])
-          };
-
-          if (earnedCount >= totalStamps && totalStamps > 0) {
-            updates.status = 'completed';
-            updates.completedAt = new Date();
-          }
-
-          console.log('🟩 [STAMP] Applying updates:', {
-            cardId: cardDoc.id,
-            earnedCount,
-            totalStamps,
-            willComplete: earnedCount >= totalStamps && totalStamps > 0,
-            relatedOrderIdsNewCount: updates.relatedOrderIds.length,
-            stampsAwardedThisOrder: stampsToAward
-          });
-
-          trx.update(cardRef, updates);
-          awarded = true;
-        });
-
-        if (awarded) {
-          console.log('✅ [STAMP] Awarded a stamp on card:', cardDoc.id, 'for user:', userId);
-          break;
-        }
-
-        console.log('🟨 [STAMP] Skipped card', cardDoc.id, 'reason:', skipReason);
+      if (!storeCardsQuery.empty) {
+        console.log('🟩 [STAMP] Phase 2: Found', storeCardsQuery.size, 'store stamp cards');
+        await this._tryAwardStamp(
+          storeCardsQuery.docs,
+          userId,
+          orderId,
+          orderTotal,
+          awardedCompanyCardId,
+          'store'
+        );
+      } else {
+        console.log(`🟨 [STAMP] Phase 2: No in-progress stamp cards for storeId: ${storeId}`);
       }
 
       console.log('🟩 [STAMP] awardStampForOrder: done for user:', userId);
     } catch (e) {
       console.error('💥 [STAMP] Error while awarding stamp:', e);
     }
+  }
+
+  async _tryAwardStamp(cardDocs, userId, orderId, orderTotal, excludeCardId, phase) {
+    for (const cardDoc of cardDocs) {
+      if (excludeCardId && cardDoc.id === excludeCardId) {
+        console.log(`🟨 [STAMP] Phase ${phase}: Skipping card ${cardDoc.id} (already awarded in previous phase)`);
+        continue;
+      }
+
+      const cardRef = cardDoc.ref;
+      let awarded = false;
+      let skipReason = 'none';
+      const preCard = cardDoc.data() || {};
+      console.log(`🟩 [STAMP] Phase ${phase}: Evaluating card`, cardDoc.id, {
+        status: preCard.status,
+        conditionType: preCard.conditionType,
+        storeId: preCard.storeId,
+        companyId: preCard.companyId,
+        thresholdAmount: preCard.conditionParams?.thresholdAmount,
+        totalStamps: preCard.totalStamps,
+        expiresAt: preCard.expiresAt,
+        stampsLength: Array.isArray(preCard.stamps) ? preCard.stamps.length : 0,
+        relatedOrderIdsCount: Array.isArray(preCard.relatedOrderIds) ? preCard.relatedOrderIds.length : 0
+      });
+
+      await fireStore.runTransaction(async (trx) => {
+        const snap = await trx.get(cardRef);
+        if (!snap.exists) { skipReason = 'card_not_found'; return; }
+        const card = snap.data() || {};
+
+        if (card.status !== 'in_progress') { skipReason = 'status_not_in_progress'; return; }
+
+        let isExpired = false;
+        try {
+          if (card.expiresAt && typeof card.expiresAt.toDate === 'function') {
+            isExpired = new Date() > card.expiresAt.toDate();
+          }
+        } catch (_) {
+          // ignore
+        }
+        if (isExpired) { skipReason = 'card_expired'; return; }
+
+        const relatedOrderIds = Array.isArray(card.relatedOrderIds) ? card.relatedOrderIds.slice() : [];
+        if (relatedOrderIds.includes(orderId)) { skipReason = 'order_already_counted'; return; }
+
+        if (card.conditionType !== 'spend_threshold') { skipReason = 'unsupported_conditionType'; return; }
+        const threshold = Number(card.conditionParams && card.conditionParams.thresholdAmount ? card.conditionParams.thresholdAmount : 0);
+        const numericOrderTotal = Number(orderTotal || 0);
+        console.log(`🟩 [STAMP] Phase ${phase}: Threshold check:`, { orderTotal: numericOrderTotal, threshold });
+        if (numericOrderTotal < threshold || threshold <= 0) { skipReason = 'below_threshold'; return; }
+
+        const stamps = Array.isArray(card.stamps) ? card.stamps.slice() : [];
+        const emptyIndices = [];
+        for (let i = 0; i < stamps.length; i++) {
+          if (!stamps[i] || !stamps[i].earnedAt) { emptyIndices.push(i); }
+        }
+        const maxAwardableByAmount = Math.floor(numericOrderTotal / threshold);
+        const stampsToAward = Math.min(maxAwardableByAmount, emptyIndices.length);
+        console.log(`🟩 [STAMP] Phase ${phase}: Stamp slot selection:`, { totalSlots: stamps.length, emptySlots: emptyIndices.length, maxAwardableByAmount, stampsToAward });
+        if (stampsToAward <= 0) { skipReason = emptyIndices.length === 0 ? 'no_empty_stamp_slot' : 'below_threshold'; return; }
+
+        for (let i = 0; i < stampsToAward; i++) {
+          const idx = emptyIndices[i];
+          stamps[idx] = {
+            index: stamps[idx] && stamps[idx].index != null ? stamps[idx].index : idx,
+            earnedAt: new Date(),
+            orderId: orderId
+          };
+        }
+
+        const earnedCount = stamps.filter(s => !!(s && s.earnedAt)).length;
+        const totalStamps = Number(card.totalStamps || 0);
+
+        const updates = {
+          stamps: stamps,
+          relatedOrderIds: relatedOrderIds.includes(orderId) ? relatedOrderIds : relatedOrderIds.concat([orderId])
+        };
+
+        if (earnedCount >= totalStamps && totalStamps > 0) {
+          updates.status = 'completed';
+          updates.completedAt = new Date();
+        }
+
+        console.log(`🟩 [STAMP] Phase ${phase}: Applying updates:`, {
+          cardId: cardDoc.id,
+          earnedCount,
+          totalStamps,
+          willComplete: earnedCount >= totalStamps && totalStamps > 0,
+          relatedOrderIdsNewCount: updates.relatedOrderIds.length,
+          stampsAwardedThisOrder: stampsToAward
+        });
+
+        trx.update(cardRef, updates);
+        awarded = true;
+      });
+
+      if (awarded) {
+        console.log(`✅ [STAMP] Phase ${phase}: Awarded a stamp on card:`, cardDoc.id, 'for user:', userId);
+        return cardDoc.id;
+      }
+
+      console.log(`🟨 [STAMP] Phase ${phase}: Skipped card`, cardDoc.id, 'reason:', skipReason);
+    }
+
+    return null;
   }
 
   async saveToPickupCollection(orderModel) {
@@ -6475,6 +7110,7 @@ console.log("set payment status :", orderModel.paymentstatus);
       title: data.title,
       currency: data.currency,
       initial : data.initial,
+      companyid: data.companyid || data.companyId || '',
       
       // ... other fields ...
       getTicket() {
@@ -8251,7 +8887,7 @@ console.log("set payment status :", orderModel.paymentstatus);
       const { version, CID, cartid, currency, amount, signature } = req.body;
       
       // Validate required fields
-      if (!version || !CID || !cartid || !currency || !amount || !signature) {
+      if (!version || !CID || !cartid || !currency || amount === undefined || amount === null || amount === '' || !signature) {
         console.log('❌ [PAYMENT-QUERY] Missing required fields');
         return res.status(400).json({
           success: false,
@@ -8267,20 +8903,23 @@ console.log("set payment status :", orderModel.paymentstatus);
       console.log('🔍 [PAYMENT-QUERY] - Amount:', amount);
       console.log('🔍 [PAYMENT-QUERY] - Signature:', signature);
       
-      // Prepare query data
+      // Prepare query data (forward as received; amount can be string "100.00" or number per API)
       const queryData = {
-        version: version,
-        CID: CID,
-        cartid: cartid,
-        currency: currency,
-        amount: amount,
-        signature: signature
+        version,
+        CID,
+        cartid,
+        currency,
+        amount,
+        signature
       };
       
-      console.log('🔍 [PAYMENT-QUERY] Making request to GKash API...');
+      // Base URL: staging (api-staging.pay.asia) or production (api.gkash.my)
+      const paymentQueryBaseUrl = (process.env.PAYMENT_QUERY_BASE_URL || 'https://api.gkash.my').replace(/\/$/, '');
+      const queryUrl = `https://api.gkash.my/api/payment/query`;
+      
+      console.log('🔍 [PAYMENT-QUERY] Making request to:', queryUrl);
      
-      // Make request to GKash API
-      const response = await axios.post('https://api.gkash.my/api/payment/query', queryData, {
+      const response = await axios.post(queryUrl, queryData, {
         headers: {
           'Content-Type': 'application/json'
         },

@@ -1254,11 +1254,11 @@ class MyInvoisRouter {
         // If submitToApi is true, also submit the document to the API
         console.log('options.submitToApi:', options.submitToApi);
         if (options.submitToApi) {
-          console.log('Submitting document to API...');
+          console.log('Submitting conslidated document to API...');
           const submissionResult = await this._submitToApi({
-            documentData, 
-            supplier
-          
+            documentData,
+            supplier,
+            req
           });
           
           result.submission = submissionResult;
@@ -1325,11 +1325,12 @@ class MyInvoisRouter {
    * @param {Object} params.documentData - Document data to submit
    * @param {Object} params.supplier - Supplier model data
    * @param {string} params.accessToken - Optional access token to use instead of getting a new one
+   * @param {Object} params.req - Optional Express request from caller (used for getApiUrl: apiEnv/apiUrl in query/body)
    * @returns {Promise<Object>} Result of the submission
    */
   async _submitToApi(params = {}) {
     try {
-      const { documentData, supplier, accessToken: providedToken } = params;
+      const { documentData, supplier, accessToken: providedToken, req: callerReq } = params;
       
       // Validate supplier model is loaded or provided as parameter
       if (!supplier) {
@@ -1357,8 +1358,19 @@ class MyInvoisRouter {
       
       if (!accessToken) {
         statusUpdates.push('Getting fresh API token...');
+        const loginReq = {
+          body: {
+            client_id: supplier.clientId,
+            client_secret: supplier.clientSecret,
+            ...(callerReq && {
+              apiEnv: callerReq.body?.apiEnv ?? callerReq.query?.apiEnv,
+              apiUrl: callerReq.body?.apiUrl ?? callerReq.query?.apiUrl
+            })
+          },
+          query: callerReq?.query || {}
+        };
         const tokenResult = await this.login(
-          { body: { client_id: supplier.clientId, client_secret: supplier.clientSecret } },
+          loginReq,
           { status: () => ({ json: (data) => data }), json: (data) => data }
         );
 
@@ -1395,13 +1407,21 @@ class MyInvoisRouter {
         }
       ];
       
-      // Submit document to API
+      // Submit document to API - pass caller req so submitDocument/getApiUrl can use apiEnv/apiUrl
       statusUpdates.push('Submitting document to API...');
-      // console.log("content for document submission");
-      // console.log("token:" + accessToken);
-      // console.log("documents:" + JSON.stringify(documents));
+      const submitReq = {
+        body: {
+          token: accessToken,
+          documents,
+          ...(callerReq && {
+            apiEnv: callerReq.body?.apiEnv ?? callerReq.query?.apiEnv,
+            apiUrl: callerReq.body?.apiUrl ?? callerReq.query?.apiUrl
+          })
+        },
+        query: callerReq?.query || {}
+      };
       const submissionResult = await this.submitDocument(
-        { body: { token: accessToken, documents } },
+        submitReq,
         { status: () => ({ json: (data) => data }), json: (data) => data }
       );
       
@@ -2133,9 +2153,10 @@ class MyInvoisRouter {
 
 
         const submissionResult = await this._submitToApi({
-          documentData, 
+          documentData,
           supplier,
-          accessToken: token
+          accessToken: token,
+          req
         });
         result.submission = submissionResult;
 
