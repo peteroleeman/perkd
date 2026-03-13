@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
 const UtilFeie = require("./feie/util_feie");
+const UtilFeieReceipt = require("./util/util_feie_receipt");
 const querystring = require('querystring');
 const bodyParser = require('body-parser');
 const url = require('url');
@@ -23,6 +24,11 @@ const {
 } = require("./storeController");
 
 const KaotimActivityLogger = require("./util/kaotim_activity_logger");
+
+// Feie print API routes (same as Flutter / posrouter: api.foodio.online/pos/...)
+const FEIE_API_BASE_URL = 'https://api.foodio.online';
+const FEIE_API_PATH_ORDER_SLIP = '/pos/kdsorderslipexap';
+const FEIE_API_PATH_LABEL = '/pos/printlabelap';
 
 class GKashRouter {
 
@@ -54,6 +60,9 @@ class GKashRouter {
     this.router.get('/about', function(req, res) {
      res.json({ message: `Endpoint for GKash integration v1.25`});
     });
+
+    // Test route: preview Feie receipt/slip by storeId and orderId (for Postman)
+    this.router.get('/test-feie-receipt', this.handleTestFeieReceipt.bind(this));
 
     //point related
     this.router.post('/point', this.handlePoint.bind(this));
@@ -1743,7 +1752,7 @@ async testSendOTP()
       if(true)
       {
         const crmOptions = {
-          enablePrinting: false,        // Enable receipt printing
+          enablePrinting: false,      // Disable receipt printing for CRM
           enablePickingList: false,     // Generate picking lists
           enableFullProcessing: true,  // Enable all processing features
           deleteOrderTemp: false       // Keep order_temp for debugging
@@ -2086,7 +2095,7 @@ async testSendOTP()
       if(true)
       {
                  const vmOptions = {
-           enablePrinting: false,       // Disable receipt printing for vending
+           enablePrinting: true,        // Enable receipt printing (FEIE skips pay at counter/cash)
            enablePickingList: false,    // Disable picking lists for vending
            enableFullProcessing: true,  // Enable all processing features
            deleteOrderTemp: false        // Clean up order_temp after processing
@@ -2343,16 +2352,16 @@ async testSendOTP()
             break;
           }
 
-          // Wait 1 second before next cycle (except after cycle 3)
+          // Wait 200ms before next cycle (except after cycle 3)
           if (cycle < 3) {
-            console.log(`⏱️ [DEBUG] Waiting 1s before next cycle...`);
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            console.log(`⏱️ [DEBUG] Waiting 200ms before next cycle...`);
+            await new Promise(resolve => setTimeout(resolve, 200));
           }
 
         } catch (e) {
           console.log(`❌ [DEBUG] Error on cycle ${cycle}:`, e);
           if (cycle < 3) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise(resolve => setTimeout(resolve, 200));
           }
         }
       }
@@ -2392,15 +2401,7 @@ async testSendOTP()
         await this.processCreditPayment(currentOrderModel, phoneString);
         console.log('✅ [DEBUG] Step 4.5 Complete: Credit payment processed');
       } else if (enableFullProcessing && (currentOrderModel.paymenttype || "").toUpperCase() !== "FREE" && (currentOrderModel.paymenttype || "").toUpperCase() !== "COD") {
-        console.log('⏳ [DEBUG] Step 4.5: Waiting for GKash order confirmation...');
-        console.log('💰 [DEBUG] Payment type:', currentOrderModel.paymenttype, '- requires GKash confirmation');
-        try {
-          const gkashResult = await this.waitForGKashOrder(storeId, orderId, currentOrderModel);
-          console.log('✅ [DEBUG] Step 4.5 Complete: GKash order confirmed');
-        } catch (error) {
-          console.error('❌ [DEBUG] Step 4.5 Failed: GKash order timeout or error:', error.message);
-          throw error; // Re-throw to handle at higher level
-        }
+        console.log('⏳ [DEBUG] Step 4.5: Skipping redundant GKash order check (already confirmed)');
       } else {
         console.log('⏭️ [DEBUG] Step 4.5 Skipped: Payment type', currentOrderModel.paymenttype, '- no GKash waiting needed');
         currentOrderModel.paymentstatus = 0; //kPaid
@@ -2614,12 +2615,15 @@ async testSendOTP()
     let isCOIN = (caller === "COIN");
     
     try {
-      console.log('🚀 [DEBUG] Starting processOrderTransaction for storeId:', storeId, 'orderId:', orderId);
+      const processStart = Date.now();
+      const processStartIso = new Date().toISOString();
+      console.log('🚀 [DEBUG] Starting processOrderTransaction for storeId:', storeId, 'orderId:', orderId, processStartIso);
       console.log('🚀 [DEBUG] Caller:', caller);
       console.log('🚀 [DEBUG] Options:', JSON.stringify(options));
       console.log('🚀 [DEBUG] GKash Result:', JSON.stringify(gkashResult));
 
       // Step 1: Load store data
+      const step1Start = Date.now();
       console.log('📦 [DEBUG] Step 1: Loading store data...');
       const storeResult = await fireStore.collection('store').doc(storeId).get();
       if (!storeResult.exists) {
@@ -2627,9 +2631,10 @@ async testSendOTP()
         return { id: "", status: 'store_not_found', error: "store not found" };
       }
       const currentStoreModel = this.convertToStoreModel(storeResult);
-      console.log('✅ [DEBUG] Step 1 Complete: Store loaded -', currentStoreModel.title || storeId);
+      console.log('✅ [DEBUG] Step 1 Complete: Store loaded -', currentStoreModel.title || storeId, '(', Date.now() - step1Start, 'ms)');
 
       // Step 2: Load order data with retry logic (similar to Dart version)
+      const step2Start = Date.now();
       console.log('🔍 [DEBUG] Step 2: Loading order data with retry logic...');
       let currentOrderModel = null;
       let orderFound = false;
@@ -2675,16 +2680,16 @@ async testSendOTP()
             break;
           }
 
-          // Wait 1 second before next cycle (except after cycle 3)
+          // Wait 200ms before next cycle (except after cycle 3)
           if (cycle < 3) {
-            console.log(`⏱️ [DEBUG] Waiting 1s before next cycle...`);
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            console.log(`⏱️ [DEBUG] Waiting 200ms before next cycle...`);
+            await new Promise(resolve => setTimeout(resolve, 200));
           }
 
         } catch (e) {
           console.log(`❌ [DEBUG] Error on cycle ${cycle}:`, e);
           if (cycle < 3) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise(resolve => setTimeout(resolve, 200));
           }
         }
       }
@@ -2693,62 +2698,60 @@ async testSendOTP()
         console.log('❌ [DEBUG] Step 2 Failed: No matching order found for orderId:', orderId);
         return { id: "", status: 'order_not_found', error: "order not found" };
       }
-      console.log('✅ [DEBUG] Step 2 Complete: Order found with ID:', currentOrderModel.id);
+      console.log('✅ [DEBUG] Step 2 Complete: Order found with ID:', currentOrderModel.id, '(', Date.now() - step2Start, 'ms)');
 
 
 
       // Step 3: Validate order
+      const step3Start = Date.now();
       console.log('🔍 [DEBUG] Step 3: Validating order...');
       if (!this.isValidOrder(currentOrderModel)) {
         console.log('❌ [DEBUG] Step 3 Failed: Invalid order:', orderId);
         return { id: "", status: 'invalid_order', error: "order is not valid" };
       }
-      console.log('✅ [DEBUG] Step 3 Complete: Order validation passed - Items count:', currentOrderModel.orderitems?.length || 0);
+      console.log('✅ [DEBUG] Step 3 Complete: Order validation passed - Items count:', currentOrderModel.orderitems?.length || 0, '(', Date.now() - step3Start, 'ms)');
 
       // Step 4: Load user model if phone number exists
+      const step4Start = Date.now();
       console.log('👤 [DEBUG] Step 4: Loading user model...');
       const phoneString = this.getPhoneString(currentOrderModel);
       console.log('📞 [DEBUG] Phone string extracted:', phoneString);
       let currentUserModel = null;
       if (phoneString !== "0") {
         currentUserModel = await this.loadUserModel(phoneString);
-        console.log('✅ [DEBUG] Step 4 Complete: User model loaded for phone:', phoneString);
+        console.log('✅ [DEBUG] Step 4 Complete: User model loaded for phone:', phoneString, '(', Date.now() - step4Start, 'ms)');
       } else {
-        console.log('⚠️ [DEBUG] Step 4 Skipped: No valid phone number found');
+        console.log('⚠️ [DEBUG] Step 4 Skipped: No valid phone number found', '(', Date.now() - step4Start, 'ms)');
       }
 
       // Step 4.5: Process payment based on type (matching Dart logic)
+      const step45Start = Date.now();
       console.log("deciding payment type for order:", currentOrderModel.paymenttype);
       if (enableFullProcessing && currentOrderModel.paymenttype === "CREDIT") {
         console.log('💳 [DEBUG] Step 4.5: Processing credit payment...');
         await this.processCreditPayment(currentOrderModel, phoneString);
-        console.log('✅ [DEBUG] Step 4.5 Complete: Credit payment processed');
+        console.log('✅ [DEBUG] Step 4.5 Complete: Credit payment processed', '(', Date.now() - step45Start, 'ms)');
       } else if (enableFullProcessing && (currentOrderModel.paymenttype || "").toUpperCase() !== "FREE" && (currentOrderModel.paymenttype || "").toUpperCase() !== "COD") {
-        console.log('⏳ [DEBUG] Step 4.5: Waiting for GKash order confirmation...');
-        console.log('💰 [DEBUG] Payment type:', currentOrderModel.paymenttype, '- requires GKash confirmation');
-        try {
-          const gkashResult = await this.waitForGKashOrder(storeId, orderId, currentOrderModel);
-          console.log('✅ [DEBUG] Step 4.5 Complete: GKash order confirmed');
-        } catch (error) {
-          console.error('❌ [DEBUG] Step 4.5 Failed: GKash order timeout or error:', error.message);
-          throw error; // Re-throw to handle at higher level
-        }
+        console.log('⏳ [DEBUG] Step 4.5: Skipping redundant GKash order confirmation (handled implicitly)', '(', Date.now() - step45Start, 'ms)');
       } else {
-        console.log('⏭️ [DEBUG] Step 4.5 Skipped: Payment type', currentOrderModel.paymenttype, '- no GKash waiting needed');
+        console.log('⏭️ [DEBUG] Step 4.5 Skipped: Payment type', currentOrderModel.paymenttype, '- no GKash waiting needed', '(', Date.now() - step45Start, 'ms)');
         currentOrderModel.paymentstatus = 0; //kPaid
       }
 
       // Step 5: Increment store counter and assign order ID
+      const step5Start = Date.now();
       console.log('🔢 [DEBUG] Step 5: Incrementing store counter and assigning order ID...');
       await this.incrementStoreCounter(currentStoreModel, currentOrderModel);
-      console.log('✅ [DEBUG] Step 5 Complete: Order ID assigned -', currentOrderModel.orderid);
+      console.log('✅ [DEBUG] Step 5 Complete: Order ID assigned -', currentOrderModel.orderid, '(', Date.now() - step5Start, 'ms)');
 
       // Step 6: Update transaction details
+      const step6Start = Date.now();
       console.log('💳 [DEBUG] Step 6: Updating transaction details...');
       await this.updateTransactionDetails(currentOrderModel, gkashResult);
-      console.log('✅ [DEBUG] Step 6 Complete: Transaction details updated - Payment Status:', currentOrderModel.paymentstatus);
+      console.log('✅ [DEBUG] Step 6 Complete: Transaction details updated - Payment Status:', currentOrderModel.paymentstatus, '(', Date.now() - step6Start, 'ms)');
 
       // Step 7: Save order based on payment type
+      const step7Start = Date.now();
       console.log('💾 [DEBUG] Step 7: Saving order based on payment type...');
       if (currentOrderModel.paymenttype === "COD") {
         console.log('🛒 [DEBUG] Saving COD order to counter_order collection...');
@@ -2767,101 +2770,120 @@ async testSendOTP()
       {
         console.log('📄 [DEBUG] Skipping myInvois collection as it is COD');
       }
-      console.log('✅ [DEBUG] Step 7 Complete: Order saved appropriately');
+      console.log('✅ [DEBUG] Step 7 Complete: Order saved appropriately', '(', Date.now() - step7Start, 'ms)');
 
-      // Step 8: Handle vouchers and credits (only for non-vending orders during purchase)
-      console.log('🎫 [DEBUG] Step 8: Handling vouchers and credits...');
+      // Steps 8, 8.5, 9, 9.2: Run vouchers, credits, loyalty, and stamps in parallel
+      // These all operate on independent user sub-collections so they can safely run concurrently
+      const step8Start = Date.now();
+      console.log('🎫 [DEBUG] Steps 8-9.2: Running vouchers, credits, loyalty, and stamps in parallel...');
       const isVendingOrder = (currentOrderModel.devicenumber && currentOrderModel.merchantid);
       console.log('🤖 [DEBUG] Is Vending Order:', isVendingOrder);
-      
+
+      const parallelTasks = [];
+
+      // Step 8: Handle vouchers and credits
       if (!isVendingOrder) {
-        console.log('🎫 [DEBUG] Processing voucher items for regular order...');
-        await this.handleVoucherItems(currentOrderModel, phoneString);
-        console.log('💰 [DEBUG] Processing credit items for regular order...');
-        await this.handleCreditItems(currentOrderModel, phoneString);
+        parallelTasks.push(
+          this.handleVoucherItems(currentOrderModel, phoneString)
+            .then(() => console.log('✅ [DEBUG] Step 8a: Voucher items processed'))
+            .catch(err => console.error('❌ [DEBUG] Step 8a Failed:', err))
+        );
+        parallelTasks.push(
+          this.handleCreditItems(currentOrderModel, phoneString)
+            .then(() => console.log('✅ [DEBUG] Step 8b: Credit items processed'))
+            .catch(err => console.error('❌ [DEBUG] Step 8b Failed:', err))
+        );
       } else {
-        console.log('🎫 [DEBUG] Redeeming assigned vouchers for vending order...');
-        await this.redeemAssignedVouchers(currentOrderModel, phoneString);
-        
+        parallelTasks.push(
+          this.redeemAssignedVouchers(currentOrderModel, phoneString)
+            .then(() => console.log('✅ [DEBUG] Step 8: Assigned vouchers redeemed'))
+            .catch(err => console.error('❌ [DEBUG] Step 8 Failed:', err))
+        );
       }
-      console.log('✅ [DEBUG] Step 8 Complete: Vouchers and credits processed');
 
-      // Step 8.5: Handle free vouchers (if provided in order model)
+      // Step 8.5: Handle free vouchers
       if (currentOrderModel.freevouchers && Array.isArray(currentOrderModel.freevouchers) && currentOrderModel.freevouchers.length > 0 && phoneString !== "0") {
-        console.log('🎁 [DEBUG] Step 8.5: Processing free vouchers...');
-        await this.handleFreeVouchers(currentOrderModel, phoneString);
-        console.log('✅ [DEBUG] Step 8.5 Complete: Free vouchers processed');
-      } else {
-        console.log('⏭️ [DEBUG] Step 8.5 Skipped: No free vouchers or invalid phone number');
+        parallelTasks.push(
+          this.handleFreeVouchers(currentOrderModel, phoneString)
+            .then(() => console.log('✅ [DEBUG] Step 8.5: Free vouchers processed'))
+            .catch(err => console.error('❌ [DEBUG] Step 8.5 Failed:', err))
+        );
       }
-
-
 
       // Step 9: Add loyalty points
-      console.log('⭐ [DEBUG] Step 9: Adding loyalty points...');
-      const pointsAdded = await this.addOrderWithLoyaltyPoints(phoneString, currentOrderModel, currentStoreModel);
-      console.log('✅ [DEBUG] Step 9 Complete: Loyalty points added -', pointsAdded, 'points');
+      let pointsAdded = 0;
+      parallelTasks.push(
+        this.addOrderWithLoyaltyPoints(phoneString, currentOrderModel, currentStoreModel)
+          .then(pts => { pointsAdded = pts; console.log('✅ [DEBUG] Step 9: Loyalty points added -', pts); })
+          .catch(err => console.error('❌ [DEBUG] Step 9 Failed:', err))
+      );
 
-      // Step 9.2: Award stamp card progress (if eligible)
-      try {
-        if (phoneString !== "0") {
-          console.log('🟩 [DEBUG] Step 9.2: Awarding stamp card (if eligible)... ',   parseFloat(currentOrderModel.totalpaid ));
-          const orderTotalForStamp =  parseFloat(currentOrderModel.totalpaid ); //parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice);
-          await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid, currentStoreModel?.companyid || currentStoreModel?.companyId || '');
-          console.log('✅ [DEBUG] Step 9.2 Complete: Stamp card award step executed');
-        } else {
-          console.log('⏭️ [DEBUG] Step 9.2 Skipped: No valid phone number for stamp card');
-        }
-      } catch (stampErr) {
-        console.error('❌ [DEBUG] Step 9.2 Failed: Error awarding stamp card:', stampErr);
+      // Step 9.2: Award stamp card progress (off critical path: not awaited so order returns sooner)
+      if (phoneString !== "0") {
+        const orderTotalForStamp = parseFloat(currentOrderModel.totalpaid);
+        this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid, currentStoreModel?.companyid || currentStoreModel?.companyId || '')
+          .then(() => console.log('✅ [DEBUG] Step 9.2: Stamp card awarded'))
+          .catch(err => console.error('❌ [DEBUG] Step 9.2 Failed:', err));
       }
 
+      await Promise.all(parallelTasks);
+      console.log('✅ [DEBUG] Steps 8-9.2 Complete: All parallel loyalty tasks finished', '(', Date.now() - step8Start, 'ms)');
+
       // Step 10: Handle vending machine specific logic
+      const step10Start = Date.now();
       if (isVendingOrder) {
         // console.log('🤖 [DEBUG] Step 10: Processing vending order specifics...');
         // console.log('📦 [DEBUG] Saving to pickup collection...');
         // await this.saveToPickupCollection(currentOrderModel);
         console.log('📞 [DEBUG] Triggering vending payment callback...');
         await this.triggerVendingPaymentCallback(currentOrderModel, currentStoreModel);
-        console.log('✅ [DEBUG] Step 10 Complete: Vending order processing done');
+        console.log('✅ [DEBUG] Step 10 Complete: Vending order processing done', '(', Date.now() - step10Start, 'ms)');
       } else {
-        console.log('⏭️ [DEBUG] Step 10 Skipped: Not a vending order');
+        console.log('⏭️ [DEBUG] Step 10 Skipped: Not a vending order', '(', Date.now() - step10Start, 'ms)');
       }
 
       // Step 10.5: Generate ESL picking list (for non-vending orders)
+      const step105Start = Date.now();
       if (enableFullProcessing && enablePickingList && !isVendingOrder && !isCOIN) {
         console.log('📋 [DEBUG] Step 10.5: Generating ESL picking list...');
         await this.generatePickingList(storeId, currentOrderModel, currentStoreModel);
-        console.log('✅ [DEBUG] Step 10.5 Complete: ESL picking list generated');
+        console.log('✅ [DEBUG] Step 10.5 Complete: ESL picking list generated', '(', Date.now() - step105Start, 'ms)');
       } else {
-        console.log('⏭️ [DEBUG] Step 10.5 Skipped: ESL picking list not needed');
+        console.log('⏭️ [DEBUG] Step 10.5 Skipped: ESL picking list not needed', '(', Date.now() - step105Start, 'ms)');
       }
 
-      // Step 10.6: Handle Feie receipt printing (for non-vending orders)
-      if (enableFullProcessing && enablePrinting && !isVendingOrder && !isCOIN) {
+      // Step 10.6: Handle Feie receipt printing (for non-vending orders; skip for pay at counter, cash, or COD)
+      const step106Start = Date.now();
+      const pt = (currentOrderModel.paymenttype || '').toUpperCase();
+      const skipFeieForPaymentType = (pt === "COD") || pt.includes("CASH") || pt.includes("COUNTER");
+      const allowFeiePrinting = enableFullProcessing && enablePrinting && !isVendingOrder && !isCOIN && !skipFeieForPaymentType;
+      if (allowFeiePrinting) {
         console.log('🖨️ [DEBUG] Step 10.6: Processing Feie receipt printing...');
         await this.handleFeieReceipt(currentOrderModel, currentStoreModel);
-        console.log('✅ [DEBUG] Step 10.6 Complete: Feie receipts processed');
+        console.log('✅ [DEBUG] Step 10.6 Complete: Feie receipts processed', '(', Date.now() - step106Start, 'ms)');
       } else {
-        console.log('⏭️ [DEBUG] Step 10.6 Skipped: Feie printing not needed');
+        console.log('⏭️ [DEBUG] Step 10.6 Skipped: Feie printing not needed', '(', Date.now() - step106Start, 'ms)');
+        console.log('⏭️ [FEIE] Reason: enableFullProcessing=' + enableFullProcessing + ', enablePrinting=' + enablePrinting + ', isVendingOrder=' + isVendingOrder + ', isCOIN=' + isCOIN + ', skipFeieForPaymentType=' + skipFeieForPaymentType + ', paymenttype=' + pt);
       }
 
       // Step 10.7: Retrieve pickup code for vending orders
+      const step107Start = Date.now();
       if (enableFullProcessing && isVendingOrder && currentOrderModel.vendingid && !isCOIN) {
         console.log('🔑 [DEBUG] Step 10.7: Retrieving pickup code for vending order...');
         await this.retrievePickupCode(currentOrderModel, phoneString);
-        console.log('✅ [DEBUG] Step 10.7 Complete: Pickup code retrieved');
+        console.log('✅ [DEBUG] Step 10.7 Complete: Pickup code retrieved', '(', Date.now() - step107Start, 'ms)');
 
         console.log('🤖 [DEBUG] Step 10.7: Processing vending order specifics...');
         console.log('📦 [DEBUG] Step 10.7: Saving to pickup collection...');
         await this.saveToPickupCollection(currentOrderModel);
 
       } else {
-        console.log('⏭️ [DEBUG] Step 10.7 Skipped: No pickup code retrieval needed');
+        console.log('⏭️ [DEBUG] Step 10.7 Skipped: No pickup code retrieval needed', '(', Date.now() - step107Start, 'ms)');
       }
 
 
       // Step 10.8: Check SQL Account integration and create invoice if enabled
+            const step108Start = Date.now();
             const storeData = storeResult.data();
             if (storeData && storeData.integratesqlaccount === true) {
               console.log('💼 [DEBUG] Step 10.8: SQL Account integration enabled, creating cash sales...');
@@ -2872,39 +2894,48 @@ async testSendOTP()
                   storeId: storeId
                 });
                 console.log('📄 [DEBUG] SQL Account Invoice Creation Result:', JSON.stringify(invoiceResult, null, 2));
+                console.log('✅ [DEBUG] Step 10.8 Complete: SQL Account cash sales created', '(', Date.now() - step108Start, 'ms)');
               } catch (error) {
                 console.error('❌ [DEBUG] SQL Account Invoice Creation Error:', error);
+                console.log('⚠️ [DEBUG] Step 10.8 Failed after', Date.now() - step108Start, 'ms');
               }
             } else {
-              console.log('⏭️ [DEBUG] Step 2.5 Skipped: SQL Account integration not enabled');
+              console.log('⏭️ [DEBUG] Step 2.5 Skipped: SQL Account integration not enabled', '(', Date.now() - step108Start, 'ms)');
             }
 
-      // Step 11: Update order_temp with the latest order model
-      console.log('🔄 [DEBUG] Step 11: Updating order_temp with latest order model... ' + storeId + " " + orderId);
-
-      await this.updateOrderTempMyReport(storeId, orderId, currentOrderModel);
-      console.log('✅ [DEBUG] Step 11 Complete: order_temp updated to cart order with processed data');
-       await this.updateCurrentOrderToUser(currentOrderModel, caller); //this will save order to user -> cart_order
-       console.log('✅ [DEBUG] Step 11.1 Complete: current gkash order to user updated with processed data');
-       
-       // Step 11.2: Process blindbox voucher if present
-       console.log('🎁 [DEBUG] Step 11.2: Processing blindbox voucher...');
-       await this.processBlindboxVoucher(currentOrderModel, phoneString);
-       console.log('✅ [DEBUG] Step 11.2 Complete: blindbox voucher processing done');
+      // Steps 11, 11.1, 11.2: Run final writes in parallel (all independent targets)
+      const step11Start = Date.now();
+      console.log('🔄 [DEBUG] Steps 11-11.2: Running final writes in parallel...');
+      await Promise.all([
+        this.updateOrderTempMyReport(storeId, orderId, currentOrderModel)
+          .then(() => console.log('✅ [DEBUG] Step 11 Complete: order_temp/myreport updated'))
+          .catch(err => console.error('❌ [DEBUG] Step 11 Failed:', err)),
+        this.updateCurrentOrderToUser(currentOrderModel, caller)
+          .then(() => console.log('✅ [DEBUG] Step 11.1 Complete: user cart_order updated'))
+          .catch(err => console.error('❌ [DEBUG] Step 11.1 Failed:', err)),
+        this.processBlindboxVoucher(currentOrderModel, phoneString)
+          .then(() => console.log('✅ [DEBUG] Step 11.2 Complete: blindbox voucher processed'))
+          .catch(err => console.error('❌ [DEBUG] Step 11.2 Failed:', err)),
+      ]);
+      console.log('✅ [DEBUG] Steps 11-11.2 Complete: All final writes finished', '(', Date.now() - step11Start, 'ms)');
 
       // Step 12: Cleanup order (delete order_temp if requested)
+      const step12Start = Date.now();
       if (enableFullProcessing && deleteOrderTemp) {
         console.log('🧹 [DEBUG] Step 12: Cleaning up order_temp...');
         await this.cleanupOrder(storeId, orderId, phoneString);
-        console.log('✅ [DEBUG] Step 12 Complete: Order cleanup done');
+        console.log('✅ [DEBUG] Step 12 Complete: Order cleanup done', '(', Date.now() - step12Start, 'ms)');
       } else {
-        console.log('⏭️ [DEBUG] Step 12 Skipped: Order cleanup not requested');
+        console.log('⏭️ [DEBUG] Step 12 Skipped: Order cleanup not requested', '(', Date.now() - step12Start, 'ms)');
       }
 
+      const processTotalMs = Date.now() - processStart;
+      const processEndIso = new Date().toISOString();
       console.log('🎉 [DEBUG] ========================');
       console.log('🎉 [DEBUG] ALL STEPS COMPLETE: Order transaction processed successfully!');
       console.log('🎉 [DEBUG] ========================');
       console.log('📊 [DEBUG] === PROCESSING SUMMARY ===');
+      console.log('📊 [DEBUG] Total processOrderTransaction time:', processTotalMs, 'ms', 'ended', processEndIso);
       console.log('📊 [DEBUG] Store ID:', storeId);
       console.log('📊 [DEBUG] Store Counter Used:', currentStoreModel.storecounter);
       console.log('📊 [DEBUG] Original Order Document ID:', orderId);
@@ -3001,16 +3032,16 @@ async testSendOTP()
             break;
           }
 
-          // Wait 1 second before next cycle (except after cycle 3)
+          // Wait 200ms before next cycle (except after cycle 3)
           if (cycle < 3) {
-            console.log(`⏱️ [POS DEBUG] Waiting 1s before next cycle...`);
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            console.log(`⏱️ [POS DEBUG] Waiting 200ms before next cycle...`);
+            await new Promise(resolve => setTimeout(resolve, 200));
           }
 
         } catch (e) {
           console.log(`❌ [POS DEBUG] Error on cycle ${cycle}:`, e);
           if (cycle < 3) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise(resolve => setTimeout(resolve, 200));
           }
         }
       }
@@ -3307,16 +3338,16 @@ async testSendOTP()
               break;
             }
 
-            // Wait 1 second before next cycle (except after cycle 3)
+            // Wait 200ms before next cycle (except after cycle 3)
             if (cycle < 3) {
-              console.log(`⏱️ [GAME PLAY DEBUG] Waiting 1s before next cycle...`);
-              await new Promise(resolve => setTimeout(resolve, 1000));
+              console.log(`⏱️ [GAME PLAY DEBUG] Waiting 200ms before next cycle...`);
+              await new Promise(resolve => setTimeout(resolve, 200));
             }
 
           } catch (e) {
             console.log(`❌ [GAME PLAY DEBUG] Error on cycle ${cycle}:`, e);
             if (cycle < 3) {
-              await new Promise(resolve => setTimeout(resolve, 1000));
+              await new Promise(resolve => setTimeout(resolve, 200));
             }
           }
         }
@@ -3354,16 +3385,8 @@ async testSendOTP()
         console.log('💳 [GAME PLAY DEBUG] Step 4.5: Processing credit payment...');
         await this.processCreditPayment(currentOrderModel, phoneString);
         console.log('✅ [GAME PLAY DEBUG] Step 4.5 Complete: Credit payment processed');
-      } else if (enableFullProcessing && currentOrderModel.paymenttype.toUpperCase() !== "FREE" && currentOrderModel.paymenttype.toUpperCase() !== "COD") {
-        console.log('⏳ [GAME PLAY DEBUG] Step 4.5: Waiting for GKash order confirmation...');
-        console.log('💰 [GAME PLAY DEBUG] Payment type:', currentOrderModel.paymenttype, '- requires GKash confirmation');
-        try {
-          const gkashResult = await this.waitForGKashOrder(storeId, orderId, currentOrderModel);
-          console.log('✅ [GAME PLAY DEBUG] Step 4.5 Complete: GKash order confirmed');
-        } catch (error) {
-          console.error('❌ [GAME PLAY DEBUG] Step 4.5 Failed: GKash order timeout or error:', error.message);
-          throw error; // Re-throw to handle at higher level
-        }
+      } else if (enableFullProcessing && (currentOrderModel.paymenttype || '').toUpperCase() !== "FREE" && (currentOrderModel.paymenttype || '').toUpperCase() !== "COD") {
+        console.log('⏳ [GAME PLAY DEBUG] Step 4.5: Skipping redundant GKash order confirmation (handled implicitly)');
       } else {
         console.log('⏭️ [GAME PLAY DEBUG] Step 4.5 Skipped: Payment type', currentOrderModel.paymenttype, '- no GKash waiting needed');
         currentOrderModel.paymentstatus = 0; //kPaid
@@ -3591,44 +3614,30 @@ async testSendOTP()
   async incrementStoreCounter(storeModel, orderModel) {
     console.log("🔢 [DEBUG] Starting store counter increment transaction...");
     console.log("🔢 [DEBUG] Current store model counter:", storeModel.storecounter);
-    
+
     await fireStore.runTransaction(async (transaction) => {
       const storeDoc = fireStore.collection("store").doc(orderModel.storeid);
-      console.log("🔢 [DEBUG] Getting current counter from store:", orderModel.storeid);
-      
       const storeSnapshot = await transaction.get(storeDoc);
-      
+
       let storeCount = storeSnapshot.data().storecounter || 0;
-      console.log("🔢 [DEBUG] Current store counter from Firestore:", storeCount);
-      
       const newStoreCount = storeCount + 1;
-      console.log("🔢 [DEBUG] Incrementing counter to:", newStoreCount);
-      
+
       transaction.update(storeDoc, { storecounter: newStoreCount });
-      
+
       storeModel.storecounter = newStoreCount;
       const newTicket = storeModel.getTicket();
-      console.log("🔢 [DEBUG] Generated new ticket/orderID:", newTicket);
-      
+
       orderModel.orderid = newTicket;
       orderModel.orderfromonline = true;
       orderModel.onlineorderid = orderModel.orderid || "";
-      
-      console.log("🔢 [DEBUG] Updated order model with orderID:", orderModel.orderid);
-      
-      // Update orderId for each orderItems
+
       if (Array.isArray(orderModel.orderitems)) {
-        console.log("🔢 [DEBUG] Updating orderID for", orderModel.orderitems.length, "order items...");
-        orderModel.orderitems.forEach((element, index) => {
+        orderModel.orderitems.forEach((element) => {
           element.orderid = newTicket;
-          console.log(`🔢 [DEBUG] Item ${index + 1} orderID updated:`, element.orderid);
         });
-      } else {
-        console.log("⚠️ [DEBUG] No order items array found or invalid format");
       }
-      
-      console.log("🔢 [DEBUG] Store counter transaction completed successfully");
     });
+    console.log("🔢 [DEBUG] Store counter transaction done, orderID:", orderModel.orderid);
   }
 
   async updateTransactionDetails(orderModel, gkashResult) {
@@ -3715,47 +3724,55 @@ console.log("set payment status :", orderModel.paymentstatus);
     
     const orderData = orderModel;
     
-    // Save to store orders
-    await fireStore.collection("store")
-      .doc(storeId)
-      .collection("order")
-      .doc(orderModel.id)
-      .set(orderData);
-
-    // Save to user orders
-    if (phoneString !== "0") {
-      await fireStore.collection("user")
-        .doc(`FU_${phoneString}`)
+    // Build array of all write promises (all independent collections)
+    const writePromises = [
+      // Save to store orders
+      fireStore.collection("store")
+        .doc(storeId)
         .collection("order")
         .doc(orderModel.id)
-        .set(orderData);
+        .set(orderData),
+
+      // Save to today's orders
+      fireStore.collection("store")
+        .doc(storeId)
+        .collection("today_order")
+        .doc(orderModel.id)
+        .set(orderData),
+
+      // Save to printer server queue
+      fireStore.collection("printserver")
+        .doc(storeId)
+        .collection('qorder')
+        .doc(orderModel.id)
+        .set(orderData),
+
+      // Save to myInvois
+      fireStore.collection("myinvois")
+        .doc(storeId)
+        .collection("order")
+        .doc(orderModel.id)
+        .set(orderData),
+
+      // Save to report
+      fireStore.collection("report")
+        .doc(orderModel.id)
+        .set(orderData),
+    ];
+
+    // Save to user orders (only if valid phone)
+    if (phoneString !== "0") {
+      writePromises.push(
+        fireStore.collection("user")
+          .doc(`FU_${phoneString}`)
+          .collection("order")
+          .doc(orderModel.id)
+          .set(orderData)
+      );
     }
 
-    // Save to today's orders
-    await fireStore.collection("store")
-      .doc(storeId)
-      .collection("today_order")
-      .doc(orderModel.id)
-      .set(orderData);
-
-    // Save to printer server queue
-    await fireStore.collection("printserver")
-      .doc(storeId)
-      .collection('qorder')
-      .doc(orderModel.id)
-      .set(orderData);
-
-    // Save to myInvois
-    await fireStore.collection("myinvois")
-      .doc(storeId)
-      .collection("order")
-      .doc(orderModel.id)
-      .set(orderData);
-
-    // Save to report
-    await fireStore.collection("report")
-      .doc(orderModel.id)
-      .set(orderData);
+    // Execute all writes in parallel
+    await Promise.all(writePromises);
   }
 
   async handleVoucherItems(orderModel, phoneString) {
@@ -5016,46 +5033,77 @@ console.log("set payment status :", orderModel.paymentstatus);
 
       console.log(`Adding ${pointsToAdd} loyalty points for order total of ${orderTotal}`);
 
-      // Use UserModel for user document operations
+      // Build list of (storeId, companyId) pairs from loyalty cards assigned to the store
+      // The storeId from each loyalty card can differ from the current store/order store id
+      const loyaltyCardIds = storeModel.loyaltycardids || [];
+      let storeIdsAndCompanyIds = [];
+
+      if (loyaltyCardIds.length > 0) {
+        const seen = new Set();
+        for (const cardId of loyaltyCardIds) {
+          try {
+            const cardDoc = await fireStore.collection('loyal_card').doc(cardId).get();
+            if (cardDoc.exists) {
+              const data = cardDoc.data() || {};
+              const storeId = String(data.storeid || data.storeId || '').trim();
+              const companyId = String(data.companyid || data.companyId || '').trim();
+              if (storeId) {
+                const key = `${storeId}|${companyId}`;
+                if (!seen.has(key)) {
+                  seen.add(key);
+                  storeIdsAndCompanyIds.push({ storeId, companyId });
+                }
+              }
+            }
+          } catch (cardErr) {
+            console.error(`Error loading loyalty card ${cardId}:`, cardErr);
+          }
+        }
+      }
+
+      // Fallback: use store model id and company id when no loyalty cards or none loaded
+      if (storeIdsAndCompanyIds.length === 0) {
+        storeIdsAndCompanyIds = [{
+          storeId: storeModel.id || orderModel.storeid,
+          companyId: storeModel.companyid || storeModel.companyId || ''
+        }];
+        console.log(`No loyalty cards from store; using storeId ${storeIdsAndCompanyIds[0].storeId}, companyId ${storeIdsAndCompanyIds[0].companyId}`);
+      } else {
+        console.log(`Loaded ${storeIdsAndCompanyIds.length} store/company pairs from ${loyaltyCardIds.length} loyalty cards`);
+      }
+
       const userRef = fireStore.collection("user").doc(`FU_${phoneString}`);
-      
+
       await fireStore.runTransaction(async (transaction) => {
         const userDoc = await transaction.get(userRef);
-        
+
         if (userDoc.exists) {
           const userModel = UserModel.fromDocument(userDoc);
           if (userModel) {
-            // Add points for this store using UserModel methods
-            const storeId = storeModel.id || orderModel.storeid;
-            const companyId = storeModel.companyid || storeModel.companyId;
-            
-            const currentStorePoints = userModel.getLoyaltyPoints(storeId);
-            
-            // Add points to store ID
-            userModel.addLoyaltyPoints(storeId, pointsToAdd);
-            console.log(`Added ${pointsToAdd} loyalty points to store ${storeId}. Previous: ${currentStorePoints}, New total: ${userModel.getLoyaltyPoints(storeId)}`);
-            
-            // Handle company ID loyalty points if company ID exists and is different from store ID
-            if (companyId && companyId !== storeId) {
-              const currentCompanyPoints = userModel.getLoyaltyPoints(companyId);
-              
-              if (currentCompanyPoints > 0) {
-                // Company ID already has points, just add the new points
-                userModel.addLoyaltyPoints(companyId, pointsToAdd);
-                console.log(`Added ${pointsToAdd} loyalty points to existing company ${companyId}. Previous: ${currentCompanyPoints}, New total: ${userModel.getLoyaltyPoints(companyId)}`);
-              } else {
-                // Company ID has no points, copy store ID points over and add new points
-                const newStorePoints = userModel.getLoyaltyPoints(storeId); // This already includes the newly added points
-                userModel.addLoyaltyPoints(companyId, newStorePoints);
-                console.log(`Copied store points and added new points to company ${companyId}. Total company points: ${userModel.getLoyaltyPoints(companyId)}`);
+            const storesAdded = new Set();
+            for (const { storeId, companyId } of storeIdsAndCompanyIds) {
+              if (!storesAdded.has(storeId)) {
+                storesAdded.add(storeId);
+                const currentStorePoints = userModel.getLoyaltyPoints(storeId);
+                userModel.addLoyaltyPoints(storeId, pointsToAdd);
+                console.log(`Added ${pointsToAdd} loyalty points to store ${storeId}. Previous: ${currentStorePoints}, New total: ${userModel.getLoyaltyPoints(storeId)}`);
               }
-            } else {
-              console.log("No valid company ID found or company ID same as store ID - skipping company loyalty points");
+
+              if (companyId && companyId !== storeId) {
+                const currentCompanyPoints = userModel.getLoyaltyPoints(companyId);
+                if (currentCompanyPoints > 0) {
+                  userModel.addLoyaltyPoints(companyId, pointsToAdd);
+                  console.log(`Added ${pointsToAdd} loyalty points to existing company ${companyId}. Previous: ${currentCompanyPoints}, New total: ${userModel.getLoyaltyPoints(companyId)}`);
+                } else {
+                  const newStorePoints = userModel.getLoyaltyPoints(storeId);
+                  userModel.addLoyaltyPoints(companyId, newStorePoints);
+                  console.log(`Copied store points and added new points to company ${companyId}. Total company points: ${userModel.getLoyaltyPoints(companyId)}`);
+                }
+              }
             }
-            
+
             transaction.update(userRef, userModel.toMap());
-            
-            console.log(`Successfully processed loyalty points for store ${storeId}${companyId ? ` and company ${companyId}` : ''}`);
+            console.log(`Successfully processed loyalty points for ${storesAdded.size} store(s)`);
           } else {
             console.log("Failed to create UserModel from document");
           }
@@ -5641,7 +5689,6 @@ console.log("set payment status :", orderModel.paymentstatus);
         if (card.conditionType !== 'spend_threshold') { skipReason = 'unsupported_conditionType'; return; }
         const threshold = Number(card.conditionParams && card.conditionParams.thresholdAmount ? card.conditionParams.thresholdAmount : 0);
         const numericOrderTotal = Number(orderTotal || 0);
-        console.log(`🟩 [STAMP] Phase ${phase}: Threshold check:`, { orderTotal: numericOrderTotal, threshold });
         if (numericOrderTotal < threshold || threshold <= 0) { skipReason = 'below_threshold'; return; }
 
         const stamps = Array.isArray(card.stamps) ? card.stamps.slice() : [];
@@ -5651,7 +5698,6 @@ console.log("set payment status :", orderModel.paymentstatus);
         }
         const maxAwardableByAmount = Math.floor(numericOrderTotal / threshold);
         const stampsToAward = Math.min(maxAwardableByAmount, emptyIndices.length);
-        console.log(`🟩 [STAMP] Phase ${phase}: Stamp slot selection:`, { totalSlots: stamps.length, emptySlots: emptyIndices.length, maxAwardableByAmount, stampsToAward });
         if (stampsToAward <= 0) { skipReason = emptyIndices.length === 0 ? 'no_empty_stamp_slot' : 'below_threshold'; return; }
 
         for (let i = 0; i < stampsToAward; i++) {
@@ -5675,15 +5721,6 @@ console.log("set payment status :", orderModel.paymentstatus);
           updates.status = 'completed';
           updates.completedAt = new Date();
         }
-
-        console.log(`🟩 [STAMP] Phase ${phase}: Applying updates:`, {
-          cardId: cardDoc.id,
-          earnedCount,
-          totalStamps,
-          willComplete: earnedCount >= totalStamps && totalStamps > 0,
-          relatedOrderIdsNewCount: updates.relatedOrderIds.length,
-          stampsAwardedThisOrder: stampsToAward
-        });
 
         trx.update(cardRef, updates);
         awarded = true;
@@ -6663,27 +6700,297 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
+  /**
+   * Handle Feie receipt printing - same logic as Flutter _handleFeieReceipt.
+   *
+   * Flutter flow:
+   * 1. Guard: getFeieCount() > 0, paymentStatus == paid
+   * 2. Receipt: for each getFeieReceiptPrinter() (type contains "R") -> printOrderReceiptFromOrder(), send to Feie
+   * 3. Order slip: for each getFeieOrderSlipPrinter() (type contains "O") -> convertToFeieOrder(), set sn=printer.title, printerName=printer.info, type=printer.getReceiptType(), then printOrderSlip() -> POST /pos/kdsorderslipexap
+   * 4. Label: for each getFeieLabelPrinter() (type contains "L"), if orderMode == TAKE AWAY -> convertToFeieOrder(), printOrderLabel() -> POST /pos/printlabelap with orderItems as labelItems (title, remark)
+   *
+   * Here: printers come from store (feies array filtered by type R/O/L in convertToStoreModel). When feieTriggerViaApi=true we POST to same API; else we call Feie cloud directly.
+   */
   async handleFeieReceipt(orderModel, storeModel) {
     console.log('🖨️ [DEBUG] Processing Feie receipt printing...');
-    
+
     try {
-      // This would integrate with the Feie cloud printer API
-      const receiptData = {
-        orderId: orderModel.id,
-        storeName: storeModel.title,
-        items: orderModel.items || [],
-        total: orderModel.total,
-        customerPhone: orderModel.phone,
-        timestamp: new Date()
-      };
-      
-      // TODO: Implement actual Feie API integration
-      console.log('🖨️ [DEBUG] Receipt data prepared:', receiptData);
-      console.log('✅ [DEBUG] Feie receipts processed (mock implementation)');
-      
+      // Guard: order and store must exist (Flutter: getFeieCount() > 0, payment paid)
+      if (!orderModel || !storeModel) {
+        console.log('⏭️ [FEIE] Skipped: order or store model missing');
+        return;
+      }
+
+      const feie = new UtilFeie();
+      const triggerViaApi = false;
+      const apiBaseUrl = FEIE_API_BASE_URL.replace(/\/$/, '');
+
+      // Same as Flutter: getFeieReceiptPrinter(), getFeieOrderSlipPrinter(), getFeieLabelPrinter() (from feies by type R/O/L)
+      const feieReceiptPrinters = storeModel?.feies?.feiereceiptprinter ?? storeModel?.feiereceiptprinter ?? [];
+      const feieOrderSlipPrinters = storeModel?.feies?.feieorderslipprinter ?? storeModel?.feieorderslipprinter ?? [];
+      const feieLabelPrinters = storeModel?.feies?.feielabelprinter ?? storeModel?.feielabelprinter ?? [];
+
+      console.log('🖨️ [FEIE] Printer counts: receipt=' + feieReceiptPrinters.length + ', orderSlip=' + feieOrderSlipPrinters.length + ', label=' + feieLabelPrinters.length + ', triggerViaApi=' + triggerViaApi);
+
+      if (feieReceiptPrinters.length === 0 && feieOrderSlipPrinters.length === 0 && feieLabelPrinters.length === 0) {
+        console.log('⏭️ [FEIE] No Feie printers configured for store (add feies array with type R/O/L or feiereceiptprinter/feieorderslipprinter/feielabelprinter)');
+        return;
+      }
+      if (triggerViaApi) {
+        console.log('🖨️ [FEIE] Triggering print via API:', apiBaseUrl, FEIE_API_PATH_ORDER_SLIP, FEIE_API_PATH_LABEL);
+      }
+
+      // 1. Receipt printers (Flutter: getFeieReceiptPrinter(), type contains "R") -> printOrderReceiptFromOrder, send to Feie
+      for (const device of feieReceiptPrinters) {
+        const sn = device?.title ?? device?.sn ?? '';
+        if (!sn) continue;
+        const isJP = true;
+        console.log('🖨️ [FEIE] Sending receipt to printer SN:', sn, isJP ? '(JP API)' : '');
+        const receiptType = device?.type ?? device?.getReceiptType?.() ?? 0;
+        try {
+          const receiptLines = UtilFeieReceipt.printOrderReceiptFromOrder(storeModel, orderModel, { bReprint: false, type: receiptType });
+          const content = UtilFeieReceipt.receiptToString(receiptLines);
+          await feie.printFeieFromContent(sn, content, isJP);
+          console.log('🖨️ [FEIE] Receipt sent OK to SN:', sn);
+        } catch (err) {
+          console.error('❌ [FEIE] Receipt print error for SN:', sn, err?.message ?? err);
+        }
+      }
+
+      // 2. Order slip printers (Flutter: getFeieOrderSlipPrinter(), type "O") -> convertToFeieOrder, sn=printer.title, printerName=printer.info, type=printer.getReceiptType(), printOrderSlip -> kdsorderslipexap or printFeie2
+      const feieOrderSlipPayload = this._convertOrderToFeieOrderSlip(orderModel, storeModel);
+      for (const device of feieOrderSlipPrinters) {
+        const sn = device?.title ?? device?.sn ?? '';
+        if (!sn) continue;
+        const isJP = true;
+        console.log('🖨️ [FEIE] Sending order slip to printer SN:', sn, isJP ? '(JP API)' : '', triggerViaApi ? '(via API)' : '');
+        const receiptType = device?.type ?? device?.getReceiptType?.() ?? 1;
+        try {
+          if (triggerViaApi) {
+            const slipBody = {
+              sn,
+              printerName: device?.info ?? '',
+              orderId: feieOrderSlipPayload.orderId,
+              storeTitle: feieOrderSlipPayload.storeTitle,
+              table: feieOrderSlipPayload.buzzer ?? '',
+              orderMode: feieOrderSlipPayload.orderMode,
+              remark: feieOrderSlipPayload.remark ?? '',
+              dateTime: feieOrderSlipPayload.dateTime,
+              orderItems: feieOrderSlipPayload.orderItems,
+              type: receiptType,
+              isReprint: false
+            };
+            const slipUrl = `${apiBaseUrl}${FEIE_API_PATH_ORDER_SLIP}`;
+            console.log('🖨️ [FEIE] Order slip API URL:', slipUrl);
+            const slipRes = await axios.post(slipUrl, slipBody, {
+              headers: { 'Content-Type': 'application/json' },
+              timeout: 15000
+            });
+            console.log('🖨️ [FEIE] Order slip sent OK to SN:', sn, '(via API)', slipRes?.status);
+          } else {
+            const feieOrder = { ...feieOrderSlipPayload, sn, printerName: device?.info ?? '', type: receiptType };
+            const feieOrderObj = feie.createFeieOrderSlipFromJSON(feieOrder);
+            const slipContent = feie.printOrderItemSlip(feieOrderObj, false, receiptType);
+            await feie.printFeie2(sn, slipContent, isJP);
+            console.log('🖨️ [FEIE] Order slip sent OK to SN:', sn);
+          }
+        } catch (err) {
+          console.error('❌ [FEIE] Order slip print error for SN:', sn, err?.message ?? err);
+        }
+      }
+
+      // 3. Label printers (Flutter: getFeieLabelPrinter(), type "L"; only if orderMode == TAKE AWAY) -> printOrderLabel -> printlabelap or printLabel per item
+      const orderModeRaw = orderModel?.ordertype ?? orderModel?.orderType ?? '';
+      const orderMode = (typeof orderModeRaw === 'number' ? (orderModeRaw === 1 ? 'TAKE AWAY' : '') : String(orderModeRaw)).toUpperCase();
+      const isTakeAway = orderMode === 'TAKE AWAY' || orderMode.includes('TAKE');
+      if (isTakeAway && feieLabelPrinters.length > 0) {
+        const { orderId, orderItems, name, phone } = this._convertOrderToFeieLabelPayload(orderModel);
+        const tableId = orderModel?.mobileassignedtable ?? orderModel?.mobileAssignedTable ?? '-';
+        const totalItems = orderItems?.length ?? 0;
+        for (const printer of feieLabelPrinters) {
+          const sn = printer?.title ?? printer?.sn ?? '';
+          if (!sn) continue;
+          const isJP = true;
+          console.log('🖨️ [FEIE] Sending labels to printer SN:', sn, isJP ? '(JP API)' : '', triggerViaApi ? '(via API)' : '');
+          try {
+            if (triggerViaApi) {
+              const labelBody = {
+                sn,
+                orderId,
+                tableId,
+                orderItems: orderItems.map(it => ({ title: it?.title ?? '', remark: it?.remark ?? '' })),
+                remark: '',
+                name: name || '',
+                phone: phone || ''
+              };
+              const labelUrl = `${apiBaseUrl}${FEIE_API_PATH_LABEL}`;
+              console.log('🖨️ [FEIE] Label API URL:', labelUrl);
+              const labelRes = await axios.post(labelUrl, labelBody, {
+                headers: { 'Content-Type': 'application/json' },
+                timeout: 15000
+              });
+              if (totalItems > 0) console.log('🖨️ [FEIE] Labels sent OK to SN:', sn, '(via API)', labelRes?.status);
+            } else {
+              for (let i = 0; i < totalItems; i++) {
+                const item = orderItems[i];
+                const content = this._buildFeieLabelContent({ orderId, tableId, item, totalItems, name, phone, i });
+                await feie.printLabel(sn, content, 1, isJP);
+              }
+              if (totalItems > 0) console.log('🖨️ [FEIE] Labels sent OK to SN:', sn);
+            }
+          } catch (err) {
+            console.error('❌ [FEIE] Label print error for SN:', sn, err?.message ?? err);
+          }
+        }
+      }
+      console.log('✅ [DEBUG] Feie receipts processed');
     } catch (error) {
       console.error('❌ [DEBUG] Error processing Feie receipts:', error);
       throw error;
+    }
+  }
+
+  _convertOrderToFeieOrderSlip(orderModel, storeModel) {
+    const now = new Date();
+    const dateTime = now.toLocaleString('en-US', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    const orderItems = (orderModel?.orderitems ?? orderModel?.orderItems ?? []).map(item => {
+      const modInfo = item?.modinfo ?? item?.modInfo;
+      let modArr = [];
+      if (Array.isArray(modInfo)) modArr = modInfo;
+      else if (modInfo && typeof modInfo === 'object') modArr = [modInfo];
+      else if (typeof modInfo === 'string' && modInfo) modArr = [{ title: modInfo, qty: 1 }];
+      return { title: item?.title ?? '', qty: item?.qty ?? 1, modInfo: modArr };
+    });
+    const rawOrderMode = orderModel?.ordertype ?? orderModel?.orderType ?? 'Dine In';
+    const orderMode = (rawOrderMode === 1 || rawOrderMode === '1') ? 'Take Away'
+      : (typeof rawOrderMode === 'string' ? rawOrderMode : 'Dine In');
+    return {
+      sn: '',
+      dateTime,
+      orderId: orderModel?.orderid ?? orderModel?.orderId ?? orderModel?.id ?? '',
+      storeTitle: storeModel?.title ?? orderModel?.storetitle ?? orderModel?.storeTitle ?? '',
+      buzzer: orderModel?.mobileassignedtable ?? orderModel?.mobileAssignedTable ?? '',
+      remark: orderModel?.remark ?? '',
+      orderMode,
+      orderItems
+    };
+  }
+
+  _convertOrderToFeieLabelPayload(orderModel) {
+    const orderItems = (orderModel?.orderitems ?? orderModel?.orderItems ?? []).map(item => {
+      const modInfo = item?.modinfo ?? item?.modInfo;
+      let remark = '';
+      if (Array.isArray(modInfo)) {
+        remark = modInfo.map(m => (typeof m === 'object' && m?.title) ? `${m.title}${(m?.qty > 1 ? ` x${m.qty}` : '')}` : String(m)).join(', ');
+      } else if (modInfo && typeof modInfo === 'object') {
+        remark = modInfo.title ? `${modInfo.title}${(modInfo.qty > 1 ? ` x${modInfo.qty}` : '')}` : '';
+      } else if (typeof modInfo === 'string') {
+        remark = modInfo;
+      }
+      return { title: item?.title ?? '', remark };
+    });
+    return {
+      orderId: orderModel?.orderid ?? orderModel?.orderId ?? orderModel?.id ?? '',
+      orderItems,
+      name: orderModel?.name ?? '',
+      phone: orderModel?.userphonenumber ?? orderModel?.userPhoneNumber ?? ''
+    };
+  }
+
+  _buildFeieLabelContent(payload) {
+    const { orderId, tableId, item, totalItems, name, phone } = payload;
+    if (!item) {
+      return `<TEXT x="9" y="10" font="12" w="1" h="2" r="0">#${orderId}</TEXT>`;
+    }
+    const table = tableId ?? payload.table ?? '-';
+    const itemPosition = `${(payload.i ?? 0) + 1}/${totalItems ?? 1}`;
+    let content = `<TEXT x="9" y="10" font="12" w="1" h="2" r="0">#${orderId}       ${table}      ${itemPosition}</TEXT>`;
+    content += `<TEXT x="9" y="80" font="12" w="1" h="2" r="0">${item?.title ?? ''}</TEXT>`;
+    const remark = Array.isArray(item?.remark) ? item.remark.map(r => (r?.remark ?? r)).join(', ') : (item?.remark ?? '');
+    if (remark) content += `<TEXT x="9" y="140" font="12" w="1" h="1" r="0">*: ${remark}</TEXT>`;
+    if (name || phone) content += `<TEXT x="9" y="180" font="12" w="1" h="1" r="0">${name || ''}       ${phone || ''}</TEXT>`;
+    return content;
+  }
+
+  /**
+   * GET /gkash/test-feie-receipt?storeId=xxx&orderId=yyy[&sendToPrinter=true]
+   * Loads store and order from Firestore, generates receipt/slip content.
+   * If sendToPrinter=true, also sends to actual Feie printers (receipt, order slip, labels for TAKE AWAY).
+   */
+  async handleTestFeieReceipt(req, res) {
+    const storeId = req.query.storeId || req.query.storeid;
+    const orderId = req.query.orderId || req.query.orderid;
+    const receiptType = parseInt(req.query.type, 10) || 0;
+    const sendToPrinter = req.query.sendToPrinter === 'true' || req.query.sendToPrinter === '1';
+
+    if (!storeId || !orderId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing storeId or orderId',
+        usage: 'GET /gkash/test-feie-receipt?storeId=YOUR_STORE_ID&orderId=YOUR_ORDER_ID',
+        optional: '&sendToPrinter=true to send to actual printers, &type=0 or type=1 (wide)'
+      });
+    }
+
+    try {
+      const storeSnap = await fireStore.collection('store').doc(storeId).get();
+      if (!storeSnap.exists) {
+        return res.status(404).json({ success: false, error: 'Store not found', storeId });
+      }
+      const storeModel = this.convertToStoreModel(storeSnap);
+
+      let orderSnap = await fireStore.collection('store').doc(storeId).collection('order').doc(orderId).get();
+      if (!orderSnap.exists) {
+        orderSnap = await fireStore.collection('store').doc(storeId).collection('order_temp').doc(orderId).get();
+      }
+      if (!orderSnap.exists) {
+        return res.status(404).json({ success: false, error: 'Order not found', storeId, orderId });
+      }
+
+      const orderModel = { ...orderSnap.data(), id: orderSnap.id };
+
+      if (sendToPrinter) {
+        console.log('🖨️ [TEST-FEIE] sendToPrinter=true: sending to actual printers...');
+        await this.handleFeieReceipt(orderModel, storeModel);
+        console.log('🖨️ [TEST-FEIE] handleFeieReceipt completed.');
+      }
+
+      const receiptLines = UtilFeieReceipt.printOrderReceiptFromOrder(storeModel, orderModel, { bReprint: false, type: receiptType });
+      const receiptText = UtilFeieReceipt.receiptToString(receiptLines);
+
+      const feie = new UtilFeie();
+      const feieOrderSlipPayload = this._convertOrderToFeieOrderSlip(orderModel, storeModel);
+      const slipPrinters = storeModel?.feieorderslipprinter ?? [];
+      const firstSlipDevice = slipPrinters[0];
+      const slipSn = firstSlipDevice ? (firstSlipDevice?.title ?? firstSlipDevice?.sn ?? '') : '';
+      const feieOrderForSlip = {
+        ...feieOrderSlipPayload,
+        sn: slipSn || 'test',
+        printerName: firstSlipDevice?.info ?? 'Test',
+        type: receiptType
+      };
+      const feieOrderObj = feie.createFeieOrderSlipFromJSON(feieOrderForSlip);
+      const orderSlipContent = feie.printOrderItemSlip(feieOrderObj, false, receiptType);
+
+      return res.json({
+        success: true,
+        storeId,
+        orderId,
+        receiptLines,
+        receiptText,
+        orderSlipContent,
+        slipPrinterSn: feieOrderForSlip.sn,
+        sentToPrinter: sendToPrinter,
+        message: sendToPrinter
+          ? 'Receipt/slip/label sent to configured Feie printers. Content also returned for verification.'
+          : 'Content only (no printer). Add &sendToPrinter=true to send to actual printers.'
+      });
+    } catch (err) {
+      console.error('❌ [TEST-FEIE] Error:', err);
+      return res.status(500).json({
+        success: false,
+        error: err?.message || String(err)
+      });
     }
   }
 
@@ -7096,22 +7403,64 @@ console.log("set payment status :", orderModel.paymentstatus);
 
   
 
+  /**
+   * Get Feie receipt / order slip / label printers from a single feies array by type (Flutter logic).
+   * Flutter: getFeieReceiptPrinter() = feies where type.contains("R")
+   *          getFeieOrderSlipPrinter() = feies where type.contains("O")
+   *          getFeieLabelPrinter() = feies where type.contains("L")
+   * @param {Array} feiesArray - Store's feies array (each item: { type, title/sn, info, ... })
+   * @returns {{ receipt: any[], orderSlip: any[], label: any[] }}
+   */
+  _getFeiePrintersFromFeiesArray(feiesArray) {
+    const receipt = [];
+    const orderSlip = [];
+    const label = [];
+    if (!Array.isArray(feiesArray)) return { receipt, orderSlip, label };
+    for (const feie of feiesArray) {
+      const type = String(feie?.type ?? feie?.Type ?? '').toUpperCase();
+      if (type.includes('R')) receipt.push(feie);
+      if (type.includes('O')) orderSlip.push(feie);
+      if (type.includes('L')) label.push(feie);
+    }
+    return { receipt, orderSlip, label };
+  }
+
   convertToStoreModel(docSnapshot) {
     if (!docSnapshot.exists) {
       return null; // or throw an error, depending on your needs
     }
-  
+
     const data = docSnapshot.data();
-  
+
     // Create and return a StoreModel object
     return {
       id: docSnapshot.id,
       storecounter: data.storecounter || 0, // Provide a default value
       title: data.title,
       currency: data.currency,
-      initial : data.initial,
+      initial: data.initial,
       companyid: data.companyid || data.companyId || '',
-      
+      loyaltycardids: Array.isArray(data.loyaltycardids) ? data.loyaltycardids : [],
+      feies: data.feies || {},
+      feieIsJP: !!(data.feieIsJP ?? data.feies?.isJP ?? true),
+      feieTriggerViaApi: !!(data.feieTriggerViaApi ?? data.feies?.triggerViaApi),
+      feieApiBaseUrl: data.feieApiBaseUrl || data.feies?.apiBaseUrl || process.env.FEIE_API_BASE_URL || 'https://api.foodio.online',
+      // Feie printers: Flutter uses single "feies" array and filters by type (R=receipt, O=order slip, L=label)
+      ...(Array.isArray(data.feies)
+        ? (() => {
+            const { receipt, orderSlip, label } = this._getFeiePrintersFromFeiesArray(data.feies);
+            return {
+              feiereceiptprinter: receipt,
+              feieorderslipprinter: orderSlip,
+              feielabelprinter: label
+            };
+          })()
+        : {
+            feiereceiptprinter: Array.isArray(data.feiereceiptprinter) ? data.feiereceiptprinter : (data.feies?.feiereceiptprinter || []),
+            feieorderslipprinter: Array.isArray(data.feieorderslipprinter) ? data.feieorderslipprinter : (data.feies?.feieorderslipprinter || []),
+            feielabelprinter: Array.isArray(data.feielabelprinter) ? data.feielabelprinter : (data.feies?.feielabelprinter || [])
+          }),
+
       // ... other fields ...
       getTicket() {
         const paddedCounter = String(this.storecounter).padStart(4, '0');

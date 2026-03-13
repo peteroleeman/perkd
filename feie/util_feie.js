@@ -740,8 +740,6 @@ class UtilFeie
     };
     
     const order = new feieOrder(jsonData);
-    
-    console.log(order);
 
     return order;
 
@@ -785,8 +783,6 @@ class UtilFeie
     }
     
     const order = new FeieOrderSlip(jsonData);
-    
-    console.log(order);
 
     return order;
 
@@ -838,12 +834,12 @@ class UtilFeie
     line.addText(ReceiptFormat.setCenter(`${tableId}` + `  ${orderId}`));
     line.addText("<BR>");
    
-    line.addText(  ReceiptFormat.setCenterBIG(`(${orderModel.orderMode})`));
+    line.addText(  ReceiptFormat.setCenterBIG(`(${orderModel?.orderMode ?? ''})`));
     line.addText("<BR>");
-    line.addText(ReceiptFormat.setCenter(`${orderModel.dateTime}`));
+    line.addText(ReceiptFormat.setCenter(`${orderModel?.dateTime ?? ''}`));
     line.addText("<BR>");
     line.addText(
-    ReceiptFormat.setBold("**" + orderModel.storeTitle + "<BR>"));
+    ReceiptFormat.setBold("**" + (orderModel?.storeTitle ?? '') + "<BR>"));
     line.addText(orderModel?.remark ?? "");
     line.addText("<BR>");
 
@@ -866,9 +862,9 @@ class UtilFeie
     let title = "";
     let modInfo = "";
    
-    for (const orderItem of orderModel.orderItems) {
-      qty = orderItem.qty;
-      title = orderItem.title;
+    for (const orderItem of (orderModel?.orderItems ?? [])) {
+      qty = orderItem?.qty ?? 0;
+      title = orderItem?.title ?? "";
 
       dualTable.refresh();
       dualTable.addKey(`${title}`);
@@ -879,12 +875,12 @@ class UtilFeie
       }
 
 
-      if (orderItem?.modInfo !== "" && orderItem?.modInfo !== "null"  && orderItem?.modInfo !== undefined) {
+      if (orderItem?.modInfo !== "" && orderItem?.modInfo !== "null"  && orderItem?.modInfo !== undefined && Array.isArray(orderItem.modInfo)) {
         //modInfo = (`S:${orderItem.modInfo}<BR>`);
          for(const mod of orderItem.modInfo)
          {
-            let modTitle = mod.title;
-            let modQty = mod.qty;
+            let modTitle = mod?.title ?? '';
+            let modQty = mod?.qty ?? 1;
 
             dualTable.refresh();
             dualTable.addKey(`  ${modTitle}`);
@@ -987,17 +983,17 @@ class UtilFeie
         }
 
         line.addText(
-          ReceiptFormat.setRightAlign(`<BOLD>${orderModel.printerName}</BOLD>`));
+          ReceiptFormat.setRightAlign(`<BOLD>${orderModel?.printerName ?? ''}</BOLD>`));
         
        
 
-        line.addText(  ReceiptFormat.setCenterBIG(`${orderModel.buzzer} (${orderModel.orderMode})`));
+        line.addText(  ReceiptFormat.setCenterBIG(`${orderModel?.buzzer ?? ''} (${orderModel?.orderMode ?? ''})`));
         line.addText("<BR>");
-        line.addText(ReceiptFormat.setCenter(`${orderModel.dateTime}`));
+        line.addText(ReceiptFormat.setCenter(`${orderModel?.dateTime ?? ''}`));
         line.addText("<BR>");
         line.addText(
         ReceiptFormat.setBold(`**NOTE:` + "<BR>"));
-        line.addText(orderModel.remark);
+        line.addText(orderModel?.remark ?? "");
         line.addText("<BR>");
 
 
@@ -1019,9 +1015,9 @@ class UtilFeie
         let title = "";
         let modInfo = "";
        
-        for (const orderItem of orderModel.orderItems) {
-          qty = orderItem.qty;
-          title = orderItem.title;
+        for (const orderItem of (orderModel?.orderItems ?? [])) {
+          qty = orderItem?.qty ?? 0;
+          title = orderItem?.title ?? "";
 
           dualTable.refresh();
           dualTable.addKey(`${title}`);
@@ -1032,12 +1028,12 @@ class UtilFeie
           }
 
 
-          if (orderItem?.modInfo !== "" && orderItem?.modInfo !== "null"  && orderItem?.modInfo !== undefined) {
+          if (orderItem?.modInfo !== "" && orderItem?.modInfo !== "null"  && orderItem?.modInfo !== undefined && Array.isArray(orderItem.modInfo)) {
             //modInfo = (`S:${orderItem.modInfo}<BR>`);
              for(const mod of orderItem.modInfo)
              {
-                let modTitle = mod.title;
-                let modQty = mod.qty;
+                let modTitle = mod?.title ?? '';
+                let modQty = mod?.qty ?? 1;
 
                 dualTable.refresh();
                 dualTable.addKey(`  ${modTitle}`);
@@ -1150,7 +1146,7 @@ const currentTime = timeFormatter.format(now);
           }
 
           line.addText(`${currentDate} ${currentTime}`);
-          line.addText(orderModel.orderId || "-");
+          line.addText(orderModel?.orderId || "-");
 
           // ... (Skipping other parts for brevity)
 
@@ -1182,7 +1178,7 @@ const currentTime = timeFormatter.format(now);
 
           line.refresh();
 
-          receipt.push(`Total ${orderModel.totalPrice}`);
+          receipt.push(`Total ${orderModel?.totalPrice ?? ''}`);
           receipt.push('* * *');
 
           // ... (Skipping other parts for brevity)
@@ -1444,10 +1440,7 @@ class ReceiptDualTable {
     let remainLen = this.valueLen - this.getTextLen(text.toString());
     remainLen = remainLen < 0 ? 0 : remainLen;
 
-    const newText = `<RIGHT>${' '.padEnd(remainLen, ' ')}${text}</RIGHT>`;
-    if (remainLen === 0) {
-      newText = `<RIGHT>${text}</RIGHT>`;
-    }
+    let newText = remainLen === 0 ? `<RIGHT>${text}</RIGHT>` : `<RIGHT>${' '.padEnd(remainLen, ' ')}${text}</RIGHT>`;
 
     subChunk.setChunk(index, newText, this.getTextLen(newText), ' ', 0);
     this.valueList.push(subChunk);
@@ -1460,10 +1453,7 @@ class ReceiptDualTable {
     let remainLen = this.valueLen - this.getTextLen(text.toString());
     remainLen = remainLen < 0 ? 0 : remainLen;
 
-    const newText = `<RIGHT><BOLD>${' '.padEnd(remainLen, ' ')}${text}</BOLD></RIGHT>`;
-    if (remainLen === 0) {
-      newText = `<RIGHT><BOLD>${text}</BOLD></RIGHT>`;
-    }
+    let newText = remainLen === 0 ? `<RIGHT><BOLD>${text}</BOLD></RIGHT>` : `<RIGHT><BOLD>${' '.padEnd(remainLen, ' ')}${text}</BOLD></RIGHT>`;
 
     subChunk.setChunk(index, newText, this.getTextLen(newText), ' ', 0);
     this.valueList.push(subChunk);
@@ -1583,6 +1573,7 @@ class feieSN
 
 class feieOrder {
   constructor(orderData) {
+    orderData = orderData || {};
     // this.storeTitle = storeTitle
     // this.orderId = orderId;
     // this.totalPrice = totalPrice;
@@ -1597,14 +1588,15 @@ class feieOrder {
     this.totalPrice = orderData.totalPrice;
     this.name = orderData.name;
     this.userPhoneNumber = orderData.userPhoneNumber;
-    this.orderItems = orderData.orderItems.map(itemData => new feieOrderItem(itemData));
-  
+    this.orderItems = Array.isArray(orderData.orderItems)
+      ? orderData.orderItems.map(itemData => new feieOrderItem(itemData))
+      : [];
   }
-
 }
 
 class feieOrderItem {
   constructor(itemData) {
+    itemData = itemData || {};
     this.title = itemData.title;
     this.qty = itemData.qty;
     this.modInfo = itemData.modInfo;
@@ -1616,7 +1608,7 @@ class feieOrderItem {
 
 class FeieOrderSlip {
   constructor(orderDetails) {
-
+    orderDetails = orderDetails || {};
     this.dateTime = orderDetails.dateTime || '';
     this.table = orderDetails.table || '';
     this.printerName = orderDetails.printerName || '';
@@ -1694,6 +1686,10 @@ const orderDetails = {
 
 
 module.exports = UtilFeie;
+module.exports.ReceiptFormat = ReceiptFormat;
+module.exports.ReceiptLine = ReceiptLine;
+module.exports.ReceiptDualTable = ReceiptDualTable;
+module.exports.ReceiptSubChunk = ReceiptSubChunk;
 
 
 

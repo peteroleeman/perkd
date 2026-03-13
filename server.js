@@ -184,6 +184,11 @@ app.use('/gkash', myGKash.getRouter());
 const smsRouter = new SmsRouter();
 app.use('/sms', smsRouter.getRouter());
 
+//for email
+const EmailRouter = require('./emailrouter');
+const emailRouter = new EmailRouter();
+app.use('/email', emailRouter.getRouter());
+
 //for vending
 const myVending = new VendingRouter();
 app.use('/vending', myVending.getRouter());
