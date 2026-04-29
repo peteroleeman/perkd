@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{brand_name}} – Gift Receipt</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f6f9;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f6f9;">
+    <tr>
+      <td align="center" style="padding:24px 16px;">
+        <table width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+          <!-- Store details header -->
+          <tr>
+            <td align="center" style="background-color:#f7fafc;padding:24px 32px;border-bottom:3px solid #FF6B35;">
+              <table cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;">
+                <tr>
+                  <td align="center" style="padding-bottom:12px;">
+                    {{store_logo_html}}
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center">
+                    <h1 style="margin:0;color:#2d3748;font-size:24px;font-weight:700;">{{store_title}}</h1>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <!-- Main message -->
+          <tr>
+            <td style="padding:32px 32px 20px;">
+              <h2 style="margin:0 0 16px;color:#2d3748;font-size:20px;font-weight:700;line-height:1.3;">
+                Message sent to receiver
+              </h2>
+              <p style="margin:0 0 24px;color:#4a5568;font-size:15px;line-height:1.7;">
+                A message has been sent to the receiver with the details below.
+              </p>
+            </td>
+          </tr>
+          <!-- Details: receiver name, receiver address -->
+          <tr>
+            <td style="padding:0 32px 24px;">
+              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f7fafc;border-radius:12px;padding:24px;">
+                <tr><td style="padding:6px 0;color:#2d3748;font-size:15px;"><strong>Receiver name:</strong> {{receiver_name}}</td></tr>
+                <tr><td style="padding:6px 0;color:#2d3748;font-size:15px;"><strong>Receiver address:</strong> {{receiver_address}}</td></tr>
+                {{sender_email_row}}
+              </table>
+            </td>
+          </tr>
+          <!-- Items list -->
+          <tr>
+            <td style="padding:0 32px 24px;">
+              <p style="margin:0 0 12px;color:#2d3748;font-size:16px;font-weight:600;">Items</p>
+              {{items_html}}
+            </td>
+          </tr>
+          <!-- Collection code -->
+          <tr>
+            <td style="padding:0 32px 24px;">
+              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f7fafc;border-radius:12px;padding:24px;">
+                <tr><td style="padding:6px 0;color:#2d3748;font-size:15px;"><strong>Collection code:</strong> {{collection_code}}</td></tr>
+              </table>
+            </td>
+          </tr>
+          <!-- Thank you & notification -->
+          <tr>
+            <td style="padding:32px 32px 24px;">
+              <p style="margin:0 0 16px;color:#4a5568;font-size:15px;line-height:1.7;">
+                Thank you, {{sender_name}}, for your purchase. We will notify you when the receiver has collected the items.
+              </p>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td align="center" style="padding:20px 32px 28px;border-top:1px solid #e2e8f0;">
+              <p style="margin:0;color:#718096;font-size:12px;">&copy; {{year}} {{brand_name}}. All rights reserved.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
