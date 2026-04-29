@@ -24,6 +24,9 @@ const {
 } = require("./storeController");
 
 const KaotimActivityLogger = require("./util/kaotim_activity_logger");
+const { getBaseUrlFromRequest } = require("./gkash/shared/appUrl");
+/** Branches on processOrderTransaction result.status and redirects; see gkash/shared/gkashReturnFlow.js */
+const { handleGkashReturnSettlement } = require("./gkash/shared/gkashReturnFlow");
 
 // Feie print API routes (same as Flutter / posrouter: api.foodio.online/pos/...)
 const FEIE_API_BASE_URL = 'https://api.foodio.online';
@@ -94,6 +97,11 @@ class GKashRouter {
        const parsedUrl = url.parse(req.url, true);
        const version = parsedUrl.query.version || req.body.version || undefined;
        this.paymentKaotimReturn(req, res, false, version);
+     });
+     this.router.post('/ceriapayreturn', (req, res) => {
+       const parsedUrl = url.parse(req.url, true);
+       const version = parsedUrl.query.version || req.body.version || undefined;
+       this.paymentCeriaPayReturn(req, res, false, version);
      });
 
      // Beta endpoints (isBeta = true)
@@ -1551,9 +1559,7 @@ async testSendOTP()
     const queryParams = querystring.parse(parsedUrl.query);
 
     // Access individual parameters
-    const storeId = queryParams.STOREID || 'defaultStore'; 
-    // Extract version from query params or body if not provided as parameter
-    const versionParam = version || queryParams.version || req.body.version || undefined;
+    const storeId = queryParams.STOREID || 'defaultStore';
     console.log("storeid:" + storeId);
 
       
@@ -1593,7 +1599,7 @@ async testSendOTP()
     );
 
     // Setup redirect URLs
-    const baseUrl = this.getVersionBaseUrl(versionParam, isBeta);
+    const baseUrl = getBaseUrlFromRequest(req, isBeta);
     var urlSuccessHeader = baseUrl + "/#/coinsuccess/" + storeId + "/" + vCartID + "/" ;
     var urlFailHeader = baseUrl + "/#/coinfailed/" + storeId + "/" + vCartID + "/" ;
 
@@ -1608,62 +1614,34 @@ async testSendOTP()
       return;
     }
 
-    // Payment was successful, process the order transaction
-    try {
-      console.log("Payment successful, processing order transaction...");
-      
-      const gkashResult = {
-        CID: vCID,
-        POID: vPOID,
-        CARTID : vCartID,
-        STATUS: vStatus,
-        CURRENCY: vCurrency,
-        AMOUNT: vAmount,
-        SIGNATURE: vSignature,
-        DESC: vDescription,
-        PAYMENT_TYPE : vPaymentType
-      };
-
-      // Process the order transaction using the new method with CRM-specific options
-      if(true)
-      {
-        const crmOptions = {
-          enablePrinting: false,        // Enable receipt printing
-          enablePickingList: false,     // Generate picking lists
-          enableFullProcessing: true,  // Enable all processing features
-          deleteOrderTemp: false       // Keep order_temp for debugging
-        };
-        
-        const result = await this.processOrderTransaction(storeId, vCartID, gkashResult, crmOptions, 'COIN');
-        
-        if (result.status === 'success') {
-          console.log("Order transaction processed successfully:", result.message);
-          // Redirect to success page
-          res.redirect(redirectTo);
-          console.log("payment and order processing successful, redirected with status " + vStatus);
-          console.log("redirected to " + redirectTo);
-        } else {
-          console.error("Order transaction failed:", result.error);
-          // Redirect to failed page since order processing failed
-          res.redirect(urlFailHeader);
-          console.log("payment successful but order processing failed, redirected to failed page");
-          console.log("redirected to " + urlFailHeader);
-        }
-      }
-      else
-      {
-        res.redirect(redirectTo);
-        console.log("payment and order processing successful, redirected with status " + vStatus);
-        console.log("redirected to " + redirectTo);
-      }
-
-    } catch (error) {
-      console.error("Error processing order transaction:", error);
-      // Redirect to failed page since order processing failed
-      res.redirect(urlFailHeader);
-      console.log("payment successful but order processing error, redirected to failed page");
-      console.log("redirected to " + urlFailHeader);
-    }
+    console.log("Payment successful, processing order transaction...");
+    const gkashResult = {
+      CID: vCID,
+      POID: vPOID,
+      CARTID : vCartID,
+      STATUS: vStatus,
+      CURRENCY: vCurrency,
+      AMOUNT: vAmount,
+      SIGNATURE: vSignature,
+      DESC: vDescription,
+      PAYMENT_TYPE : vPaymentType
+    };
+    const crmOptions = {
+      enablePrinting: false,
+      enablePickingList: false,
+      enableFullProcessing: true,
+      deleteOrderTemp: false
+    };
+    await handleGkashReturnSettlement({
+      vCartID,
+      urlSuccessHeader,
+      urlFailHeader,
+      lockSource: 'gkash_coinreturn',
+      res,
+      runProcess: async () => {
+        return this.processOrderTransaction(storeId, vCartID, gkashResult, crmOptions, 'COIN');
+      },
+    });
   }
 
   async paymentCRMReturn (req, res, isBeta, version){
@@ -1675,9 +1653,7 @@ async testSendOTP()
     const queryParams = querystring.parse(parsedUrl.query);
 
     // Access individual parameters
-    const storeId = queryParams.STOREID || 'defaultStore'; 
-    // Extract version from query params or body if not provided as parameter
-    const versionParam = version || queryParams.version || req.body.version || undefined;
+    const storeId = queryParams.STOREID || 'defaultStore';
     console.log("storeid:" + storeId);
 
       
@@ -1717,7 +1693,7 @@ async testSendOTP()
     );
 
     // Setup redirect URLs
-    const baseUrl = this.getVersionBaseUrl(versionParam, isBeta);
+    const baseUrl = getBaseUrlFromRequest(req, isBeta);
     var urlSuccessHeader = baseUrl + "/#/crmsuccess/" + storeId + "/" + vCartID + "/" ;
     var urlFailHeader = baseUrl + "/#/crmfailed/" + storeId + "/" + vCartID + "/" ;
 
@@ -1732,62 +1708,34 @@ async testSendOTP()
       return;
     }
 
-    // Payment was successful, process the order transaction
-    try {
-      console.log("Payment successful, processing order transaction...");
-      
-      const gkashResult = {
-        CID: vCID,
-        POID: vPOID,
-        CARTID : vCartID,
-        STATUS: vStatus,
-        CURRENCY: vCurrency,
-        AMOUNT: vAmount,
-        SIGNATURE: vSignature,
-        DESC: vDescription,
-        PAYMENT_TYPE : vPaymentType
-      };
-
-      // Process the order transaction using the new method with CRM-specific options
-      if(true)
-      {
-        const crmOptions = {
-          enablePrinting: false,      // Disable receipt printing for CRM
-          enablePickingList: false,     // Generate picking lists
-          enableFullProcessing: true,  // Enable all processing features
-          deleteOrderTemp: false       // Keep order_temp for debugging
-        };
-        
-        const result = await this.processOrderTransaction(storeId, vCartID, gkashResult, crmOptions, 'CRM');
-        
-        if (result.status === 'success') {
-          console.log("Order transaction processed successfully:", result.message);
-          // Redirect to success page
-          res.redirect(redirectTo);
-          console.log("payment and order processing successful, redirected with status " + vStatus);
-          console.log("redirected to " + redirectTo);
-        } else {
-          console.error("Order transaction failed:", result.error);
-          // Redirect to failed page since order processing failed
-          res.redirect(urlFailHeader);
-          console.log("payment successful but order processing failed, redirected to failed page");
-          console.log("redirected to " + urlFailHeader);
-        }
-      }
-      else
-      {
-        res.redirect(redirectTo);
-        console.log("payment and order processing successful, redirected with status " + vStatus);
-        console.log("redirected to " + redirectTo);
-      }
-
-    } catch (error) {
-      console.error("Error processing order transaction:", error);
-      // Redirect to failed page since order processing failed
-      res.redirect(urlFailHeader);
-      console.log("payment successful but order processing error, redirected to failed page");
-      console.log("redirected to " + urlFailHeader);
-    }
+    console.log("Payment successful, processing order transaction...");
+    const gkashResult = {
+      CID: vCID,
+      POID: vPOID,
+      CARTID : vCartID,
+      STATUS: vStatus,
+      CURRENCY: vCurrency,
+      AMOUNT: vAmount,
+      SIGNATURE: vSignature,
+      DESC: vDescription,
+      PAYMENT_TYPE : vPaymentType
+    };
+    const crmOptions = {
+      enablePrinting: false,
+      enablePickingList: false,
+      enableFullProcessing: true,
+      deleteOrderTemp: false
+    };
+    await handleGkashReturnSettlement({
+      vCartID,
+      urlSuccessHeader,
+      urlFailHeader,
+      lockSource: 'gkash_crmreturn',
+      res,
+      runProcess: async () => {
+        return this.processOrderTransaction(storeId, vCartID, gkashResult, crmOptions, 'CRM');
+      },
+    });
   }
 
   /**
@@ -1804,8 +1752,6 @@ async testSendOTP()
     // Access individual parameters
     const storeId = queryParams.STOREID || 'defaultStore';
     const userId = queryParams.USERID || '';
-    // Extract version from query params or body if not provided as parameter
-    const versionParam = version || queryParams.version || req.body.version || undefined;
     console.log("[KAOTIM] storeid:" + storeId + " userid:" + userId);
 
     let vCID = req.body['CID'] ?? "";
@@ -1845,7 +1791,7 @@ async testSendOTP()
     );
 
     // Setup redirect URLs for Kaotim
-    const baseUrl = this.getVersionBaseUrl(versionParam, isBeta);
+    const baseUrl = getBaseUrlFromRequest(req, isBeta);
     var urlSuccessHeader = baseUrl + "/#/kaotimsuccess/" + storeId + "/" + vCartID + "/" + userId;
     var urlFailHeader = baseUrl + "/#/kaotimfailed/" + storeId + "/" + vCartID + "/" + userId;
 
@@ -1877,38 +1823,36 @@ async testSendOTP()
       return;
     }
 
-    // Payment was successful, process the order transaction
-    try {
-      console.log("[KAOTIM] Payment successful, processing order transaction...");
-      
-      const gkashResult = {
-        CID: vCID,
-        POID: vPOID,
-        CARTID: vCartID,
-        STATUS: vStatus,
-        CURRENCY: vCurrency,
-        AMOUNT: vAmount,
-        SIGNATURE: vSignature,
-        DESC: vDescription,
-        PAYMENT_TYPE: vPaymentType,
-        SOURCE: 'KAOTIM'
-      };
+    console.log("[KAOTIM] Payment successful, processing order transaction...");
+    const gkashResult = {
+      CID: vCID,
+      POID: vPOID,
+      CARTID: vCartID,
+      STATUS: vStatus,
+      CURRENCY: vCurrency,
+      AMOUNT: vAmount,
+      SIGNATURE: vSignature,
+      DESC: vDescription,
+      PAYMENT_TYPE: vPaymentType,
+      SOURCE: 'KAOTIM'
+    };
+    const kaotimOptions = {
+      enablePrinting: false,
+      enablePickingList: false,
+      enableFullProcessing: true,
+      deleteOrderTemp: false
+    };
 
-      // Process the order transaction using the new method with Kaotim-specific options
-      if (true) {
-        const kaotimOptions = {
-          enablePrinting: false,        // Disable receipt printing for Kaotim
-          enablePickingList: false,     // No picking lists for credit top-up
-          enableFullProcessing: true,   // Enable all processing features
-          deleteOrderTemp: false        // Keep order_temp for debugging
-        };
-        
+    await handleGkashReturnSettlement({
+      vCartID,
+      urlSuccessHeader,
+      urlFailHeader,
+      lockSource: 'gkash_kaotimreturn',
+      res,
+      runProcess: async () => {
         const result = await this.processKaotimOrderTransaction(storeId, vCartID, gkashResult, kaotimOptions, 'KAOTIM');
-        
         if (result.status === 'success') {
           console.log("[KAOTIM] Order transaction processed successfully:", result.message);
-          
-          // Log successful payment activity
           await KaotimActivityLogger.logActivity({
             storeId: storeId,
             activityType: KaotimActivityLogger.ACTIVITY_TOPUP_CREDIT_PASSED,
@@ -1925,69 +1869,158 @@ async testSendOTP()
             },
             user: { id: userId }
           });
-
-          // Redirect to success page
-          res.redirect(redirectTo);
-          console.log("[KAOTIM] payment and order processing successful, redirected with status " + vStatus);
-          console.log("[KAOTIM] redirected to " + redirectTo);
-        } else {
-          console.error("[KAOTIM] Order transaction failed:", result.error);
-          
-          // Log failed order processing activity
-          await KaotimActivityLogger.logActivity({
-            storeId: storeId,
-            activityType: KaotimActivityLogger.ACTIVITY_TOPUP_CREDIT_FAILED,
-            description: `Credit top-up payment successful but order processing failed`,
-            jsonData: {
-              CID: vCID,
-              POID: vPOID,
-              cartId: vCartID,
-              status: vStatus,
-              currency: vCurrency,
-              amount: vAmount,
-              paymentType: vPaymentType,
-              orderResult: result.error
-            },
-            user: { id: userId }
-          });
-
-          // Redirect to failed page since order processing failed
-          res.redirect(urlFailHeader);
-          console.log("[KAOTIM] payment successful but order processing failed, redirected to failed page");
-          console.log("[KAOTIM] redirected to " + urlFailHeader);
         }
-      } else {
-        res.redirect(redirectTo);
-        console.log("[KAOTIM] payment and order processing successful, redirected with status " + vStatus);
-        console.log("[KAOTIM] redirected to " + redirectTo);
+        return result;
+      },
+      onProcessFailure: async (result) => {
+        console.error("[KAOTIM] Order transaction failed:", result && result.error);
+        await KaotimActivityLogger.logActivity({
+          storeId: storeId,
+          activityType: KaotimActivityLogger.ACTIVITY_TOPUP_CREDIT_FAILED,
+          description: `Credit top-up payment successful but order processing failed`,
+          jsonData: {
+            CID: vCID,
+            POID: vPOID,
+            cartId: vCartID,
+            status: vStatus,
+            currency: vCurrency,
+            amount: vAmount,
+            paymentType: vPaymentType,
+            orderResult: result && result.error
+          },
+          user: { id: userId }
+        });
+      },
+      onFlowError: async (error) => {
+        console.error("[KAOTIM] Error processing order transaction:", error);
+        await KaotimActivityLogger.logActivity({
+          storeId: storeId,
+          activityType: KaotimActivityLogger.ACTIVITY_TOPUP_CREDIT_FAILED,
+          description: `Credit top-up payment successful but order processing error`,
+          jsonData: {
+            CID: vCID,
+            POID: vPOID,
+            cartId: vCartID,
+            status: vStatus,
+            currency: vCurrency,
+            amount: vAmount,
+            paymentType: vPaymentType,
+            orderResult: error.message || String(error)
+          },
+          user: { id: userId }
+        });
+      },
+    });
+  }
+
+  /**
+   * Payment return handler for CeriaPay credit top-up
+   * Routes to https://ceriapay.web.app/#/ceriapaysuccess/:storeid/:orderid/:userid
+   * or https://ceriapay.web.app/#/ceriapayfailed/:storeid/:orderid/:userid
+   */
+  async paymentCeriaPayReturn(req, res, isBeta, version) {
+    const dateTime = new UtilDateTime();
+
+    // Parse the query parameters
+    const parsedUrl = url.parse(req.url);
+    const queryParams = querystring.parse(parsedUrl.query);
+
+    // Access individual parameters
+    const storeId = queryParams.STOREID || 'defaultStore';
+    const userId = queryParams.USERID || '';
+    console.log("[CERIAPAY] storeid:" + storeId + " userid:" + userId);
+
+    let vCID = req.body['CID'] ?? "";
+    let vPOID = req.body['POID'] ?? "";
+    let vCartID = req.body['cartid'] ?? "";
+    let vStatus = req.body['status'] ?? "";
+    let vCurrency = req.body['currency'] ?? "";
+    let vAmount = req.body['amount'] ?? "";
+    let vSignature = req.body['signature'] ?? "";
+    let vDescription = req.body['description'] ?? "";
+    let vPaymentType = req.body['PaymentType'] ?? "";
+
+    console.log('[CERIAPAY] vCID:', vCID);
+    console.log('[CERIAPAY] vPOID:', vPOID);
+    console.log('[CERIAPAY] vCartID:', vCartID);
+    console.log('[CERIAPAY] vStatus:', vStatus);
+    console.log('[CERIAPAY] vCurrency:', vCurrency);
+    console.log('[CERIAPAY] vAmount:', vAmount);
+    console.log('[CERIAPAY] vSignature:', vSignature);
+    console.log('[CERIAPAY] vDescription:', vDescription);
+    console.log('[CERIAPAY] vPaymentType:', vPaymentType);
+
+    // Write GKash transaction log
+    writeGKashTransaction(storeId, dateTime.getCurrentDateString(),
+      {
+        CID: vCID,
+        POID: vPOID,
+        CARTID: vCartID,
+        STATUS: vStatus,
+        CURRENCY: vCurrency,
+        AMOUNT: vAmount,
+        SIGNATURE: vSignature,
+        DESC: vDescription,
+        PAYMENT_TYPE: vPaymentType,
+        SOURCE: 'CERIAPAY'
       }
+    );
 
-    } catch (error) {
-      console.error("[KAOTIM] Error processing order transaction:", error);
-      
-      // Log error activity
-      await KaotimActivityLogger.logActivity({
-        storeId: storeId,
-        activityType: KaotimActivityLogger.ACTIVITY_TOPUP_CREDIT_FAILED,
-        description: `Credit top-up payment successful but order processing error`,
-        jsonData: {
-          CID: vCID,
-          POID: vPOID,
-          cartId: vCartID,
-          status: vStatus,
-          currency: vCurrency,
-          amount: vAmount,
-          paymentType: vPaymentType,
-          orderResult: error.message || String(error)
-        },
-        user: { id: userId }
-      });
+    // Setup redirect URLs for CeriaPay
+    var urlSuccessHeader = "https://ceriapay.web.app/#/ceriapaysuccess/" + storeId + "/" + vCartID + "/" + userId;
+    var urlFailHeader = "https://ceriapay.web.app/#/ceriapayfailed/" + storeId + "/" + vCartID + "/" + userId;
 
-      // Redirect to failed page since order processing failed
-      res.redirect(urlFailHeader);
-      console.log("[KAOTIM] payment successful but order processing error, redirected to failed page");
-      console.log("[KAOTIM] redirected to " + urlFailHeader);
+    var redirectTo = urlSuccessHeader;
+
+    // Check if payment was successful
+    if (vStatus.includes("88") == false) {
+      redirectTo = urlFailHeader;
+      res.redirect(redirectTo);
+      console.log("[CERIAPAY] payment failed, redirected with status " + vStatus);
+      console.log("[CERIAPAY] payment redirected to " + redirectTo);
+      return;
     }
+
+    console.log("[CERIAPAY] Payment successful, processing order transaction...");
+    const gkashResult = {
+      CID: vCID,
+      POID: vPOID,
+      CARTID: vCartID,
+      STATUS: vStatus,
+      CURRENCY: vCurrency,
+      AMOUNT: vAmount,
+      SIGNATURE: vSignature,
+      DESC: vDescription,
+      PAYMENT_TYPE: vPaymentType,
+      SOURCE: 'CERIAPAY'
+    };
+    const ceriaPayOptions = {
+      enablePrinting: false,
+      enablePickingList: false,
+      enableFullProcessing: true,
+      deleteOrderTemp: false
+    };
+
+    await handleGkashReturnSettlement({
+      vCartID,
+      urlSuccessHeader,
+      urlFailHeader,
+      lockSource: 'gkash_ceriapayreturn',
+      res,
+      runProcess: async () => {
+        const result = await this.processKaotimOrderTransaction(storeId, vCartID, gkashResult, ceriaPayOptions, 'CERIAPAY');
+        if (result.status === 'success') {
+          console.log("[CERIAPAY] Order transaction processed successfully:", result.message);
+        }
+        return result;
+      },
+      onProcessFailure: async (result) => {
+        console.error("[CERIAPAY] Order transaction failed:", result && result.error);
+      },
+      onFlowError: async (error) => {
+        console.error("[CERIAPAY] Error processing order transaction:", error);
+      },
+    });
   }
 
 
@@ -2017,8 +2050,6 @@ async testSendOTP()
 
     // Access individual parameters
     const storeId = queryParams.STOREID || 'defaultStore';
-    // Extract version from query params or body if not provided as parameter
-    const versionParam = version || queryParams.version || req.body.version || undefined;
     console.log("storeid:" + storeId);
 
 
@@ -2061,7 +2092,7 @@ async testSendOTP()
       );
 
 
-      const baseUrl = this.getVersionBaseUrl(versionParam, isBeta);
+      const baseUrl = getBaseUrlFromRequest(req, isBeta);
       var urlSuccessHeader = baseUrl + "/#/tbsuccess/" + storeId + "/" + vCartID + "/" ;
       var urlFailHeader = baseUrl + "/#/tbfailed/" + storeId + "/" + vCartID + "/" ;
       var redirectTo = urlSuccessHeader;
@@ -2075,66 +2106,38 @@ async testSendOTP()
       return;
     }
 
-    // Payment was successful, process the order transaction
-    try {
-      console.log("VM Payment successful, processing order transaction...");
-      
-      const gkashResult = {
-        CID: vCID,
-        POID: vPOID,
-        CARTID : vCartID,
-        STATUS: vStatus,
-        CURRENCY: vCurrency,
-        AMOUNT: vAmount,
-        SIGNATURE: vSignature,
-        DESC: vDescription,
-        PAYMENT_TYPE : vPaymentType
-      };
-
-      // Process the order transaction using the new method with VM-specific options
-      if(true)
-      {
-                 const vmOptions = {
-           enablePrinting: true,        // Enable receipt printing (FEIE skips pay at counter/cash)
-           enablePickingList: false,    // Disable picking lists for vending
-           enableFullProcessing: true,  // Enable all processing features
-           deleteOrderTemp: false        // Clean up order_temp after processing
-         };
-        
-        const result = await this.processOrderTransaction(storeId, vCartID, gkashResult, vmOptions, 'TB');
-        
-        if (result.status === 'success') {
-          console.log("VM Order transaction processed successfully:", result.message);
-          // Redirect to success page
-          res.redirect(redirectTo);
-          console.log("VM payment and order processing successful, redirected with status " + vStatus);
-          console.log("VM redirected to " + redirectTo);
-        } else {
-          console.error("VM Order transaction failed:", result.error);
-          // Redirect to failed page since order processing failed
-          res.redirect(urlFailHeader);
-          console.log("VM payment successful but order processing failed, redirected to failed page");
-          console.log("VM redirected to " + urlFailHeader);
-        }
-      }
-      else
-      {
-        res.redirect(redirectTo);
-        console.log("VM payment and order processing successful, redirected with status " + vStatus);
-        console.log("VM redirected to " + redirectTo);
-      }
-
-    } catch (error) {
-      console.error("VM Error processing order transaction:", error);
-      // Redirect to failed page since order processing failed
-      res.redirect(urlFailHeader);
-      console.log("VM payment successful but order processing error, redirected to failed page");
-      console.log("VM redirected to " + urlFailHeader);
-    }
+    console.log("TB Payment successful, processing order transaction...");
+    const gkashResult = {
+      CID: vCID,
+      POID: vPOID,
+      CARTID : vCartID,
+      STATUS: vStatus,
+      CURRENCY: vCurrency,
+      AMOUNT: vAmount,
+      SIGNATURE: vSignature,
+      DESC: vDescription,
+      PAYMENT_TYPE : vPaymentType
+    };
+    const vmOptionsTB = {
+      enablePrinting: true,
+      enablePickingList: false,
+      enableFullProcessing: true,
+      deleteOrderTemp: false
+    };
+    await handleGkashReturnSettlement({
+      vCartID,
+      urlSuccessHeader,
+      urlFailHeader,
+      lockSource: 'gkash_return',
+      res,
+      runProcess: async () => {
+        return this.processOrderTransaction(storeId, vCartID, gkashResult, vmOptionsTB, 'TB');
+      },
+    });
 
   }
 
- async paymentVMReturn (req, res, isBeta, version){
+  async paymentVMReturn(req, res, isBeta, version) {
   const dateTime = new UtilDateTime();
     // const {
     //   CID,
@@ -2160,8 +2163,6 @@ async testSendOTP()
 
     // Access individual parameters
     const storeId = queryParams.STOREID || 'defaultStore';
-    // Extract version from query params or body if not provided as parameter
-    const versionParam = version || queryParams.version || req.body.version || undefined;
     console.log("storeid:" + storeId);
 
 
@@ -2203,7 +2204,7 @@ async testSendOTP()
       );
 
 
-      const baseUrl = this.getVersionBaseUrl(versionParam, isBeta);
+      const baseUrl = getBaseUrlFromRequest(req, isBeta);
       var urlSuccessHeader = baseUrl + "/#/success/" + storeId + "/" + vCartID + "/" ;
       var urlFailHeader = baseUrl + "/#/failed/" + storeId + "/" + vCartID + "/" ;
       var redirectTo = urlSuccessHeader;
@@ -2217,62 +2218,34 @@ async testSendOTP()
       return;
     }
 
-    // Payment was successful, process the order transaction
-    try {
-      console.log("VM Payment successful, processing order transaction...");
-      
-      const gkashResult = {
-        CID: vCID,
-        POID: vPOID,
-        CARTID : vCartID,
-        STATUS: vStatus,
-        CURRENCY: vCurrency,
-        AMOUNT: vAmount,
-        SIGNATURE: vSignature,
-        DESC: vDescription,
-        PAYMENT_TYPE : vPaymentType
-      };
-
-      // Process the order transaction using the new method with VM-specific options
-      if(true)
-      {
-                 const vmOptions = {
-           enablePrinting: false,       // Disable receipt printing for vending
-           enablePickingList: false,    // Disable picking lists for vending
-           enableFullProcessing: true,  // Enable all processing features
-           deleteOrderTemp: false        // Clean up order_temp after processing
-         };
-        
-        const result = await this.processOrderTransaction(storeId, vCartID, gkashResult, vmOptions, 'VM');
-        
-        if (result.status === 'success') {
-          console.log("VM Order transaction processed successfully:", result.message);
-          // Redirect to success page
-          res.redirect(redirectTo);
-          console.log("VM payment and order processing successful, redirected with status " + vStatus);
-          console.log("VM redirected to " + redirectTo);
-        } else {
-          console.error("VM Order transaction failed:", result.error);
-          // Redirect to failed page since order processing failed
-          res.redirect(urlFailHeader);
-          console.log("VM payment successful but order processing failed, redirected to failed page");
-          console.log("VM redirected to " + urlFailHeader);
-        }
-      }
-      else
-      {
-        res.redirect(redirectTo);
-        console.log("VM payment and order processing successful, redirected with status " + vStatus);
-        console.log("VM redirected to " + redirectTo);
-      }
-
-    } catch (error) {
-      console.error("VM Error processing order transaction:", error);
-      // Redirect to failed page since order processing failed
-      res.redirect(urlFailHeader);
-      console.log("VM payment successful but order processing error, redirected to failed page");
-      console.log("VM redirected to " + urlFailHeader);
-    }
+    console.log("VM Payment successful, processing order transaction...");
+    const gkashResult = {
+      CID: vCID,
+      POID: vPOID,
+      CARTID : vCartID,
+      STATUS: vStatus,
+      CURRENCY: vCurrency,
+      AMOUNT: vAmount,
+      SIGNATURE: vSignature,
+      DESC: vDescription,
+      PAYMENT_TYPE : vPaymentType
+    };
+    const vmOptions = {
+      enablePrinting: false,
+      enablePickingList: false,
+      enableFullProcessing: true,
+      deleteOrderTemp: false
+    };
+    await handleGkashReturnSettlement({
+      vCartID,
+      urlSuccessHeader,
+      urlFailHeader,
+      lockSource: 'gkash_vmreturn',
+      res,
+      runProcess: async () => {
+        return this.processOrderTransaction(storeId, vCartID, gkashResult, vmOptions, 'VM');
+      },
+    });
 
   }
 
@@ -6750,6 +6723,12 @@ console.log("set payment status :", orderModel.paymentstatus);
         try {
           const receiptLines = UtilFeieReceipt.printOrderReceiptFromOrder(storeModel, orderModel, { bReprint: false, type: receiptType });
           const content = UtilFeieReceipt.receiptToString(receiptLines);
+          console.log(
+            '🔍 [FEIE DEBUG] Receipt thermal string length:',
+            content?.length ?? 0,
+            'preview:',
+            (content || '').slice(0, 300)
+          );
           await feie.printFeieFromContent(sn, content, isJP);
           console.log('🖨️ [FEIE] Receipt sent OK to SN:', sn);
         } catch (err) {
@@ -6782,15 +6761,29 @@ console.log("set payment status :", orderModel.paymentstatus);
             };
             const slipUrl = `${apiBaseUrl}${FEIE_API_PATH_ORDER_SLIP}`;
             console.log('🖨️ [FEIE] Order slip API URL:', slipUrl);
+            console.log('🔍 [FEIE DEBUG] Order slip (Foodio JSON) request body:', JSON.stringify(slipBody, null, 2));
             const slipRes = await axios.post(slipUrl, slipBody, {
               headers: { 'Content-Type': 'application/json' },
               timeout: 15000
             });
+            console.log(
+              '🔍 [FEIE DEBUG] Order slip (Foodio JSON) response HTTP',
+              slipRes?.status,
+              'data:',
+              typeof slipRes?.data === 'object' ? JSON.stringify(slipRes.data) : slipRes?.data
+            );
             console.log('🖨️ [FEIE] Order slip sent OK to SN:', sn, '(via API)', slipRes?.status);
           } else {
             const feieOrder = { ...feieOrderSlipPayload, sn, printerName: device?.info ?? '', type: receiptType };
+            console.log('🔍 [FEIE DEBUG] Order slip (local Feie Yun) logical payload JSON:', JSON.stringify(feieOrder, null, 2));
             const feieOrderObj = feie.createFeieOrderSlipFromJSON(feieOrder);
             const slipContent = feie.printOrderItemSlip(feieOrderObj, false, receiptType);
+            console.log(
+              '🔍 [FEIE DEBUG] Order slip Open_printMsg tag lines count:',
+              slipContent?.length ?? 0,
+              'first lines:',
+              JSON.stringify(slipContent?.slice?.(0, 8) ?? [])
+            );
             await feie.printFeie2(sn, slipContent, isJP);
             console.log('🖨️ [FEIE] Order slip sent OK to SN:', sn);
           }
@@ -6825,15 +6818,32 @@ console.log("set payment status :", orderModel.paymentstatus);
               };
               const labelUrl = `${apiBaseUrl}${FEIE_API_PATH_LABEL}`;
               console.log('🖨️ [FEIE] Label API URL:', labelUrl);
+              console.log('🔍 [FEIE DEBUG] Label (Foodio JSON) request body:', JSON.stringify(labelBody, null, 2));
               const labelRes = await axios.post(labelUrl, labelBody, {
                 headers: { 'Content-Type': 'application/json' },
                 timeout: 15000
               });
+              console.log(
+                '🔍 [FEIE DEBUG] Label (Foodio JSON) response HTTP',
+                labelRes?.status,
+                'data:',
+                typeof labelRes?.data === 'object' ? JSON.stringify(labelRes.data) : labelRes?.data
+              );
               if (totalItems > 0) console.log('🖨️ [FEIE] Labels sent OK to SN:', sn, '(via API)', labelRes?.status);
             } else {
               for (let i = 0; i < totalItems; i++) {
                 const item = orderItems[i];
                 const content = this._buildFeieLabelContent({ orderId, tableId, item, totalItems, name, phone, i });
+                console.log(
+                  '🔍 [FEIE DEBUG] Label (Feie Yun Open_printLabelMsg) item',
+                  i + 1,
+                  '/',
+                  totalItems,
+                  'content length:',
+                  content?.length ?? 0,
+                  'preview:',
+                  (content || '').slice(0, 400)
+                );
                 await feie.printLabel(sn, content, 1, isJP);
               }
               if (totalItems > 0) console.log('🖨️ [FEIE] Labels sent OK to SN:', sn);
@@ -6850,16 +6860,45 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
+  _trimOrderLineRemark(item) {
+    const r = item?.remark;
+    if (r == null || r === '') return '';
+    if (Array.isArray(r)) {
+      const parts = r
+        .map((x) => (x && typeof x === 'object' && x.remark != null ? String(x.remark) : String(x)))
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return parts.join(', ');
+    }
+    return String(r).trim();
+  }
+
   _convertOrderToFeieOrderSlip(orderModel, storeModel) {
-    const now = new Date();
-    const dateTime = now.toLocaleString('en-US', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    const rawDt =
+      orderModel?.orderdatetime ??
+      orderModel?.orderDateTime ??
+      orderModel?.createdat ??
+      orderModel?.createdAt;
+    let dateTime;
+    if (rawDt != null && rawDt !== '') {
+      dateTime = typeof rawDt === 'string' ? rawDt : new Date(rawDt).toISOString();
+    } else {
+      dateTime = new Date().toISOString();
+    }
     const orderItems = (orderModel?.orderitems ?? orderModel?.orderItems ?? []).map(item => {
       const modInfo = item?.modinfo ?? item?.modInfo;
       let modArr = [];
       if (Array.isArray(modInfo)) modArr = modInfo;
       else if (modInfo && typeof modInfo === 'object') modArr = [modInfo];
       else if (typeof modInfo === 'string' && modInfo) modArr = [{ title: modInfo, qty: 1 }];
-      return { title: item?.title ?? '', qty: item?.qty ?? 1, modInfo: modArr };
+      const qty = item?.qty ?? item?.quantity ?? 1;
+      const lineRemark = this._trimOrderLineRemark(item);
+      return {
+        title: item?.title ?? '',
+        qty,
+        modInfo: modArr,
+        remark: lineRemark
+      };
     });
     const rawOrderMode = orderModel?.ordertype ?? orderModel?.orderType ?? 'Dine In';
     const orderMode = (rawOrderMode === 1 || rawOrderMode === '1') ? 'Take Away'
@@ -6879,14 +6918,16 @@ console.log("set payment status :", orderModel.paymentstatus);
   _convertOrderToFeieLabelPayload(orderModel) {
     const orderItems = (orderModel?.orderitems ?? orderModel?.orderItems ?? []).map(item => {
       const modInfo = item?.modinfo ?? item?.modInfo;
-      let remark = '';
+      let modText = '';
       if (Array.isArray(modInfo)) {
-        remark = modInfo.map(m => (typeof m === 'object' && m?.title) ? `${m.title}${(m?.qty > 1 ? ` x${m.qty}` : '')}` : String(m)).join(', ');
+        modText = modInfo.map(m => (typeof m === 'object' && m?.title) ? `${m.title}${(m?.qty > 1 ? ` x${m.qty}` : '')}` : String(m)).join(', ');
       } else if (modInfo && typeof modInfo === 'object') {
-        remark = modInfo.title ? `${modInfo.title}${(modInfo.qty > 1 ? ` x${modInfo.qty}` : '')}` : '';
+        modText = modInfo.title ? `${modInfo.title}${(modInfo.qty > 1 ? ` x${modInfo.qty}` : '')}` : '';
       } else if (typeof modInfo === 'string') {
-        remark = modInfo;
+        modText = modInfo;
       }
+      const lineNote = this._trimOrderLineRemark(item);
+      const remark = [modText, lineNote].filter(Boolean).join(' | ');
       return { title: item?.title ?? '', remark };
     });
     return {
@@ -7598,9 +7639,7 @@ console.log("set payment status :", orderModel.paymentstatus);
     const queryParams = querystring.parse(parsedUrl.query);
 
     // Access individual parameters
-    const storeId = queryParams.STOREID || 'defaultStore'; 
-    // Extract version from query params or body if not provided as parameter
-    const versionParam = version || queryParams.version || req.body.version || undefined;
+    const storeId = queryParams.STOREID || 'defaultStore';
     console.log("storeid:" + storeId);
 
       
@@ -7642,7 +7681,7 @@ console.log("set payment status :", orderModel.paymentstatus);
       );
 
 
-      const baseUrl = this.getVersionBaseUrl(versionParam, isBeta);
+      const baseUrl = getBaseUrlFromRequest(req, isBeta);
       var urlSuccessHeader = baseUrl + "/#/success/" + storeId + "/" + vCartID + "/" ;
       var urlFailHeader = baseUrl + "/#/failed/" + storeId + "/" + vCartID + "/" ;
 

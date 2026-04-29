@@ -84,6 +84,66 @@ var PATH = "/Api/Open/";         //接口路径
 
 
 
+/** Log Feie HTTP request/response (redacts sig; truncates long content). */
+function logFeieDebug(phase, url, bodyForLog, response, err) {
+  const prefix = '🔍 [FEIE DEBUG]';
+  if (bodyForLog != null) {
+    console.log(`${prefix} ${phase} → ${url}`);
+    console.log(`${prefix} ${phase} request body:`, JSON.stringify(bodyForLog, null, 2));
+  }
+  if (response != null) {
+    console.log(
+      `${prefix} ${phase} response HTTP ${response.status} data:`,
+      typeof response.data === 'object' ? JSON.stringify(response.data) : response.data
+    );
+  }
+  if (err != null) {
+    const ax = err.response;
+    console.error(
+      `${prefix} ${phase} error:`,
+      err.message,
+      ax ? `HTTP ${ax.status} ${JSON.stringify(ax.data)}` : ''
+    );
+  }
+}
+
+function buildFeiePrintBodyLog(bodyContent) {
+  const o = { ...bodyContent };
+  if (o.sig) o.sig = '[REDACTED]';
+  if (typeof o.content === 'string' && o.content.length > 2500) {
+    o.content =
+      o.content.slice(0, 2500) + `\n… [truncated for log, total ${bodyContent.content.length} chars]`;
+  }
+  return o;
+}
+
+/**
+ * Readable date/time for kitchen slips (avoids raw ISO "T" between date and time).
+ * @param {string|Date|undefined|null} raw
+ * @returns {string}
+ */
+function formatSlipDateTimeDisplay(raw) {
+  if (raw == null || raw === '') return '';
+  const s = String(raw).trim();
+  const d = new Date(s);
+  if (!Number.isNaN(d.getTime()) && s.length >= 10 && /^\d{4}-\d{2}-\d{2}/.test(s)) {
+    return d.toLocaleString('en-US', {
+      weekday: 'short',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+  }
+  // Do not use s.replace(/T/g, ' '): that turns "Thu 11:21 AM" into " hu 11:21 AM" on Feie slips.
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
+    return s.replace('T', ' ');
+  }
+  return s;
+}
+
 //-----------------------以下方法实现----------------------------------
 class UtilFeie
 {
@@ -247,14 +307,15 @@ class UtilFeie
       };
   
       try {
+          logFeieDebug('printFeie2', url, buildFeiePrintBodyLog(bodyContent), null, null);
           const response = await axios.post(url, bodyContent, { headers });
           const statusCode = response.status;
+          logFeieDebug('printFeie2', url, null, response, null);
 
           return `${statusCode} : Request sent}`;
           // Handle the response as needed
       } catch (error) {
-          // Handle errors or exceptions
-          console.error(`Error: ${error.message}`);
+          logFeieDebug('printFeie2', url, buildFeiePrintBodyLog(bodyContent), null, error);
 
           return `Error : ${error.message}}`;
       }
@@ -301,14 +362,14 @@ class UtilFeie
     };
 
     try {
+        logFeieDebug('printFeieFromContent', url, buildFeiePrintBodyLog(bodyContent), null, null);
         const response = await axios.post(url, bodyContent, { headers });
         const statusCode = response.status;
-        console.log(JSON.stringify(response.data));
+        logFeieDebug('printFeieFromContent', url, null, response, null);
         return `${JSON.stringify(response.data)}`;
         // Handle the response as needed
     } catch (error) {
-        // Handle errors or exceptions
-        console.error(`Error: ${error.message}`);
+        logFeieDebug('printFeieFromContent', url, buildFeiePrintBodyLog(bodyContent), null, error);
 
         return `Error : ${error.message}}`;
     }
@@ -359,11 +420,12 @@ class UtilFeie
       };
   
       try {
+        logFeieDebug('printLabel', url, buildFeiePrintBodyLog(bodyContent), null, null);
         const response = await axios.post(url, bodyContent, { headers });
-        console.log("Label printing response:", JSON.stringify(response.data));
+        logFeieDebug('printLabel', url, null, response, null);
         return JSON.stringify(response.data);
       } catch (error) {
-        console.error(`Error printing label: ${error.message}`);
+        logFeieDebug('printLabel', url, buildFeiePrintBodyLog(bodyContent), null, error);
         return `Error : ${error.message}`;
       }
     }
@@ -799,7 +861,7 @@ class UtilFeie
   }
 
   //SECTION print function
-  printOrderItemSlipPOS(orderModel, bReprint = false, type = 0) {
+  printOrderItemSlipPOS(orderModel, bReprint = false, type = 0, bCancelled = false) {
     //console.log(orderModel);
 
     const receipt = [];
@@ -825,21 +887,33 @@ class UtilFeie
     line.init(keyLen + valueLen);
     dualTable.init(keyLen, valueLen);
 
-    if (bReprint === true) {
+    if (bReprint === true && !bCancelled) {
       line.addText(ReceiptFormat.setCenterBIG("*DUPLICATE*"));
     }
 
     let orderId = orderModel?.orderId ?? "";
     let tableId = orderModel?.table ?? "";
     line.addText(ReceiptFormat.setCenter(`${tableId}` + `  ${orderId}`));
-    line.addText("<BR>");
+    //line.addText("<BR>");
    
     line.addText(  ReceiptFormat.setCenterBIG(`(${orderModel?.orderMode ?? ''})`));
-    line.addText("<BR>");
-    line.addText(ReceiptFormat.setCenter(`${orderModel?.dateTime ?? ''}`));
-    line.addText("<BR>");
-    line.addText(
-    ReceiptFormat.setBold("**" + (orderModel?.storeTitle ?? '') + "<BR>"));
+    //line.addText("<BR>");
+    if (bCancelled) {
+      line.addLine("-");
+      line.addText(ReceiptFormat.setCenterBIG("ORDER CANCELLED"));
+      //line.addText("<BR>");
+      line.addLine("-");
+      //line.addText("<BR>");
+    }
+    line.addMarkupLine(ReceiptFormat.setCenter(formatSlipDateTimeDisplay(orderModel?.dateTime ?? '')));
+    line.addMarkupLine('<BR>');
+    const storeTitle = String(orderModel?.storeTitle ?? '').trim();
+    if (storeTitle) {
+      // Full-width markup line: default addText() chunks at receiptLen (~32/48) and splitText()
+      // counts non-ASCII as double width, which truncates long store names early.
+      line.addMarkupLine(ReceiptFormat.setCenter(ReceiptFormat.setBold(storeTitle)));
+      line.addMarkupLine("<BR>");
+    }
     line.addText(orderModel?.remark ?? "");
     line.addText("<BR>");
 
@@ -861,7 +935,11 @@ class UtilFeie
     let qty = 0;
     let title = "";
     let modInfo = "";
-   
+    const trimStr = (v) => {
+      if (v == null || v === '') return '';
+      return String(v).trim();
+    };
+
     for (const orderItem of (orderModel?.orderItems ?? [])) {
       qty = orderItem?.qty ?? 0;
       title = orderItem?.title ?? "";
@@ -902,9 +980,37 @@ class UtilFeie
          }
 
       }
-      
 
-     
+      const sm1 = trimStr(orderItem.setMenu1 ?? orderItem.s1);
+      const sm2 = trimStr(orderItem.setMenu2 ?? orderItem.s2);
+      const itemRemark = trimStr(orderItem.remark);
+
+      if (itemRemark) {
+        dualTable.refresh();
+        dualTable.addKey(`  *: ${itemRemark}`);
+        dualTable.addValue('');
+        for (const lineText of dualTable.getReceipt()) {
+          receipt.push(lineText);
+        }
+      }
+
+      if (sm1) {
+        dualTable.refresh();
+        dualTable.addKey(`  ${sm1}`);
+        dualTable.addValue('');
+        for (const lineText of dualTable.getReceipt()) {
+          receipt.push(lineText);
+        }
+      }
+      if (sm2) {
+        dualTable.refresh();
+        dualTable.addKey(`  ${sm2}`);
+        dualTable.addValue('');
+        for (const lineText of dualTable.getReceipt()) {
+          receipt.push(lineText);
+        }
+      }
+
       line.refresh();
       line.addLine("-");
       for (const lineText of line.getReceipt()) 
@@ -948,6 +1054,17 @@ class UtilFeie
     //   receipt.push(lineText);
     // }
 
+    if (bCancelled) {
+      line.refresh();
+      //line.addLine("-");
+      line.addText(ReceiptFormat.setCenterBIG("DO NOT PREPARE"));
+     // line.addText("<BR>");
+      line.addLine("-");
+      for (const lineText of line.getReceipt()) {
+        receipt.push(lineText);
+      }
+    }
+
     //console.log("Feie order slip printed");
     return receipt;
   }
@@ -982,19 +1099,33 @@ class UtilFeie
           line.addText(ReceiptFormat.setCenterBIG("*DUPLICATE*"));
         }
 
-        line.addText(
+        // Header rows use addMarkupLine so ReceiptLine.addText() does not split Feie tags
+        // at ~32 "columns" (non-letters count double), which drops or corrupts <CB>…</CB> lines.
+        line.addMarkupLine(
           ReceiptFormat.setRightAlign(`<BOLD>${orderModel?.printerName ?? ''}</BOLD>`));
-        
-       
+        line.addMarkupLine('<BR>');
 
-        line.addText(  ReceiptFormat.setCenterBIG(`${orderModel?.buzzer ?? ''} (${orderModel?.orderMode ?? ''})`));
-        line.addText("<BR>");
-        line.addText(ReceiptFormat.setCenter(`${orderModel?.dateTime ?? ''}`));
-        line.addText("<BR>");
-        line.addText(
-        ReceiptFormat.setBold(`**NOTE:` + "<BR>"));
-        line.addText(orderModel?.remark ?? "");
-        line.addText("<BR>");
+        const slipOrderId = String(
+          orderModel?.orderId ??
+            orderModel?.orderid ??
+            orderModel?.id ??
+            orderModel?.onlineOrderId ??
+            orderModel?.onlineorderid ??
+            ''
+        ).trim();
+        if (slipOrderId) {
+          line.addMarkupLine(ReceiptFormat.setCenterBIG(slipOrderId));
+          line.addMarkupLine('<BR>');
+        }
+        line.addMarkupLine(
+          ReceiptFormat.setCenterBIG(`${orderModel?.buzzer ?? ''} (${orderModel?.orderMode ?? ''})`));
+        line.addMarkupLine('<BR>');
+        line.addMarkupLine(
+          ReceiptFormat.setCenter(formatSlipDateTimeDisplay(orderModel?.dateTime ?? '')));
+        line.addMarkupLine('<BR>');
+        line.addMarkupLine(ReceiptFormat.setBold('NOTE:' + '<BR>'));
+        line.addMarkupLine(String(orderModel?.remark ?? ''));
+        line.addMarkupLine('<BR>');
 
 
         line.addLine("-");
@@ -1014,9 +1145,13 @@ class UtilFeie
         let qty = 0;
         let title = "";
         let modInfo = "";
-       
+        const trimStr = (v) => {
+          if (v == null || v === '') return '';
+          return String(v).trim();
+        };
+
         for (const orderItem of (orderModel?.orderItems ?? [])) {
-          qty = orderItem?.qty ?? 0;
+          qty = orderItem?.qty ?? orderItem?.quantity ?? 0;
           title = orderItem?.title ?? "";
 
           dualTable.refresh();
@@ -1055,7 +1190,36 @@ class UtilFeie
              }
 
           }
-          
+
+          const sm1 = trimStr(orderItem.setMenu1 ?? orderItem.s1);
+          const sm2 = trimStr(orderItem.setMenu2 ?? orderItem.s2);
+          const itemRemark = trimStr(orderItem.remark);
+
+          if (itemRemark) {
+            dualTable.refresh();
+            dualTable.addKey(`  *: ${itemRemark}`);
+            dualTable.addValue('');
+            for (const lineText of dualTable.getReceipt()) {
+              receipt.push(lineText);
+            }
+          }
+
+          if (sm1) {
+            dualTable.refresh();
+            dualTable.addKey(`  ${sm1}`);
+            dualTable.addValue('');
+            for (const lineText of dualTable.getReceipt()) {
+              receipt.push(lineText);
+            }
+          }
+          if (sm2) {
+            dualTable.refresh();
+            dualTable.addKey(`  ${sm2}`);
+            dualTable.addValue('');
+            for (const lineText of dualTable.getReceipt()) {
+              receipt.push(lineText);
+            }
+          }
 
          
           line.refresh();
@@ -1341,6 +1505,17 @@ class ReceiptLine {
     this.lineList.push(subChunk);
   }
 
+  /**
+   * One logical line of Feie markup without chunking at receiptLen (store title, etc.).
+   */
+  addMarkupLine(text) {
+    const index = this.lineList.length;
+    const subChunk = new ReceiptSubChunk();
+    const maxChunk = 2048;
+    subChunk.setChunk(index, text, maxChunk, '-', -1);
+    this.lineList.push(subChunk);
+  }
+
   isLine(index) {
     if (index > this.lineList.length - 1) {
       return false;
@@ -1613,7 +1788,14 @@ class FeieOrderSlip {
     this.table = orderDetails.table || '';
     this.printerName = orderDetails.printerName || '';
     this.sn = orderDetails.sn || '';
-    this.orderId = orderDetails.orderId || '';
+    this.orderId = String(
+      orderDetails.orderId ??
+        orderDetails.orderid ??
+        orderDetails.id ??
+        orderDetails.onlineOrderId ??
+        orderDetails.onlineorderid ??
+        ''
+    );
     this.storeTitle = orderDetails.storeTitle || '';
     this.buzzer = orderDetails.buzzer || '';
     this.remark = orderDetails.remark || '';

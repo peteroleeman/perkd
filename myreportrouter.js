@@ -50,6 +50,10 @@ class MyReportRouter {
     this.router.post('/queryrawdata', this.queryRawData.bind(this));
     this.router.post('/querycurrentmonth', this.queryCurrentMonth.bind(this));
     this.router.post('/querybydays', this.queryByDays.bind(this));
+    this.router.post(
+      '/queryvendingchangelogbyphone',
+      this.queryVendingChangelogByPhone.bind(this)
+    );
   }
 
   about(req, res) {
@@ -414,6 +418,111 @@ class MyReportRouter {
         success: false,
         message: 'Failed to query BigQuery for specified days myreport data',
         error: error.message
+      });
+    }
+  }
+
+  /**
+   * Changelog rows for a phone where data looks like a vending order (devicenumber + merchantid).
+   * Body: userphonenumber (required), limit (default 20, max 500), offset (default 0).
+   */
+  async queryVendingChangelogByPhone(req, res) {
+    try {
+      const rawPhone = req.body.userphonenumber;
+      const userphonenumber =
+        rawPhone !== undefined && rawPhone !== null
+          ? String(rawPhone).trim()
+          : '';
+      if (!userphonenumber) {
+        return res.status(400).json({
+          success: false,
+          message: 'userphonenumber is required',
+          error: 'Missing or empty userphonenumber',
+        });
+      }
+
+      let limit = parseInt(req.body.limit, 10);
+      if (Number.isNaN(limit) || limit < 1) {
+        limit = 20;
+      }
+      if (limit > 500) {
+        limit = 500;
+      }
+
+      let offset = parseInt(req.body.offset, 10);
+      if (Number.isNaN(offset) || offset < 0) {
+        offset = 0;
+      }
+
+      const whereClause = `
+        JSON_VALUE(data, '$.userphonenumber') = @phone
+        AND JSON_VALUE(data, '$.devicenumber') IS NOT NULL
+        AND JSON_VALUE(data, '$.devicenumber') != ''
+        AND JSON_VALUE(data, '$.merchantid') IS NOT NULL
+        AND JSON_VALUE(data, '$.merchantid') != ''
+      `;
+
+      const baseFrom = `\`foodio-ab3b2.firestore_myreport.myreport_raw_changelog\``;
+
+      const query = `
+        SELECT *
+        FROM ${baseFrom}
+        WHERE ${whereClause}
+        ORDER BY timestamp DESC
+        LIMIT @limit
+        OFFSET @offset
+      `;
+
+      const queryOptions = {
+        query,
+        params: {
+          phone: userphonenumber,
+          limit,
+          offset,
+        },
+        location: 'asia-southeast1',
+        useQueryCache: true,
+      };
+
+      let totalCount = null;
+      if (offset === 0) {
+        const countQuery = `
+          SELECT COUNT(*) AS total_count
+          FROM ${baseFrom}
+          WHERE ${whereClause}
+        `;
+        const [countRows] = await this.bigquery.query({
+          query: countQuery,
+          params: { phone: userphonenumber },
+          location: 'asia-southeast1',
+          useQueryCache: true,
+        });
+        totalCount = countRows[0].total_count;
+      }
+
+      const [rows] = await this.bigquery.query(queryOptions);
+
+      console.log(
+        `myreport_raw_changelog by phone: ${rows.length} rows (offset=${offset}, limit=${limit}, phone=${userphonenumber})`
+      );
+
+      return res.status(200).json({
+        success: true,
+        count: rows.length,
+        total: totalCount,
+        offset,
+        limit,
+        userphonenumber,
+        hasMore: rows.length === limit,
+        nextOffset: offset + limit,
+        data: rows,
+      });
+    } catch (error) {
+      console.error('Error querying vending changelog by phone:', error.message);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to query myreport_raw_changelog by phone',
+        error: error.message,
       });
     }
   }

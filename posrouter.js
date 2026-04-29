@@ -1,4 +1,5 @@
 const express = require('express');
+const axios = require('axios');
 const crypto = require('crypto');
 const UtilFeie = require("./feie/util_feie");
 const OrderModel = require("./models/OrderModel");
@@ -6,6 +7,12 @@ const OrderItemModel = require("./models/OrderItemModel");
 const firebase = require("./db");
 const fireStore = firebase.firestore();
 const { v4: uuidv4 } = require('uuid');
+
+/** CeriaPay web app payment URL; order id is appended as the last segment */
+const CERIAPAY_PAY_BASE_URL = 'https://ceriapay.web.app/#/pay/';
+
+/** Base URL for external CRM API (POST /api/crm/result). Override with env CRM_RESULT_API_BASE. */
+const CRM_RESULT_API_BASE_DEFAULT = 'http://43.163.123.54';
 
 /**
  * Format date to YYYY-MM-DD HH:mm:ss.SSS format
@@ -39,12 +46,21 @@ class PosRouter {
     // Add printOrderSlipEx endpoints
     this.router.post('/kdsorderslipex', this.handlePrintOrderSlipExCN.bind(this));
     this.router.post('/kdsorderslipexap', this.handlePrintOrderSlipExJP.bind(this));
+    // Same slip layout as above; optional body.cancelled (default false). When true, prints ORDER CANCELLED after order mode and DO NOT PREPARE at the bottom.
+    this.router.post('/kdsorderslipexcancel', this.handlePrintOrderSlipExCancelCN.bind(this));
+    this.router.post('/kdsorderslipexapcancel', this.handlePrintOrderSlipExCancelJP.bind(this));
     
     // Add label printing endpoint
     this.router.post('/printlabelap', this.handlePrintLabel.bind(this));
     
     // Add e-invoice endpoint
     this.router.post('/einvoice', this.handleEInvoice.bind(this));
+
+    // CeriaPay QR: same body as /einvoice except merchant_id (use device_number only + merchant_device lookup)
+    this.router.post('/getqrcode', this.handleGetQrCode.bind(this));
+
+    // Proxy to external CRM: body { receipt_id, code } — response JSON uses string code; "0" = business error (often still HTTP 200)
+    this.router.post('/crm/result', this.handleCrmResult.bind(this));
   }
 
   generateEncryptedToken() {
@@ -69,6 +85,14 @@ class PosRouter {
 
   async handlePrintOrderSlipExJP(req, res) {
     return this.printOrderSlipEx(req, res, true);
+  }
+
+  async handlePrintOrderSlipExCancelCN(req, res) {
+    return this.printOrderSlipEx(req, res, false, true);
+  }
+
+  async handlePrintOrderSlipExCancelJP(req, res) {
+    return this.printOrderSlipEx(req, res, true, true);
   }
 
   async handlePrintLabel(req, res) {
@@ -233,8 +257,8 @@ class PosRouter {
     }
   }
 
-  //type 0 is small width, 1 is large width
-  async printOrderSlipEx(req, res, isJP) {
+  //type 0 is small width, 1 is large width. honourCancelledParam: only /kdsorderslipexcancel routes read body.cancelled; original KDS routes always print a normal slip.
+  async printOrderSlipEx(req, res, isJP, honourCancelledParam = false) {
     const feie = new UtilFeie();
 
     // Check if the token matches the valid token (replace this with your token validation logic)
@@ -258,9 +282,11 @@ class PosRouter {
       return;
     }
 
+    const cancelled = honourCancelledParam && req.body.cancelled === true;
+
     try {
       let feieOrder = feie.createFeieOrderSlipFromJSON(req.body);
-      let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderItemSlipPOS(feieOrder, req.body.isReprint, req.body.type), isJP);
+      let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderItemSlipPOS(feieOrder, req.body.isReprint, req.body.type, cancelled), isJP);
       
       res.json({ message: feieResult });
     }
@@ -533,7 +559,194 @@ class PosRouter {
       console.error('Error processing e-invoice:', error);
       res.status(500).json({ 
         success: false,
-        message: `Internal server error while processing e-invoice: ${error.message}`
+        message: `Internal server error while processing e-invoice: ${error.message}` 
+      });
+    }
+  }
+
+  /**
+   * CeriaPay QR: same payload as /einvoice but without merchant_id.
+   * Resolves store/device from merchant_device only (fridgemid === device_number).
+   * Persists to ceriapay/{storeId}/order/{orderId} and returns the pay URL.
+   */
+  /**
+   * POST /pos/crm/result — forwards to {CRM_RESULT_API_BASE}/api/crm/result
+   * Request: { "receipt_id": string, "code": number }
+   */
+  async handleCrmResult(req, res) {
+    try {
+      const { receipt_id, code } = req.body || {};
+      if (receipt_id == null || receipt_id === '' || code == null) {
+        return res.status(400).json({
+          success: false,
+          message: 'Missing required fields: receipt_id and code',
+        });
+      }
+
+      const base = (CRM_RESULT_API_BASE_DEFAULT).replace(/\/$/, '');
+      const url = `${base}/api/crm/result`;
+
+      const upstream = await axios.post(
+        url,
+        { receipt_id, code },
+        {
+          headers: { 'Content-Type': 'application/json' },
+          validateStatus: () => true,
+        }
+      );
+
+      res.status(upstream.status).json(upstream.data);
+    } catch (error) {
+      console.error('handleCrmResult:', error.message);
+      res.status(502).json({
+        success: false,
+        message: error.message || 'CRM result request failed',
+      });
+    }
+  }
+
+  async handleGetQrCode(req, res) {
+    try {
+      if (!req.body) {
+        return res.status(400).json({
+          success: false,
+          message: 'Request body is missing or empty',
+        });
+      }
+
+      const { receipt_id, amount, currency, device_number, list } = req.body;
+
+      if (!receipt_id || !currency || !device_number || !list) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'Missing required fields. Please provide receipt_id, amount, currency, device_number, and list (merchant_id is not required)',
+        });
+      }
+
+      if (!Array.isArray(list) || list.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'List must be a non-empty array of goods',
+        });
+      }
+
+      const requiredItemFields = [
+        'goods_count',
+        'goods_description',
+        'goods_id',
+        'goods_name',
+        'goods_photo',
+        'goods_price',
+        'goods_sku',
+      ];
+      for (const item of list) {
+        const missingFields = requiredItemFields.filter((field) => item[field] == null);
+        if (missingFields.length > 0) {
+          return res.status(400).json({
+            success: false,
+            message: `Missing required fields in list item: ${missingFields.join(', ')}`,
+          });
+        }
+      }
+
+      const subtotal = list.reduce((sum, item) => sum + item.goods_count * item.goods_price, 0);
+      const grandTotal = parseFloat(amount || subtotal) || 0;
+      const id = 'O_' + uuidv4();
+
+      console.log('Querying merchant_device for fridgemid (getqrcode):', device_number);
+
+      const machineModelQuery = await fireStore
+        .collection('merchant_device')
+        .where('fridgemid', '==', device_number)
+        .limit(1)
+        .get();
+
+      if (machineModelQuery.empty) {
+        return res.status(404).json({
+          success: false,
+          message: `No machine found in merchant_device for device_number (fridgemid): ${device_number}`,
+        });
+      }
+
+      const machineModelDoc = machineModelQuery.docs[0];
+      const machineModel = machineModelDoc.data();
+      const storeIds = machineModel.storeids || machineModel.storeIds || [];
+      const storeId = Array.isArray(storeIds) && storeIds.length > 0 ? storeIds[0] : null;
+
+      if (!storeId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Machine model has no store linked (storeids empty). Cannot create CeriaPay order.',
+        });
+      }
+
+      const storeTitle = machineModel.title || 'Unknown Store';
+      const vendingDeviceNumber =
+        machineModel.vendingdevicenumber || machineModel.vendingDeviceNumber || device_number;
+      const vendingMerchantId =
+        machineModel.vendingmerchantid || machineModel.vendingMerchantId || '';
+
+      const orderDocId = `${device_number}_${id}`;
+      const orderDocRef = fireStore
+        .collection('ceriapay')
+        .doc(device_number)
+        .collection('order')
+        .doc(orderDocId);
+
+      const orderitems = list.map((item) => ({
+        id: item.goods_id,
+        sku: item.goods_sku,
+        title: item.goods_name,
+        quantity: item.goods_count,
+        price: item.goods_price,
+        discount_amount: 0,
+        total_price: item.goods_count * item.goods_price,
+      }));
+
+      const totalQty = orderitems.reduce((sum, item) => sum + (parseInt(item.quantity) || 0), 0);
+      const totalPrice = parseFloat(grandTotal.toFixed(2));
+      const totalPaid = totalPrice;
+
+      const orderData = {
+        id,
+        orderid: receipt_id,
+        storetitle: storeTitle,
+        store_merchant_code: vendingMerchantId,
+        orderdatetime: formatOrderDateTime(),
+        payment_type: 'CeriaPay QR',
+        subtotal,
+        grand_total: grandTotal,
+        mode: 'ceriapay',
+        kiosk_machine: vendingDeviceNumber,
+        customer_payment: grandTotal,
+        currency,
+        devicenumber: vendingDeviceNumber,
+        merchantid: vendingMerchantId,
+        store_id: storeId,
+        machine_model_id: machineModel.id,
+        totalqty: totalQty,
+        totalprice: totalPrice,
+        totalpaid: totalPaid,
+        orderitems,
+        created_at: new Date(),
+      };
+
+      await orderDocRef.set(orderData);
+      console.log(`[getqrcode] Order saved to Firestore: ceriapay/${device_number}/order/${orderDocId}`);
+
+      const payUrl = `${CERIAPAY_PAY_BASE_URL}${orderDocId}`;
+
+      res.json({
+        success: true,
+        orderId: orderDocId,
+        message: payUrl,
+      });
+    } catch (error) {
+      console.error('Error processing getqrcode:', error);
+      res.status(500).json({
+        success: false,
+        message: `Internal server error while processing getqrcode: ${error.message}`,
       });
     }
   }

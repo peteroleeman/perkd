@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const API_VERSION = "1.9";
 
 const {
@@ -21,10 +23,12 @@ var KaotimLogRouter = require("./kaotimlogrouter");
 var SqlAccountRouter = require("./sqlaccountrouter");
 var UserRouter = require("./userrouter");
 var KaotimHQRouter = require("./kaotimhqrouter");
+var FeedbackBotRouter = require("./feedbackbotrouter");
 
 var TicketRouter = require("./ticketrouter");
 var PosRouter = require('./posrouter');
 var GrabRouter = require('./grabrouter');
+var CronRouter = require('./cronrouter');
 
 
 var {Logging} = require('@google-cloud/logging');
@@ -221,6 +225,10 @@ app.use('/user', myUser.getRouter());
 const myKaotimHQ = new KaotimHQRouter();
 app.use('/kaotimhq', myKaotimHQ.getRouter());
 
+// Telegram feedback/issue bot (@sakuratolongbot) — webhook at /feedbackbot/webhook
+const feedbackBotRouter = new FeedbackBotRouter();
+app.use('/feedbackbot', feedbackBotRouter.getRouter());
+
 //for kaotim activity log
 const kaotimLog = new KaotimLogRouter();
 app.use('/kaotimlog', kaotimLog.getRouter());
@@ -235,6 +243,10 @@ app.use('/pos', posRouter.getRouter());
 //for grab
 const grabRouter = new GrabRouter();
 app.use('/grab', grabRouter.getRouter());
+
+// Google Cloud Scheduler (SQL stock sync jobs)
+const cronRouter = new CronRouter();
+app.use('/cron', cronRouter.getRouter());
 
 // START THE SERVER
 // =============================================================================

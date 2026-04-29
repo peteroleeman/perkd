@@ -28,7 +28,7 @@ class OrderItemModel  {
     constructor(props) {
         this.id = props.id;
         this.quantity = props.quantity;
-        this.remark = "";
+        this.remark = props.remark != null ? String(props.remark).trim() : '';
         this.price = props.price;
         this.coupon_code = "";
         this.discount_id = "";
@@ -95,7 +95,7 @@ class OrderItemModel  {
 
         itemMap.set(kId, itemId);
         itemMap.set(kQuantity, "" + this.quantity);
-        itemMap.set(kRemark, "");
+        itemMap.set(kRemark, this.remark ?? '');
         itemMap.set(kPrice, "" + this.price);
         itemMap.set(kCouponCode , "");
         itemMap.set(kDiscounId , "");
