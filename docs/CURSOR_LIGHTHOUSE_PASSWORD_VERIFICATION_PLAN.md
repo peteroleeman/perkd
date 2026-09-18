@@ -31,7 +31,7 @@ or:
 {"ok":false}
 ```
 
-No bearer token, API key, Authorization header or service secret is required. The endpoint accepts only the supplied password. Because it is publicly callable, apply rate limiting to this route as well as to Smart Kotak login.
+No bearer token, API key, Authorization header, service secret or rate limiting is required for this endpoint. It accepts only the supplied password and returns the verification result.
 
 ## What was checked in GitHub
 
@@ -117,9 +117,9 @@ Do not return the merchant document or stored password. Do not write to Firestor
 
 - No service-key configuration or caller-authentication middleware is needed for this route.
 - Do not put the real password into test fixtures, URLs, source files, screenshots, request logs or committed configuration.
-- Keep the existing HTTP request-size limit. Apply a route-specific rate limiter before the function (initial limit: 10 attempts per minute per source IP), returning HTTP 429 with `Retry-After` when exhausted. Use an existing gateway/shared-store limiter across Cloud Run instances; per-process memory alone cannot enforce the aggregate limit. Derive source IP only through the deployment's trusted proxy configuration, not an arbitrary forwarded header. Keep Smart Kotak's own login throttling too. CORS is not an access restriction for non-browser callers.
+- Keep the existing HTTP request-size limit and input validation. Do not add rate-limiting middleware, attempt counters or cooldown logic for this endpoint.
 - Test with a mocked Firestore lookup: correct/wrong password without an Authorization header, short legacy password, empty/non-string input, wrong project, missing/duplicate merchant, wrong store ID, locked/disabled account and Firestore failure. Verify no credential contents reach logs/responses.
-- Confirm rate-limited requests trigger no merchant lookup and that existing UserRouter routes are unchanged.
+- Confirm the route directly calls the verification function and existing UserRouter routes are unchanged.
 
 Deploy the endpoint first. An authorized operator should supply the actual Lighthouse password privately for a controlled live check; the plan deliberately contains no real password.
 
@@ -141,12 +141,11 @@ Keep `SMART_KOTAK_FIREBASE_PROJECT_ID` pointing to the selected Smart Kotak proj
 
 Backend handling:
 
-1. Apply login attempt limits, then POST `{ password }` with `Content-Type: application/json` and no Authorization header. Use the exact configured HTTPS URL, a five-second timeout and no redirects or automatic credential retries.
+1. POST `{ password }` with `Content-Type: application/json` and no Authorization header. Use the exact configured HTTPS URL, a five-second timeout and no redirects or automatic credential retries.
 2. HTTP 200 with JSON `ok === true`: create a normal signed Smart Kotak session with the system-administrator role.
 3. HTTP 200 with JSON `ok === false`: reject the login as invalid credentials.
-4. HTTP 429: grant no access and ask the user to retry after the bounded `Retry-After` period.
-5. Other non-200, malformed response, string `"true"`, timeout or network error: grant no access. Show verification unavailable.
-6. Never accept a browser-supplied verification result. Do not save the supplied password or its digest in Smart Kotak. This change removes caller authentication from the Foodio verifier only; Smart Kotak's existing signed sessions and protected administration routes still require their normal session authentication.
+4. Non-200, malformed response, string `"true"`, timeout or network error: grant no access. Show verification unavailable.
+5. Never accept a browser-supplied verification result. Do not save the supplied password or its digest in Smart Kotak. This change removes caller authentication from the Foodio verifier only; Smart Kotak's existing signed sessions and protected administration routes still require their normal session authentication.
 
 **Change both `PortalService.login()` and `checkActor()` in `services/smart_kotak/src/portal.mjs`.** The current implementation repeats a local merchant lookup during session validation, so changing only login is insufficient.
 
@@ -175,7 +174,7 @@ Check the complete laptop/deployment checkout before redeploying the whole Foodi
 
 - [ ] The one UserRouter function and route are implemented and tested.
 - [ ] Foodio endpoint is deployed and returns the correct boolean using only the password, with no bearer/API key requirement.
-- [ ] Rate limiting works on the public verifier route and Smart Kotak login.
+- [ ] No rate limiter, attempt counter or cooldown is added for the verification endpoint.
 - [ ] Smart Kotak uses it for `123456`, including subsequent local session validation.
 - [ ] No Lighthouse credential copy is required in Smart Kotak.
 - [ ] Normal logins work and system administration writes stay in the selected Smart Kotak project.
