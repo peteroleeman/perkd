@@ -12,7 +12,6 @@ Proposed endpoint:
 
 ```http
 POST https://api.foodio.online/user/verifylighthousepassword
-Authorization: Bearer <server-only-service-key>
 Content-Type: application/json
 ```
 
@@ -32,7 +31,7 @@ or:
 {"ok":false}
 ```
 
-The service key is separate from the human Lighthouse password. Store it only in the Foodio API and Smart Kotak backend environments/Secret Manager, never in Flutter. It keeps this simple password-check function from becoming a public password-guessing endpoint.
+No bearer token, API key, Authorization header or service secret is required. The endpoint accepts only the supplied password. Because it is publicly callable, apply rate limiting to this route as well as to Smart Kotak login.
 
 ## What was checked in GitHub
 
@@ -71,22 +70,10 @@ Suggested method:
 async verifyLighthousePassword(req, res) {
   res.set('Cache-Control', 'no-store');
 
-  // Keep this key in the two backends only; never put it in Flutter.
-  const expectedKey = process.env.LIGHTHOUSE_VERIFY_API_KEY;
-  if (typeof expectedKey !== 'string' || expectedKey.length < 32) {
-    return res.status(503).json({ ok: false, error: 'Verification unavailable' });
-  }
-
   const same = (a, b) => nodeCrypto.timingSafeEqual(
     nodeCrypto.createHash('sha256').update(a).digest(),
     nodeCrypto.createHash('sha256').update(b).digest()
   );
-  const header = req.get('Authorization') || '';
-  const suppliedKey = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (!suppliedKey || !same(suppliedKey, expectedKey)) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized caller' });
-  }
-
   const password = req.body && req.body.password;
   if (!req.is('application/json') || typeof password !== 'string' ||
       password.length === 0 || password.length > 256) {
@@ -115,7 +102,7 @@ async verifyLighthousePassword(req, res) {
 
     return res.json({ ok: valid });
   } catch (_) {
-    // Do not log passwords, bodies, merchant records or Authorization headers.
+    // Do not log passwords, request bodies or merchant records.
     console.error('Lighthouse password verification failed');
     return res.status(503).json({ ok: false, error: 'Verification unavailable' });
   }
@@ -128,17 +115,17 @@ Do not return the merchant document or stored password. Do not write to Firestor
 
 ### 3. Configure and test the Foodio API
 
-- Generate a dedicated random service key with at least 32 random bytes, encoded as a string. Configure `LIGHTHOUSE_VERIFY_API_KEY` securely in the Foodio API deployment and the matching value in Smart Kotak's backend.
-- Do not reuse the existing phone/store-derived token or put the real password/key into test fixtures, URLs, source files, screenshots, request logs or committed configuration.
-- Keep the existing HTTP request-size limit. Keep login attempt throttling in the Smart Kotak backend before it calls this function; do not rely on CORS as authentication.
-- Test with a mocked Firestore lookup: correct/wrong password, short legacy password, empty/non-string input, missing/wrong service key, wrong project, missing/duplicate merchant, wrong store ID, locked/disabled account and Firestore failure. Verify no credential contents reach logs/responses.
-- Confirm unauthorized callers never trigger a Firestore read and that existing UserRouter routes are unchanged.
+- No service-key configuration or caller-authentication middleware is needed for this route.
+- Do not put the real password into test fixtures, URLs, source files, screenshots, request logs or committed configuration.
+- Keep the existing HTTP request-size limit. Apply a route-specific rate limiter before the function (initial limit: 10 attempts per minute per source IP), returning HTTP 429 with `Retry-After` when exhausted. Use an existing gateway/shared-store limiter across Cloud Run instances; per-process memory alone cannot enforce the aggregate limit. Derive source IP only through the deployment's trusted proxy configuration, not an arbitrary forwarded header. Keep Smart Kotak's own login throttling too. CORS is not an access restriction for non-browser callers.
+- Test with a mocked Firestore lookup: correct/wrong password without an Authorization header, short legacy password, empty/non-string input, wrong project, missing/duplicate merchant, wrong store ID, locked/disabled account and Firestore failure. Verify no credential contents reach logs/responses.
+- Confirm rate-limited requests trigger no merchant lookup and that existing UserRouter routes are unchanged.
 
 Deploy the endpoint first. An authorized operator should supply the actual Lighthouse password privately for a controlled live check; the plan deliberately contains no real password.
 
 ## Subsequent Smart Kotak integration
 
-The Flutter login screen should continue calling its own Smart Kotak `/smart-kotak/login`. Only the Smart Kotak backend calls the new Foodio endpoint when the normalized username is `123456`:
+The Flutter login screen should continue calling its own Smart Kotak `/smart-kotak/login`. For the application's login flow, the Smart Kotak backend calls the new Foodio endpoint when the normalized username is `123456`:
 
 ```text
 Flutter login → Smart Kotak backend → Foodio /user/verifylighthousepassword
@@ -148,18 +135,18 @@ Backend settings:
 
 ```text
 SMART_KOTAK_LIGHTHOUSE_VERIFY_URL=https://api.foodio.online/user/verifylighthousepassword
-SMART_KOTAK_LIGHTHOUSE_SERVICE_TOKEN=<same dedicated service key>
 ```
 
 Keep `SMART_KOTAK_FIREBASE_PROJECT_ID` pointing to the selected Smart Kotak project. Accounts, funds, sessions and schedules stay there. Only password verification reads Foodio.
 
 Backend handling:
 
-1. Apply login attempt limits, then POST `{ password }` with the service key in the Authorization header. Use the exact configured HTTPS URL, a five-second timeout and no redirects or automatic credential retries.
+1. Apply login attempt limits, then POST `{ password }` with `Content-Type: application/json` and no Authorization header. Use the exact configured HTTPS URL, a five-second timeout and no redirects or automatic credential retries.
 2. HTTP 200 with JSON `ok === true`: create a normal signed Smart Kotak session with the system-administrator role.
 3. HTTP 200 with JSON `ok === false`: reject the login as invalid credentials.
-4. Non-200, malformed response, string `"true"`, timeout or network error: grant no access. Show verification unavailable. A Foodio 401 means the backend service key is wrong/missing, not that the human password is wrong.
-5. Never accept a browser-supplied verification result or send the service key to Flutter. Do not save the supplied password or its digest in Smart Kotak.
+4. HTTP 429: grant no access and ask the user to retry after the bounded `Retry-After` period.
+5. Other non-200, malformed response, string `"true"`, timeout or network error: grant no access. Show verification unavailable.
+6. Never accept a browser-supplied verification result. Do not save the supplied password or its digest in Smart Kotak. This change removes caller authentication from the Foodio verifier only; Smart Kotak's existing signed sessions and protected administration routes still require their normal session authentication.
 
 **Change both `PortalService.login()` and `checkActor()` in `services/smart_kotak/src/portal.mjs`.** The current implementation repeats a local merchant lookup during session validation, so changing only login is insufficient.
 
@@ -169,7 +156,7 @@ Remote verification happens before the session-writing transaction, never inside
 
 Trade-off: changing/locking the Foodio Lighthouse credential blocks new sign-ins immediately; existing Smart Kotak system sessions can remain valid for up to 15 minutes. This simple endpoint does not provide immediate central session revocation. Local sign-out/revocation still works.
 
-Update Smart Kotak's deployment helper to preserve the verifier URL and secret reference on redeployment. Replace the previous local-Lighthouse bootstrap instructions for this flow. The two administration options, environment badge and project destination remain as implemented.
+Update Smart Kotak's deployment helper to preserve the verifier URL on redeployment. No verification service secret is needed. Replace the previous local-Lighthouse bootstrap instructions for this flow. The two administration options, environment badge and project destination remain as implemented.
 
 ## Deployment prerequisite found in GitHub
 
@@ -187,7 +174,8 @@ Check the complete laptop/deployment checkout before redeploying the whole Foodi
 ## Done when
 
 - [ ] The one UserRouter function and route are implemented and tested.
-- [ ] Foodio endpoint is deployed and returns the correct boolean with a valid service key.
+- [ ] Foodio endpoint is deployed and returns the correct boolean using only the password, with no bearer/API key requirement.
+- [ ] Rate limiting works on the public verifier route and Smart Kotak login.
 - [ ] Smart Kotak uses it for `123456`, including subsequent local session validation.
 - [ ] No Lighthouse credential copy is required in Smart Kotak.
 - [ ] Normal logins work and system administration writes stay in the selected Smart Kotak project.
