@@ -144,6 +144,236 @@ function formatSlipDateTimeDisplay(raw) {
   return s;
 }
 
+/** Style 1 slip: compact date/time e.g. "June 6 08:36" */
+function formatSlipDateTimeStyle1(raw) {
+  if (raw == null || raw === '') return '';
+  const s = String(raw).trim();
+  const d = new Date(s);
+  if (!Number.isNaN(d.getTime())) {
+    const month = d.toLocaleString('en-US', { month: 'long' });
+    const day = d.getDate();
+    const hour = String(d.getHours()).padStart(2, '0');
+    const minute = String(d.getMinutes()).padStart(2, '0');
+    return `${month} ${day} ${hour}:${minute}`;
+  }
+  return s;
+}
+
+/** Per-line slip/receipt: true when item marks take-away (`istakeaway`, `isTakeAway`, or `is_take_away`). */
+function orderItemIsTakeAway(orderItem) {
+  const v =
+    orderItem?.istakeaway ?? orderItem?.isTakeAway ?? orderItem?.is_take_away;
+  if (v === true || v === 1 || v === '1') return true;
+  if (typeof v === 'string' && v.toLowerCase() === 'true') return true;
+  return false;
+}
+
+/** Approximate display width (CJK chars count as 2). */
+function getStringWidth(str) {
+  let width = 0;
+  for (let i = 0; i < str.length; i++) {
+    width += str.charCodeAt(i) > 127 ? 2 : 1;
+  }
+  return width;
+}
+
+/** Pad left text with spaces up to `length` display width. */
+function leftRight(strLeft, length) {
+  if (!strLeft || !length) return '';
+  const spacesNeeded = length - getStringWidth(strLeft);
+  return strLeft + ' '.repeat(Math.max(0, spacesNeeded));
+}
+
+/** Extract printable remark lines from an order item. */
+function extractLabelItemRemarks(item, globalRemark, enableBuzzer) {
+  const itemRemarks = [];
+  if (item?.remark) {
+    if (Array.isArray(item.remark)) {
+      item.remark
+        .filter((remarkObj) => remarkObj && remarkObj.remark)
+        .map((remarkObj) => String(remarkObj.remark).trim())
+        .filter((text) => text.length > 0)
+        .forEach((text) => itemRemarks.push(text));
+    } else if (typeof item.remark === 'string') {
+      const trimmedRemark = item.remark.trim();
+      if (trimmedRemark) itemRemarks.push(trimmedRemark);
+    }
+  }
+  if (itemRemarks.length === 0 && globalRemark && !enableBuzzer) {
+    itemRemarks.push(String(globalRemark).trim());
+  }
+  return itemRemarks;
+}
+
+function itemIsOwnContainer(item) {
+  const v = item?.isOwnContainer ?? item?.isowncontainer ?? item?.is_own_container;
+  if (v === true || v === 1 || v === '1') return true;
+  if (typeof v === 'string' && v.toLowerCase() === 'true') return true;
+  return false;
+}
+
+/** Buzzer id only (strips a leading `Buzzer:` prefix). */
+function extractBuzzerId(remark) {
+  const s = String(remark ?? '').trim();
+  if (!s) return '';
+  const m = s.match(/^Buzzer:\s*(.+)$/i);
+  return (m ? m[1] : s).trim();
+}
+
+/** Short order-mode code for label meta line: TA, IN, or BYOC. */
+function formatLabelOrderModeCode(orderMode, item) {
+  const itemMode = String(item?.orderMode ?? item?.ordermode ?? orderMode ?? '').trim();
+  const isTakeAway =
+    orderItemIsTakeAway(item) ||
+    itemMode === '1' ||
+    orderMode === 1 ||
+    orderMode === '1' ||
+    /take/i.test(itemMode);
+  const isDineIn =
+    itemMode === '0' ||
+    orderMode === 0 ||
+    orderMode === '0' ||
+    /dine/i.test(itemMode);
+
+  if (/byoc/i.test(itemMode)) return 'BYOC';
+  if (isTakeAway && itemIsOwnContainer(item)) return 'BYOC';
+  if (isTakeAway) return 'TA';
+  if (isDineIn) return 'IN';
+
+  const upper = itemMode.toUpperCase();
+  if (upper === 'TA' || upper.includes('TAKE')) return 'TA';
+  if (upper === 'IN' || upper.includes('DINE')) return 'IN';
+  return '';
+}
+
+/** One-line meta: date/time, buzzer id, order mode code. */
+function buildLabelMetaLine({ dateTime, dateTimeLabel, remark, enableBuzzer, orderMode, item }) {
+  const parts = [];
+  const dtLabel =
+    (dateTimeLabel && String(dateTimeLabel).trim()) ||
+    formatSlipDateTimeStyle1(dateTime);
+  if (dtLabel) parts.push(dtLabel);
+  if (enableBuzzer) {
+    const buzzerId = extractBuzzerId(remark);
+    if (buzzerId) parts.push(buzzerId);
+  }
+  const modeCode = formatLabelOrderModeCode(orderMode, item);
+  if (modeCode) parts.push(modeCode);
+  return parts.join('  ');
+}
+
+function getOrderItemLabelQty(item) {
+  const q = parseInt(item?.qty ?? item?.quantity ?? 1, 10);
+  return Number.isFinite(q) && q > 0 ? q : 1;
+}
+
+/**
+ * Expand order lines into one label job per unit (qty 2 => 2 labels).
+ * @param {Object[]} orderItems
+ * @returns {{ item: Object, i: number, totalItems: number }[]}
+ */
+function expandOrderItemsForLabels(orderItems) {
+  const items = Array.isArray(orderItems) ? orderItems : [];
+  const totalLabels = items.reduce((sum, item) => sum + getOrderItemLabelQty(item), 0);
+  const jobs = [];
+  let copyIndex = 0;
+  for (const sourceItem of items) {
+    const itemQty = getOrderItemLabelQty(sourceItem);
+    for (let copy = 0; copy < itemQty; copy++) {
+      jobs.push({
+        item: { ...sourceItem, qty: 1, quantity: 1 },
+        i: copyIndex,
+        totalItems: totalLabels
+      });
+      copyIndex++;
+    }
+  }
+  return jobs;
+}
+
+/**
+ * Build Feie label printer content (`<TEXT>` tags) for one order item.
+ * @param {Object} params
+ * @returns {string}
+ */
+function buildFeieLabelContent(params) {
+  const {
+    orderId,
+    tableId,
+    item,
+    totalItems = 1,
+    i = 0,
+    name = '',
+    phone = '',
+    remark = '',
+    enableBuzzer = false,
+    orderMode = '',
+    dateTime = '',
+    dateTimeLabel = ''
+  } = params;
+
+  if (!item) {
+    return `<TEXT x="9" y="10" font="12" w="1" h="2" r="0">#${orderId}</TEXT>`;
+  }
+
+  const table = tableId ?? params.table ?? '-';
+  const itemPosition = `${i + 1}/${totalItems}`;
+  // font 12: h=1 ~24 dots, h=2 ~48 dots — steps must clear rendered height
+  const stepH1 = 26;
+  const stepH2 = 50;
+
+  let y = 10;
+  let content = `<TEXT x="9" y="${y}" font="12" w="1" h="2" r="0">#${orderId}       ${table}      ${itemPosition}</TEXT>`;
+  y += stepH2;
+
+  let hasNewHeaderLines = false;
+  const metaLine = buildLabelMetaLine({
+    dateTime,
+    dateTimeLabel,
+    remark,
+    enableBuzzer,
+    orderMode,
+    item
+  });
+  if (metaLine) {
+    content += `<TEXT x="9" y="${y}" font="12" w="1" h="1" r="0">${metaLine}</TEXT>`;
+    y += stepH1;
+    hasNewHeaderLines = true;
+  }
+
+  if (hasNewHeaderLines) {
+    content += `<TEXT x="9" y="${y}" font="12" w="1" h="1" r="0">------------------------------</TEXT>`;
+    y += stepH1;
+  }
+
+  const titleY = y;
+  const qty = item?.qty ?? item?.quantity ?? 1;
+  const title = item?.title ?? '';
+  const titleText = `${qty} ${title}`.trim();
+  content += `<TEXT x="9" y="${titleY}" font="12" w="1" h="2" r="0">${titleText}</TEXT>`;
+  y += stepH2;
+
+  const itemRemarks = extractLabelItemRemarks(item, remark, enableBuzzer);
+  for (const itemRemark of itemRemarks) {
+    content += `<TEXT x="9" y="${y}" font="12" w="1" h="1" r="0">*${itemRemark}</TEXT>`;
+    y += stepH1;
+  }
+
+  if (name || phone) {
+    let contactInfo = '';
+    if (name) contactInfo += name;
+    if (phone) {
+      if (contactInfo) contactInfo += '       ';
+      contactInfo += phone;
+    }
+    if (contactInfo) {
+      content += `<TEXT x="9" y="${y}" font="12" w="1" h="1" r="0">${contactInfo}</TEXT>`;
+    }
+  }
+
+  return content;
+}
+
 //-----------------------以下方法实现----------------------------------
 class UtilFeie
 {
@@ -861,7 +1091,7 @@ class UtilFeie
   }
 
   //SECTION print function
-  printOrderItemSlipPOS(orderModel, bReprint = false, type = 0, bCancelled = false) {
+  printOrderItemSlipPOS(orderModel, bReprint = false, type = 0, bCancelled = false, style = 0) {
     //console.log(orderModel);
 
     const receipt = [];
@@ -893,29 +1123,78 @@ class UtilFeie
 
     let orderId = orderModel?.orderId ?? "";
     let tableId = orderModel?.table ?? "";
-    line.addText(ReceiptFormat.setCenter(`${tableId}` + `  ${orderId}`));
-    //line.addText("<BR>");
-   
-    line.addText(  ReceiptFormat.setCenterBIG(`(${orderModel?.orderMode ?? ''})`));
-    //line.addText("<BR>");
+    const storeTitle = String(orderModel?.storeTitle ?? '').trim();
+    const orderModeText = `(${orderModel?.orderMode ?? ''})`;
+    const useStyle1 = style === 1;
+
+    if (useStyle1) {
+      const remarkText = String(orderModel?.remark ?? '').trim();
+      const receiptCur = orderModel?.receiptCurrent;
+      const receiptTot = orderModel?.receiptTotal;
+      const orderModePlain = String(orderModel?.orderMode ?? '')
+        .replace(/^\s*\(|\)\s*$/g, '')
+        .trim();
+
+      const centeredLines = [];
+      if (storeTitle) {
+        centeredLines.push(ReceiptFormat.setBold(storeTitle));
+      }
+      let remarkRow = '';
+      if (remarkText) {
+        remarkRow = ReceiptFormat.setBold(remarkText);
+      }
+      if (receiptCur != null && receiptTot != null && Number(receiptTot) > 0) {
+        const countStr = `No. ${receiptCur}/${receiptTot}`;
+        remarkRow += remarkRow ? `  ${countStr}` : countStr;
+      }
+      if (remarkRow) {
+        centeredLines.push(remarkRow);
+      }
+      const dateStr = formatSlipDateTimeStyle1(orderModel?.dateTime ?? '');
+      if (dateStr) {
+        centeredLines.push(dateStr);
+      }
+      const slipOrderId = String(
+        orderModel?.orderId ??
+          orderModel?.orderid ??
+          orderModel?.id ??
+          orderModel?.onlineOrderId ??
+          orderModel?.onlineorderid ??
+          '',
+      ).trim();
+      if (slipOrderId) {
+        centeredLines.push(slipOrderId);
+      }
+      if (orderModePlain) {
+        centeredLines.push(orderModePlain);
+      }
+      if (centeredLines.length) {
+        // Single <C> block, <BR> only between lines; no trailing <BR> after </C> (avoids gap before separator).
+        line.addMarkupLine(`<C>${centeredLines.join('<BR>')}</C>`);
+      }
+    } else {
+      line.addText(ReceiptFormat.setCenter(`${tableId}` + `  ${orderId}`));
+      line.addText(ReceiptFormat.setCenterBIG(orderModeText));
+    }
+
     if (bCancelled) {
       line.addLine("-");
       line.addText(ReceiptFormat.setCenterBIG("ORDER CANCELLED"));
-      //line.addText("<BR>");
       line.addLine("-");
-      //line.addText("<BR>");
     }
-    line.addMarkupLine(ReceiptFormat.setCenter(formatSlipDateTimeDisplay(orderModel?.dateTime ?? '')));
-    line.addMarkupLine('<BR>');
-    const storeTitle = String(orderModel?.storeTitle ?? '').trim();
-    if (storeTitle) {
-      // Full-width markup line: default addText() chunks at receiptLen (~32/48) and splitText()
-      // counts non-ASCII as double width, which truncates long store names early.
-      line.addMarkupLine(ReceiptFormat.setCenter(ReceiptFormat.setBold(storeTitle)));
-      line.addMarkupLine("<BR>");
+
+    if (!useStyle1) {
+      line.addMarkupLine(ReceiptFormat.setCenter(formatSlipDateTimeDisplay(orderModel?.dateTime ?? '')));
+      line.addMarkupLine('<BR>');
+      if (storeTitle) {
+        // Full-width markup line: default addText() chunks at receiptLen (~32/48) and splitText()
+        // counts non-ASCII as double width, which truncates long store names early.
+        line.addMarkupLine(ReceiptFormat.setCenter(ReceiptFormat.setBold(storeTitle)));
+        line.addMarkupLine('<BR>');
+      }
+      line.addText(orderModel?.remark ?? "");
+      line.addText('<BR>');
     }
-    line.addText(orderModel?.remark ?? "");
-    line.addText("<BR>");
 
 
     line.addLine("-");
@@ -944,14 +1223,31 @@ class UtilFeie
       qty = orderItem?.qty ?? 0;
       title = orderItem?.title ?? "";
 
-      dualTable.refresh();
-      dualTable.addKey(`${title}`);
-      dualTable.addValue(`${qty}` || "-");
-
-      for (const lineText of dualTable.getReceipt()) {
-        receipt.push(lineText);
+      if (useStyle1) {
+        const qtyLabel = String(qty ?? 0).padEnd(3, ' ');
+        const itemLine = `${qtyLabel} ${title}`;
+        line.refresh();
+        line.addMarkupLine(itemLine + '<BR>');
+        for (const lineText of line.getReceipt()) {
+          receipt.push(lineText);
+        }
+      } else {
+        dualTable.refresh();
+        dualTable.addKey(`${title}`);
+        dualTable.addValue(`${qty}` || "-");
+        for (const lineText of dualTable.getReceipt()) {
+          receipt.push(lineText);
+        }
       }
 
+      if (orderItemIsTakeAway(orderItem) && !useStyle1) {
+        dualTable.refresh();
+        dualTable.addKey('  *TAKE AWAY*');
+        dualTable.addValue('');
+        for (const lineText of dualTable.getReceipt()) {
+          receipt.push(lineText);
+        }
+      }
 
       if (orderItem?.modInfo !== "" && orderItem?.modInfo !== "null"  && orderItem?.modInfo !== undefined && Array.isArray(orderItem.modInfo)) {
         //modInfo = (`S:${orderItem.modInfo}<BR>`);
@@ -961,14 +1257,15 @@ class UtilFeie
             let modQty = mod?.qty ?? 1;
 
             dualTable.refresh();
-            dualTable.addKey(`  ${modTitle}`);
-            if(modQty > 1)
-            {
-            dualTable.addBoldValue(`${modQty}`);
-            }
-            else
-            {
-              dualTable.addValue(`${modQty}`);
+            dualTable.addKey(useStyle1 ? `-${modTitle}` : `  ${modTitle}`);
+            if (!useStyle1) {
+              if (modQty > 1) {
+                dualTable.addBoldValue(`${modQty}`);
+              } else {
+                dualTable.addValue(`${modQty}`);
+              }
+            } else {
+              dualTable.addValue('');
             }
 
             for (const lineText of dualTable.getReceipt()) {
@@ -1069,6 +1366,159 @@ class UtilFeie
     return receipt;
   }
 
+  /** Style 2 kitchen slip: style-1 layout with Feie <B> on items, mods, and remarks. */
+  printOrderItemSlipPOSKitchenBig(orderModel, bReprint = false, type = 0, bCancelled = false) {
+    const receipt = [];
+
+    let keyLen = 16 + 14;
+    let valueLen = 2;
+    if (type === 1) {
+      keyLen = 24 + 22;
+      valueLen = 2;
+    }
+
+    const line = new ReceiptLine();
+    line.init(keyLen + valueLen);
+
+    if (bReprint === true && !bCancelled) {
+      line.addText(ReceiptFormat.setCenterBIG('*DUPLICATE*'));
+    }
+
+    const storeTitle = String(orderModel?.storeTitle ?? '').trim();
+    const remarkText = String(orderModel?.remark ?? '').trim();
+    const receiptCur = orderModel?.receiptCurrent;
+    const receiptTot = orderModel?.receiptTotal;
+    const orderModePlain = String(orderModel?.orderMode ?? '')
+      .replace(/^\s*\(|\)\s*$/g, '')
+      .trim();
+
+    const centeredLines = [];
+    if (storeTitle) {
+      centeredLines.push(ReceiptFormat.setBIG(storeTitle));
+    }
+    let remarkRow = '';
+    if (remarkText) {
+      remarkRow = remarkText;
+    }
+    if (receiptCur != null && receiptTot != null && Number(receiptTot) > 0) {
+      const countStr = `No. ${receiptCur}/${receiptTot}`;
+      remarkRow += remarkRow ? `  ${countStr}` : countStr;
+    }
+    if (remarkRow) {
+      centeredLines.push(ReceiptFormat.setBIG(remarkRow));
+    }
+    const dateStr = formatSlipDateTimeStyle1(orderModel?.dateTime ?? '');
+    if (dateStr) {
+      centeredLines.push(ReceiptFormat.setBIG(dateStr));
+    }
+    const slipOrderId = String(
+      orderModel?.orderId ??
+        orderModel?.orderid ??
+        orderModel?.id ??
+        orderModel?.onlineOrderId ??
+        orderModel?.onlineorderid ??
+        '',
+    ).trim();
+    if (slipOrderId) {
+      centeredLines.push(ReceiptFormat.setBIG(slipOrderId));
+    }
+    if (orderModePlain) {
+      centeredLines.push(ReceiptFormat.setBIG(orderModePlain));
+    }
+    if (centeredLines.length) {
+      line.addMarkupLine(`<C>${centeredLines.join('<BR>')}</C>`);
+    }
+
+    if (bCancelled) {
+      line.addLine('-');
+      line.addText(ReceiptFormat.setCenterBIG('ORDER CANCELLED'));
+      line.addLine('-');
+    }
+
+    line.addLine('-');
+
+    for (const lineText of line.getReceipt()) {
+      receipt.push(lineText);
+    }
+
+    const trimStr = (v) => {
+      if (v == null || v === '') return '';
+      return String(v).trim();
+    };
+
+    for (const orderItem of orderModel?.orderItems ?? []) {
+      const qty = orderItem?.qty ?? 0;
+      const title = orderItem?.title ?? '';
+      const qtyLabel = String(qty ?? 0).padEnd(3, ' ');
+      line.refresh();
+      line.addMarkupLine(
+        ReceiptFormat.setBIG(`${qtyLabel} ${title}`) + '<BR>',
+      );
+      for (const lineText of line.getReceipt()) {
+        receipt.push(lineText);
+      }
+
+      if (
+        orderItem?.modInfo !== ''
+        && orderItem?.modInfo !== 'null'
+        && orderItem?.modInfo !== undefined
+        && Array.isArray(orderItem.modInfo)
+      ) {
+        for (const mod of orderItem.modInfo) {
+          const modTitle = mod?.title ?? '';
+          line.refresh();
+          line.addMarkupLine(ReceiptFormat.setBIG(`-${modTitle}`) + '<BR>');
+          for (const lineText of line.getReceipt()) {
+            receipt.push(lineText);
+          }
+        }
+      }
+
+      const sm1 = trimStr(orderItem.setMenu1 ?? orderItem.s1);
+      const sm2 = trimStr(orderItem.setMenu2 ?? orderItem.s2);
+      const itemRemark = trimStr(orderItem.remark);
+
+      if (itemRemark) {
+        line.refresh();
+        line.addMarkupLine(ReceiptFormat.setBIG(`  *: ${itemRemark}`) + '<BR>');
+        for (const lineText of line.getReceipt()) {
+          receipt.push(lineText);
+        }
+      }
+      if (sm1) {
+        line.refresh();
+        line.addMarkupLine(ReceiptFormat.setBIG(`  ${sm1}`) + '<BR>');
+        for (const lineText of line.getReceipt()) {
+          receipt.push(lineText);
+        }
+      }
+      if (sm2) {
+        line.refresh();
+        line.addMarkupLine(ReceiptFormat.setBIG(`  ${sm2}`) + '<BR>');
+        for (const lineText of line.getReceipt()) {
+          receipt.push(lineText);
+        }
+      }
+
+      line.refresh();
+      line.addLine('-');
+      for (const lineText of line.getReceipt()) {
+        receipt.push(lineText);
+      }
+    }
+
+    if (bCancelled) {
+      line.refresh();
+      line.addText(ReceiptFormat.setCenterBIG('DO NOT PREPARE'));
+      line.addLine('-');
+      for (const lineText of line.getReceipt()) {
+        receipt.push(lineText);
+      }
+    }
+
+    return receipt;
+  }
+
   printOrderItemSlip(orderModel, bReprint = false, type = 0) {
         //console.log(orderModel);
 
@@ -1160,6 +1610,15 @@ class UtilFeie
 
           for (const lineText of dualTable.getReceipt()) {
             receipt.push(lineText);
+          }
+
+          if (orderItemIsTakeAway(orderItem)) {
+            dualTable.refresh();
+            dualTable.addKey('  *TAKE AWAY*');
+            dualTable.addValue('');
+            for (const lineText of dualTable.getReceipt()) {
+              receipt.push(lineText);
+            }
           }
 
 
@@ -1608,6 +2067,13 @@ class ReceiptDualTable {
     this.keyList.push(subChunk);
   }
 
+  addBoldKey(text) {
+    const index = this.keyList.length;
+    const subChunk = new ReceiptSubChunk();
+    subChunk.setChunk(index, `<BOLD>${text}</BOLD>`, this.keyLen, ' ', 1);
+    this.keyList.push(subChunk);
+  }
+
   addValue(text) {
     const index = this.valueList.length;
     const subChunk = new ReceiptSubChunk();
@@ -1785,7 +2251,7 @@ class FeieOrderSlip {
   constructor(orderDetails) {
     orderDetails = orderDetails || {};
     this.dateTime = orderDetails.dateTime || '';
-    this.table = orderDetails.table || '';
+    this.table = orderDetails.table || orderDetails.buzzer || '';
     this.printerName = orderDetails.printerName || '';
     this.sn = orderDetails.sn || '';
     this.orderId = String(
@@ -1797,9 +2263,11 @@ class FeieOrderSlip {
         ''
     );
     this.storeTitle = orderDetails.storeTitle || '';
-    this.buzzer = orderDetails.buzzer || '';
+    this.buzzer = orderDetails.buzzer || orderDetails.table || '';
     this.remark = orderDetails.remark || '';
     this.orderMode = orderDetails.orderMode || '';
+    this.receiptCurrent = orderDetails.receiptCurrent ?? null;
+    this.receiptTotal = orderDetails.receiptTotal ?? null;
     this.orderItems = orderDetails.orderItems || [];
   }
 
@@ -1872,6 +2340,11 @@ module.exports.ReceiptFormat = ReceiptFormat;
 module.exports.ReceiptLine = ReceiptLine;
 module.exports.ReceiptDualTable = ReceiptDualTable;
 module.exports.ReceiptSubChunk = ReceiptSubChunk;
+module.exports.orderItemIsTakeAway = orderItemIsTakeAway;
+module.exports.formatSlipDateTimeStyle1 = formatSlipDateTimeStyle1;
+module.exports.buildFeieLabelContent = buildFeieLabelContent;
+module.exports.expandOrderItemsForLabels = expandOrderItemsForLabels;
+module.exports.extractLabelItemRemarks = extractLabelItemRemarks;
 
 
 

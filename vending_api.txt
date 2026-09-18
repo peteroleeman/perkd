@@ -99,3 +99,103 @@ Example response (error):
     "error": "Error checking voucher",
     "details": "error message details"
 }
+
+## Disable Voucher From QR (Event or VM)
+
+Redeem an event (`EV_`) or VM (`VC_`) voucher scanned from a vending machine QR code.
+
+`POST /disableeventvoucherfromqr` and `POST /disablevmvoucherfromqr` are aliases with identical behavior.
+
+Body (raw JSON):
+{
+    "qrString": "VM2_FU_+60124508261_EV_39bce02f-af2d-45dc-b4c2-73cf944aa571"
+}
+
+QR format: `{prefix}_{FU_phone}_{voucherId}`
+
+Example response (success):
+{
+    "success": true,
+    "userId": "FU_+60124508261",
+    "voucherId": "EV_39bce02f-af2d-45dc-b4c2-73cf944aa571",
+    "isRedeemed": true,
+    "redeemedAt": "May 16, 2026 at 8:54:44 AM UTC+8"
+}
+
+Example response (not found):
+{
+    "success": false,
+    "code": "NOT_FOUND",
+    "message": "Document not found",
+    "userId": "FU_+60124508261",
+    "voucherId": "EV_39bce02f-af2d-45dc-b4c2-73cf944aa571"
+}
+
+## Check Voucher From QR (Event or VM)
+
+Check whether an event (`EV_`) or VM (`VC_`) voucher is valid without redeeming it.
+
+`POST /checkeventvoucherfromqr` and `POST /checkvmvoucherfromqr` are aliases with identical behavior.
+
+Note: `/checkvoucher` (above) uses encrypted membership codes and is unrelated to QR voucher checks.
+
+Body (raw JSON):
+{
+    "qrString": "VM2_FU_+60124508261_EV_39bce02f-af2d-45dc-b4c2-73cf944aa571"
+}
+
+Example response (valid):
+{
+    "success": true,
+    "status": "VALID",
+    "valid": true,
+    "message": "Voucher is valid",
+    "userId": "FU_+60124508261",
+    "voucherId": "EV_39bce02f-af2d-45dc-b4c2-73cf944aa571",
+    "title": "Free Drink",
+    "expiresAt": "2026-12-31T23:59:59.000Z",
+    "isRedeemed": false,
+    "isEnabled": true,
+    "redeemedAt": null
+}
+
+Example response (redeemed):
+{
+    "success": true,
+    "status": "REDEEMED",
+    "valid": false,
+    "message": "Voucher already redeemed",
+    "userId": "FU_+60124508261",
+    "voucherId": "EV_39bce02f-af2d-45dc-b4c2-73cf944aa571",
+    "title": "Free Drink",
+    "expiresAt": "2026-12-31T23:59:59.000Z",
+    "isRedeemed": true,
+    "isEnabled": false,
+    "redeemedAt": "May 16, 2026 at 8:54:44 AM UTC+8"
+}
+
+Example response (expired):
+{
+    "success": true,
+    "status": "EXPIRED",
+    "valid": false,
+    "message": "Voucher has expired",
+    "userId": "FU_+60124508261",
+    "voucherId": "EV_39bce02f-af2d-45dc-b4c2-73cf944aa571",
+    "title": "Free Drink",
+    "expiresAt": "2024-01-01T00:00:00.000Z",
+    "isRedeemed": false,
+    "isEnabled": true,
+    "redeemedAt": null
+}
+
+Example response (not found):
+{
+    "success": false,
+    "valid": false,
+    "status": "NOT_FOUND",
+    "code": "NOT_FOUND",
+    "message": "Document not found",
+    "userId": "FU_+60124508261",
+    "voucherId": "EV_39bce02f-af2d-45dc-b4c2-73cf944aa571"
+}

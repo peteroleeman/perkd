@@ -5,6 +5,7 @@ const OrderItemModel =  require( "./OrderItemModel");
 const OdooOrderItemModel = require( "./odoo/OdooOrderItemModel");
 const moment = require('moment');
 
+const kOrderModelUsePlus = 'useplus';
 
 class OrderModel {
     constructor(props) {
@@ -12,12 +13,15 @@ class OrderModel {
       
         this.kiosk_machine = props?.kiosk_machine ?? "" ,
         this.bill_discount_amount = props?.bill_discount_amount ?? "";
+        this.usePlus = Boolean(props?.[kOrderModelUsePlus] ?? props?.usePlus ?? false);
         this.order_id = props.order_id;
         this.short_order_number = props?.short_order_number ?? "";
         this.store_merchant_code = props.store_merchant_code;
         this.order_datetime  =  props.order_datetime; //moment.utc(props.order_datetime, "YYYY-MM-DD HH:mm:ss").utcOffset(0).format("YYYY-MM-DDTHH:mm:ss.SSS[Z]"); // props.order_datetime; //"2024-03-28T18:00:00.000Z";
         this.order_ref = props?.order_ref ?? "";
         this.member_code = props?.member_code ?? "";
+        this.member_phone = props?.member_phone ?? "";
+        this.used_currency = props?.used_currency ?? "";
         this.remark = "-";
         this.bill_discount_id = props?.bill_discount_id ?? "";
         this.bill_discount_amount = props?.bill_discount_amount ?? "";
@@ -380,6 +384,7 @@ function CreateNewOrder(storeModel, orderId) {
 
 module.exports = OrderModel; // Export the default value
 module.exports.CreateNewOrder = CreateNewOrder; // Export the named function
+module.exports.kOrderModelUsePlus = kOrderModelUsePlus;
 
 // export default OrderModel;
 // export {CreateNewOrder};

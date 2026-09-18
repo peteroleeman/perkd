@@ -15,6 +15,8 @@ class SqlAccountRouter {
     this.SQL_BASE_PATH = this.SQL_PATH.replace(/\/\*$/, "");
     this.CASH_SALES_PATH = "/cashsales/*";
     this.CASH_SALES_BASE_PATH = this.CASH_SALES_PATH.replace(/\/\*$/, "");
+    this.SALES_CREDIT_NOTE_PATH = "/salescreditnote/*";
+    this.SALES_CREDIT_NOTE_BASE_PATH = this.SALES_CREDIT_NOTE_PATH.replace(/\/\*$/, "");
     this.STOCK_COLLECTION_PATH = "/stockitem";
     this.STOCK_LOOKUP_PATH = `${this.STOCK_COLLECTION_PATH}/*`;
     this.STOCK_REMOTE_PAGE_LIMIT = 50;
@@ -62,6 +64,18 @@ class SqlAccountRouter {
     this.router.get('/cashsales/:dockey', this.getCashSalesByDockey.bind(this));
     this.router.put('/cashsales/:dockey', this.updateCashSales.bind(this));
     this.router.delete('/cashsales/:dockey', this.deleteCashSales.bind(this));
+
+    // Sales Credit Note endpoints - specific routes must come before parameterized routes
+    this.router.get('/salescreditnote', this.getSalesCreditNote.bind(this));
+    this.router.post('/salescreditnote', this.createSalesCreditNote.bind(this));
+    this.router.post('/salescreditnote/preview', this.previewSalesCreditNote.bind(this));
+    this.router.post('/salescreditnote/sync', this.syncSalesCreditNote.bind(this));
+    this.router.post('/salescreditnote/fromorder', this.createSalesCreditNoteFromOrder.bind(this));
+    this.router.put('/salescreditnote/fromorder', this.updateSalesCreditNoteFromOrder.bind(this));
+    this.router.get('/salescreditnote/by-docno/:docno', this.getSalesCreditNoteByDocno.bind(this));
+    this.router.get('/salescreditnote/:dockey', this.getSalesCreditNoteByDockey.bind(this));
+    this.router.put('/salescreditnote/:dockey', this.updateSalesCreditNote.bind(this));
+    this.router.delete('/salescreditnote/:dockey', this.deleteSalesCreditNote.bind(this));
 
     // Stock Item endpoints
     this.router.get('/stockitem', this.getStockItem.bind(this));
@@ -119,6 +133,10 @@ class SqlAccountRouter {
 
   buildCashSalesPath(identifier) {
     return `${this.CASH_SALES_BASE_PATH}/${encodeURIComponent(identifier)}`;
+  }
+
+  buildSalesCreditNotePath(identifier) {
+    return `${this.SALES_CREDIT_NOTE_BASE_PATH}/${encodeURIComponent(identifier)}`;
   }
 
   buildStockItemPath(identifier) {
@@ -634,6 +652,54 @@ class SqlAccountRouter {
     return { pagination, data: combined.slice(0, targetLimit) };
   }
 
+  async fetchSalesCreditNoteRange(offset = 0, limit = this.SALES_REMOTE_PAGE_LIMIT, storeId = null) {
+    const normalizedOffset = Number.isFinite(offset) && offset >= 0 ? Math.floor(offset) : 0;
+    const requestedLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : this.SALES_REMOTE_PAGE_LIMIT;
+    const targetLimit = Math.min(requestedLimit, this.SALES_MAX_LIMIT);
+
+    let remaining = targetLimit;
+    let nextOffset = normalizedOffset;
+    let lastResponse = null;
+    const combined = [];
+
+    while (remaining > 0) {
+      const batchLimit = Math.min(remaining, this.SALES_REMOTE_PAGE_LIMIT);
+      const query = buildQuery({
+        offset: nextOffset,
+        limit: batchLimit,
+      });
+
+      const response = await this._requestWithOptionalStore(storeId, "GET", this.SALES_CREDIT_NOTE_PATH, null, query);
+      lastResponse = response;
+
+      const batch = Array.isArray(response?.data) ? response.data : [];
+      combined.push(...batch);
+
+      const fetched = batch.length;
+      if (fetched < batchLimit) {
+        break;
+      }
+      remaining -= fetched;
+      nextOffset += fetched;
+    }
+
+    const pagination = {
+      offset: normalizedOffset,
+      limit: targetLimit,
+      count: combined.length,
+    };
+
+    if (lastResponse && typeof lastResponse === "object") {
+      return {
+        ...lastResponse,
+        pagination,
+        data: combined.slice(0, targetLimit),
+      };
+    }
+
+    return { pagination, data: combined.slice(0, targetLimit) };
+  }
+
   buildError(err) {
     if (err.response) {
       return {
@@ -878,6 +944,124 @@ class SqlAccountRouter {
       }
 
       const pathName = this.buildCashSalesPath(dockey);
+      const data = await sendRequest("DELETE", pathName);
+      res.json({ status: "deleted", data });
+    } catch (error) {
+      res.status(error.response?.status || 500).json(this.buildError(error));
+    }
+  }
+
+  // Sales Credit Note route handlers
+  async getSalesCreditNote(req, res) {
+    try {
+      const storeId = this.getStoreIdFromRequest(req);
+      if (req.query.docNo) {
+        const query = buildQuery({ docNo: req.query.docNo });
+        const data = await this._requestWithOptionalStore(storeId, "GET", this.SALES_CREDIT_NOTE_PATH, null, query);
+        return res.json(data);
+      }
+
+      const offset = typeof req.query.offset !== "undefined" ? Number(req.query.offset) : 0;
+      const limit = typeof req.query.limit !== "undefined" ? Number(req.query.limit) : this.SALES_REMOTE_PAGE_LIMIT;
+      const data = await this.fetchSalesCreditNoteRange(offset, limit, storeId);
+      res.json(data);
+    } catch (error) {
+      res.status(error.response?.status || 500).json(this.buildError(error));
+    }
+  }
+
+  async getSalesCreditNoteByDockey(req, res) {
+    try {
+      const { dockey } = req.params;
+      if (!dockey) {
+        return res.status(400).json({ message: "Sales credit note dockey is required." });
+      }
+      const storeId = this.getStoreIdFromRequest(req);
+      const data = await this._requestWithOptionalStore(storeId, "GET", this.buildSalesCreditNotePath(dockey));
+      res.json(data);
+    } catch (error) {
+      res.status(error.response?.status || 500).json(this.buildError(error));
+    }
+  }
+
+  /**
+   * GET /sqlaccount/salescreditnote/by-docno/:docno
+   * Lookup sales credit note by document number (same SQL API query as GET /salescreditnote?docNo=...)
+   */
+  async getSalesCreditNoteByDocno(req, res) {
+    try {
+      const { docno } = req.params;
+      if (!docno) {
+        return res.status(400).json({ message: "Sales credit note docno is required." });
+      }
+      const storeId = this.getStoreIdFromRequest(req);
+      const query = buildQuery({ docNo: docno });
+      const data = await this._requestWithOptionalStore(storeId, "GET", this.SALES_CREDIT_NOTE_PATH, null, query);
+      res.json(data);
+    } catch (error) {
+      res.status(error.response?.status || 500).json(this.buildError(error));
+    }
+  }
+
+  async createSalesCreditNote(req, res) {
+    try {
+      if (!req.body || Object.keys(req.body).length === 0) {
+        return res.status(400).json({ message: "Sales credit note payload is required." });
+      }
+      const storeId = this.getStoreIdFromRequest(req);
+      const data = await this._requestWithOptionalStore(storeId, "POST", this.SALES_CREDIT_NOTE_BASE_PATH, req.body);
+      res.status(201).json({ status: "created", data });
+    } catch (error) {
+      res.status(error.response?.status || 500).json(this.buildError(error));
+    }
+  }
+
+  async updateSalesCreditNote(req, res) {
+    try {
+      const dockey = req.params.dockey;
+      if (!dockey) {
+        return res.status(400).json({ message: "Sales credit note dockey is required." });
+      }
+      if (!req.body || Object.keys(req.body).length === 0) {
+        return res.status(400).json({ message: "Update payload is required." });
+      }
+
+      const storeId = this.getStoreIdFromRequest(req);
+
+      const existing = await this._requestWithOptionalStore(storeId, "GET", this.buildSalesCreditNotePath(dockey));
+      const record = this.pickFirstRecord(existing);
+      if (!record || typeof record.updatecount === "undefined") {
+        return res
+          .status(400)
+          .json({ message: "Unable to resolve updatecount for the target sales credit note." });
+      }
+
+      const finalPayload = this.removeNullValues({
+        ...record,
+        ...req.body,
+        dockey: record.dockey,
+        docno: record.docno,
+        updatecount: (record.updatecount || 0) + 1,
+      });
+
+      console.log("Final payload for updating sales credit note:", finalPayload);
+
+      const pathName = this.buildSalesCreditNotePath(dockey);
+      const data = await this._requestWithOptionalStore(storeId, "PUT", pathName, finalPayload);
+      res.json({ status: "updated", data });
+    } catch (error) {
+      res.status(error.response?.status || 500).json(this.buildError(error));
+    }
+  }
+
+  async deleteSalesCreditNote(req, res) {
+    try {
+      const dockey = req.params.dockey;
+      if (!dockey) {
+        return res.status(400).json({ message: "Sales credit note dockey is required." });
+      }
+
+      const pathName = this.buildSalesCreditNotePath(dockey);
       const data = await sendRequest("DELETE", pathName);
       res.json({ status: "deleted", data });
     } catch (error) {
@@ -1292,6 +1476,26 @@ class SqlAccountRouter {
     }
   }
 
+  previewSalesCreditNote(req, res) {
+    const payload = this.mapReportOrderToSqlInvoice(req.body || {});
+    res.json({
+      payload,
+      note: "Preview only. Use /salescreditnote/sync to send to SQL Accounting.",
+    });
+  }
+
+  async syncSalesCreditNote(req, res) {
+    try {
+      const payload = this.mapReportOrderToSqlInvoice(req.body || {});
+      const data = await sendRequest("POST", this.SALES_CREDIT_NOTE_PATH, payload, "", {
+        headers: req.body?.__headers,
+      });
+      res.json({ status: "synced", data });
+    } catch (error) {
+      res.status(error.response?.status || 500).json(this.buildError(error));
+    }
+  }
+
   // Stock Item route handlers
   async getStockItem(req, res) {
     try {
@@ -1643,6 +1847,65 @@ class SqlAccountRouter {
       res.status(500).json({ 
         success: false, 
         message: error.message || "Internal server error" 
+      });
+    }
+  }
+
+  async createSalesCreditNoteFromOrder(req, res) {
+    try {
+      if (!req.body || !req.body.order) {
+        return res.status(400).json({ message: "Order object is required in request body." });
+      }
+      const storeId =
+        req.body?.storeId ??
+        req.body?.storeid ??
+        req.body?.order?.storeId ??
+        req.body?.order?.storeid ??
+        null;
+      const result = await this.helperCreateSalesCreditNoteFromOrder({
+        order: req.body.order,
+        action: "create",
+        storeId,
+      });
+      if (result.success) {
+        res.status(201).json(result);
+      } else {
+        res.status(400).json(result);
+      }
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message || "Internal server error",
+      });
+    }
+  }
+
+  async updateSalesCreditNoteFromOrder(req, res) {
+    try {
+      if (!req.body || !req.body.order) {
+        return res.status(400).json({ message: "Order object is required in request body." });
+      }
+      const storeId =
+        req.body?.storeId ??
+        req.body?.storeid ??
+        req.body?.order?.storeId ??
+        req.body?.order?.storeid ??
+        null;
+      const result = await this.helperCreateSalesCreditNoteFromOrder({
+        order: req.body.order,
+        action: "update",
+        cancelled: req.body.cancelled,
+        storeId,
+      });
+      if (result.success) {
+        res.status(200).json(result);
+      } else {
+        res.status(400).json(result);
+      }
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message || "Internal server error",
       });
     }
   }
@@ -2763,6 +3026,148 @@ class SqlAccountRouter {
   }
 
   /**
+   * Internal helper: Create sales credit note (SQL API)
+   * @param {Object} options
+   * @param {Object} options.salesCreditNoteData - Payload for POST /salescreditnote
+   * @param {string|null} options.storeId
+   * @returns {Promise<Object>}
+   */
+  async helperCreateSalesCreditNote({ salesCreditNoteData, storeId = null }) {
+    const result = {
+      success: false,
+      message: '',
+      data: null,
+      response: '',
+    };
+
+    try {
+      const data = await this.sendRequestWithCredentials(
+        storeId,
+        "POST",
+        this.SALES_CREDIT_NOTE_BASE_PATH,
+        salesCreditNoteData,
+      );
+      result.success = true;
+      result.data = data;
+      result.response = JSON.stringify(data);
+    } catch (e) {
+      if (e.response) {
+        const status = e.response.status;
+        const statusText = e.response.statusText;
+        const errorData = e.response.data;
+        result.message = `Error ${status} ${statusText}: ${JSON.stringify(errorData || {})}`;
+        result.response = JSON.stringify(errorData || {});
+      } else if (e.request) {
+        result.message = `Error: No response received from server. ${e.message || e.toString()}`;
+      } else {
+        result.message = `Error: ${e.message || e.toString()}`;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Internal helper: Update sales credit note (resolve updatecount, then PUT)
+   * @param {Object} options
+   * @param {string} options.dockey
+   * @param {Object} options.salesCreditNoteData
+   * @param {string|null} options.storeId
+   * @returns {Promise<Object>}
+   */
+  async helperUpdateSalesCreditNote({ dockey, salesCreditNoteData, storeId = null }) {
+    const result = {
+      success: false,
+      message: '',
+      data: null,
+      response: '',
+    };
+
+    try {
+      if (!dockey) {
+        result.message = 'Dockey is required for update';
+        return result;
+      }
+
+      const existing = await this.sendRequestWithCredentials(storeId, "GET", this.buildSalesCreditNotePath(dockey));
+      const record = this.pickFirstRecord(existing);
+      if (!record || typeof record.updatecount === "undefined") {
+        result.message = "Unable to resolve updatecount for the target sales credit note.";
+        return result;
+      }
+
+      let finalPayload;
+
+      const hasIrbmFields =
+        salesCreditNoteData.irbm_uuid !== undefined ||
+        salesCreditNoteData.irbm_longid !== undefined ||
+        (salesCreditNoteData.irbm_status !== undefined && salesCreditNoteData.irbm_status !== null);
+
+      if (salesCreditNoteData.cancelled === true) {
+        finalPayload = {
+          docno: record.docno,
+          code: record.code,
+          cancelled: true,
+          p_paymentmethod: "",
+          p_amount: 0,
+          updatecount: (record.updatecount || 0) + 1,
+        };
+      } else if (hasIrbmFields) {
+        finalPayload = {
+          docno: record.docno,
+          code: record.code,
+          updatecount: (record.updatecount || 0) + 1,
+        };
+        if (salesCreditNoteData.irbm_uuid !== undefined) {
+          finalPayload.irbm_uuid = salesCreditNoteData.irbm_uuid;
+        }
+        if (salesCreditNoteData.irbm_longid !== undefined) {
+          finalPayload.irbm_longid = salesCreditNoteData.irbm_longid;
+        }
+        if (salesCreditNoteData.irbm_status !== undefined && salesCreditNoteData.irbm_status !== null) {
+          finalPayload.irbm_status = salesCreditNoteData.irbm_status;
+        }
+        const now = new Date();
+        finalPayload.eiv_utc = now.toISOString();
+      } else {
+        finalPayload = this.removeNullValues({
+          ...record,
+          ...salesCreditNoteData,
+          dockey: record.dockey,
+          docno: record.docno,
+          updatecount: (record.updatecount || 0) + 1,
+        });
+      }
+
+      console.log("finalPayload (sales credit note)", JSON.stringify(finalPayload));
+
+      const data = await this.sendRequestWithCredentials(
+        storeId,
+        "PUT",
+        this.buildSalesCreditNotePath(dockey),
+        finalPayload,
+      );
+      result.success = true;
+      result.data = data;
+      result.response = JSON.stringify(data);
+    } catch (e) {
+      if (e.response) {
+        const status = e.response.status;
+        const statusText = e.response.statusText;
+        const errorData = e.response.data;
+        result.message = `Error ${status} ${statusText}: ${JSON.stringify(errorData || {})}`;
+        result.response = JSON.stringify(errorData || {});
+      } else if (e.request) {
+        result.message = `Error: No response received from server. ${e.message || e.toString()}`;
+      } else {
+        result.message = `Error: ${e.message || e.toString()}`;
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Internal helper: Build invoice payload from order model
    * NEW STRUCTURE: Tax at line level, service charge as separate line item
    * @param {Object} order - Order object containing order details
@@ -3382,6 +3787,124 @@ class SqlAccountRouter {
       }
     } catch (e) {
       // Enhanced error handling
+      if (e.response) {
+        const status = e.response.status;
+        const statusText = e.response.statusText;
+        const errorData = e.response.data;
+        result.message = `Error ${status} ${statusText}: ${JSON.stringify(errorData || {})}`;
+        result.response = JSON.stringify(errorData || {});
+      } else {
+        result.message = `Error: ${e.message || e.toString()}`;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Internal helper: Create or update sales credit note from order (customer + credit note).
+   * Same payload shape as cash sales from order (buildInvoicePayloadFromOrder); no customer-payment knockoff flow.
+   */
+  async helperCreateSalesCreditNoteFromOrder({ order, action = "create", storeId = null, cancelled = null }) {
+    const result = {
+      success: false,
+      message: "",
+      data: null,
+      response: "",
+      customerCreated: false,
+      customerResponse: "",
+      salesCreditNotePayload: null,
+    };
+
+    try {
+      const payload = this.buildInvoicePayloadFromOrder(order);
+      result.salesCreditNotePayload = payload;
+      console.log("[SALES CREDIT NOTE] payload to be sent:", JSON.stringify(payload, null, 2));
+
+      const customerCode = payload.code;
+      const customerName = payload.attention;
+      const customerPhone = payload.dphone1;
+
+      console.log(`🔔 [SALES CREDIT NOTE] Starting process to ${action} sales credit note`);
+      console.log(payload);
+
+      const createCustomerResult = await this.helperCreateCustomer({
+        code: customerCode,
+        companyName: customerName,
+        phone1: customerPhone,
+        storeId: storeId,
+      });
+
+      let customerResponse = "";
+      if (createCustomerResult.response) {
+        try {
+          const jsonResponse = JSON.parse(createCustomerResult.response);
+          customerResponse = JSON.stringify(jsonResponse, null, 2);
+        } catch (e) {
+          customerResponse = createCustomerResult.response;
+        }
+      } else if (createCustomerResult.data) {
+        customerResponse = JSON.stringify(createCustomerResult.data, null, 2);
+      }
+
+      result.customerCreated = createCustomerResult.success || false;
+      result.customerResponse = customerResponse;
+
+      let creditNoteResult = null;
+
+      if (cancelled !== null && cancelled !== undefined) {
+        payload.cancelled = cancelled;
+        console.log("ℹ️ [SALES CREDIT NOTE] Setting cancelled field to:", cancelled);
+      }
+
+      if (action === "update") {
+        console.log("🔄 [UPDATE] Starting update action for sales credit note");
+        try {
+          const docno = payload.docno;
+          const query = buildQuery({ docNo: docno });
+          const existingNotes = await this.sendRequestWithCredentials(
+            storeId,
+            "GET",
+            this.SALES_CREDIT_NOTE_PATH,
+            null,
+            query,
+          );
+          const existingRecord = this.pickFirstRecord(existingNotes);
+          if (existingRecord && existingRecord.dockey) {
+            creditNoteResult = await this.helperUpdateSalesCreditNote({
+              dockey: existingRecord.dockey,
+              salesCreditNoteData: payload,
+              storeId: storeId,
+            });
+          } else {
+            result.message = `Sales credit note with docno '${docno}' not found for update`;
+            result.response = JSON.stringify({ docno, action: "update", error: "Not found" });
+            return result;
+          }
+        } catch (e) {
+          result.message = `Error finding sales credit note for update: ${e.message || e.toString()}`;
+          return result;
+        }
+      } else {
+        creditNoteResult = await this.helperCreateSalesCreditNote({
+          salesCreditNoteData: payload,
+          storeId: storeId,
+        });
+        console.log(
+          "[SALES CREDIT NOTE] helperCreateSalesCreditNote result:",
+          JSON.stringify(creditNoteResult, null, 2),
+        );
+      }
+
+      if (creditNoteResult.success) {
+        result.success = true;
+        result.data = creditNoteResult.data;
+        result.response = creditNoteResult.response;
+      } else {
+        result.message = creditNoteResult.message || `Failed to ${action} sales credit note`;
+        result.response = creditNoteResult.response;
+      }
+    } catch (e) {
       if (e.response) {
         const status = e.response.status;
         const statusText = e.response.statusText;

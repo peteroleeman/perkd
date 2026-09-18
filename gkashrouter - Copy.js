@@ -1446,8 +1446,8 @@ async testSendOTP()
     );
 
     // Setup redirect URLs
-    var urlSuccessHeader = "https://foodio-online-best10.web.app/#/coinsuccess/" + storeId + "/" + vCartID + "/" ;
-    var urlFailHeader = "https://foodio-online-best10.web.app/#/coinfailed/" + storeId + "/" + vCartID + "/" ;
+    var urlSuccessHeader = "https://ceriarewards.web.app/#/coinsuccess/" + storeId + "/" + vCartID + "/" ;
+    var urlFailHeader = "https://ceriarewards.web.app/#/coinfailed/" + storeId + "/" + vCartID + "/" ;
 
     if(isBeta) {
       urlSuccessHeader = "https://foodio-online-cloud9.web.app/#/coinsuccess/" + storeId + "/" + vCartID + "/" ;
@@ -1572,8 +1572,8 @@ async testSendOTP()
     );
 
     // Setup redirect URLs
-    var urlSuccessHeader = "https://foodio-online-best10.web.app/#/crmsuccess/" + storeId + "/" + vCartID + "/" ;
-    var urlFailHeader = "https://foodio-online-best10.web.app/#/crmfailed/" + storeId + "/" + vCartID + "/" ;
+    var urlSuccessHeader = "https://ceriarewards.web.app/#/crmsuccess/" + storeId + "/" + vCartID + "/" ;
+    var urlFailHeader = "https://ceriarewards.web.app/#/crmfailed/" + storeId + "/" + vCartID + "/" ;
 
     if(isBeta) {
       urlSuccessHeader = "https://foodio-online-cloud9.web.app/#/crmsuccess/" + storeId + "/" + vCartID + "/" ;
@@ -1717,8 +1717,8 @@ async testSendOTP()
       );
 
 
-      var urlSuccessHeader = "https://foodio-online-best10.web.app/#/tbsuccess/" + storeId + "/" + vCartID + "/" ;
-      var urlFailHeader = "https://foodio-online-best10.web.app/#/tbfailed/" + storeId + "/" + vCartID + "/" ;
+      var urlSuccessHeader = "https://ceriarewards.app/#/tbsuccess/" + storeId + "/" + vCartID + "/" ;
+      var urlFailHeader = "https://ceriarewards.web.app/#/tbfailed/" + storeId + "/" + vCartID + "/" ;
 
       if(isBeta)
       {

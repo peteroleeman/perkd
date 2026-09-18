@@ -15,20 +15,26 @@ var bodyParser = require('body-parser');
 var OdooRouter = require('./odoorouter');
 var DemoOdooRouter = require("./demoodoorouter");
 var VendingRouter = require("./vendingrouter");
+var VendingPlusRouter = require("./vendingplusrouter");
 var CoinRouter = require("./coinrouter");
 var RHBRouter = require("./rhbrouter");
 var MyInvoisRouter = require("./myinvoisrouter");
 var MyReportRouter = require("./myreportrouter");
+var CeriaInsightRouter = require("./ceriainsightrouter");
 var KaotimLogRouter = require("./kaotimlogrouter");
 var SqlAccountRouter = require("./sqlaccountrouter");
 var UserRouter = require("./userrouter");
 var KaotimHQRouter = require("./kaotimhqrouter");
 var FeedbackBotRouter = require("./feedbackbotrouter");
+var AirwallexRouter = require("./airwallexrouter");
 
 var TicketRouter = require("./ticketrouter");
 var PosRouter = require('./posrouter');
+var KdsRouter = require('./kdsrouter');
 var GrabRouter = require('./grabrouter');
+var LalamoveRouter = require('./lalamoverouter');
 var CronRouter = require('./cronrouter');
+var CeriaRouter = require('./ceriarouter');
 
 
 var {Logging} = require('@google-cloud/logging');
@@ -197,6 +203,10 @@ app.use('/email', emailRouter.getRouter());
 const myVending = new VendingRouter();
 app.use('/vending', myVending.getRouter());
 
+//for vending plus (Fudbox proxy)
+const myVendingPlus = new VendingPlusRouter();
+app.use('/vendingplus', myVendingPlus.getRouter());
+
 //for coin
 const myCoin = new CoinRouter();
 app.use('/coin', myCoin.getRouter());
@@ -213,6 +223,10 @@ app.use('/myinvois', myInvois.getRouter());
 const myReport = new MyReportRouter();
 app.use('/myreport', myReport.getRouter());
 
+//for ceria insight
+const ceriaInsight = new CeriaInsightRouter();
+app.use('/ceriainsight', ceriaInsight.getRouter());
+
 //for sqlaccount
 const sqlAccount = new SqlAccountRouter();
 app.use('/sqlaccount', sqlAccount.getRouter());
@@ -220,6 +234,9 @@ app.use('/sqlaccount', sqlAccount.getRouter());
 //for user
 const myUser = new UserRouter();
 app.use('/user', myUser.getRouter());
+
+const ceriaRouter = new CeriaRouter();
+app.use('/ceria', ceriaRouter.getRouter());
 
 //for kaotimhq
 const myKaotimHQ = new KaotimHQRouter();
@@ -240,13 +257,24 @@ app.use('/ticket', myTicket.getRouter());
 const posRouter = new PosRouter();
 app.use('/pos', posRouter.getRouter());
 
+const kdsRouter = new KdsRouter();
+app.use('/kds', kdsRouter.getRouter());
+
 //for grab
 const grabRouter = new GrabRouter();
 app.use('/grab', grabRouter.getRouter());
 
+//for lalamove (v3 quotation)
+const lalamoveRouter = new LalamoveRouter();
+app.use('/lalamove', lalamoveRouter.getRouter());
+
 // Google Cloud Scheduler (SQL stock sync jobs)
 const cronRouter = new CronRouter();
 app.use('/cron', cronRouter.getRouter());
+
+// Airwallex webhook at /airwallex/webhook
+const airwallexRouter = new AirwallexRouter();
+app.use('/airwallex', airwallexRouter.getRouter());
 
 // START THE SERVER
 // =============================================================================

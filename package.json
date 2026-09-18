@@ -1,6 +1,10 @@
 {
   "name": "app",
   "main": "server.js",
+  "scripts": {
+    "cash-sales": "node cli/cashSalesCli.js",
+    "sales-credit-note": "node cli/salesCreditNoteCli.js"
+  },
   "dependencies": {
     "@google-cloud/bigquery": "^7.3.0",
     "@google-cloud/logging": "^11.2.0",

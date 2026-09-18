@@ -2,14 +2,21 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const UtilFeie = require("./feie/util_feie");
+const UtilFeieReceipt = require('./util/util_feie_receipt');
+const {
+  normalizeOrderSlipStyle,
+  printOrderItemSlipPOSByStyle,
+} = require('./util/util_feie_orderslip');
+const { buildFeieLabelContent, extractLabelItemRemarks, expandOrderItemsForLabels } = UtilFeie;
 const OrderModel = require("./models/OrderModel");
 const OrderItemModel = require("./models/OrderItemModel");
 const firebase = require("./db");
 const fireStore = firebase.firestore();
 const { v4: uuidv4 } = require('uuid');
-
-/** CeriaPay web app payment URL; order id is appended as the last segment */
-const CERIAPAY_PAY_BASE_URL = 'https://ceriapay.web.app/#/pay/';
+const {
+  resolveCeriaAppVersion,
+  getCeriaAppPayUrl,
+} = require('./util/ceria_app_url');
 
 /** Base URL for external CRM API (POST /api/crm/result). Override with env CRM_RESULT_API_BASE. */
 const CRM_RESULT_API_BASE_DEFAULT = 'http://43.163.123.54';
@@ -49,6 +56,9 @@ class PosRouter {
     // Same slip layout as above; optional body.cancelled (default false). When true, prints ORDER CANCELLED after order mode and DO NOT PREPARE at the bottom.
     this.router.post('/kdsorderslipexcancel', this.handlePrintOrderSlipExCancelCN.bind(this));
     this.router.post('/kdsorderslipexapcancel', this.handlePrintOrderSlipExCancelJP.bind(this));
+
+    this.router.post('/kdsreceipt', this.handlePrintReceiptCN.bind(this));
+    this.router.post('/kdsreceiptap', this.handlePrintReceiptJP.bind(this));
     
     // Add label printing endpoint
     this.router.post('/printlabelap', this.handlePrintLabel.bind(this));
@@ -95,47 +105,16 @@ class PosRouter {
     return this.printOrderSlipEx(req, res, true, true);
   }
 
-  async handlePrintLabel(req, res) {
-    return this.printLabel(req, res);
+  async handlePrintReceiptCN(req, res) {
+    return this.printReceipt(req, res, false);
   }
 
-  /**
-   * Function to add spaces between two strings for alignment in label printing
-   * @param {string} strLeft - Left side string
-   * @param {string} length - Max characters in a line
-   * @returns {string} - Left string with spaces
-   */
-  leftRight(strLeft, length) {
-    if (!strLeft || !length) return '';
-    
-    // For simplicity, assuming each Chinese character takes 2 spaces
-    // This is a simple approximation of what the PHP function does
-    let spacesNeeded = length - this.getStringWidth(strLeft);
-    let spaces = '';
-    
-    for (let i = 0; i < spacesNeeded; i++) {
-      spaces += ' ';
-    }
-    
-    return strLeft + spaces;
+  async handlePrintReceiptJP(req, res) {
+    return this.printReceipt(req, res, true);
   }
-  
-  /**
-   * Calculate approximate width of a string (Chinese chars count as 2)
-   * @param {string} str - Input string
-   * @returns {number} - Approximate width
-   */
-  getStringWidth(str) {
-    let width = 0;
-    for (let i = 0; i < str.length; i++) {
-      // Check if character is a Chinese character (very simplistic check)
-      if (str.charCodeAt(i) > 127) {
-        width += 2;
-      } else {
-        width += 1;
-      }
-    }
-    return width;
+
+  async handlePrintLabel(req, res) {
+    return this.printLabel(req, res);
   }
 
   /**
@@ -163,81 +142,47 @@ class PosRouter {
     }
 
     try {
-      const { sn, orderId, tableId, orderItems, remark = "", name = "", phone = "" } = req.body;
-      const totalItems = orderItems.length;
+      const {
+        sn,
+        orderId,
+        tableId,
+        orderItems,
+        remark = '',
+        name = '',
+        phone = '',
+        enableBuzzer = false,
+        orderMode = '',
+        dateTime = '',
+        dateTimeLabel = ''
+      } = req.body;
+      const labelJobs = expandOrderItemsForLabels(orderItems);
       const results = [];
 
-      // Process each item in the order
-      for (let i = 0; i < totalItems; i++) {
-        const item = orderItems[i];
-        const itemPosition = `${i+1}/${totalItems}`;
-        
-        // Create label content with TEXT tags (similar to the PHP example)
-        let content = `<TEXT x="9" y="10" font="12" w="1" h="2" r="0">#${orderId}       ${tableId}      ${itemPosition}</TEXT>`;
-        content += `<TEXT x="9" y="80" font="12" w="1" h="2" r="0">${item.title}</TEXT>`;
-        
-        // Process item remark - handle both string and array formats
-        let itemRemarks = [];
-        
-        if (item.remark) {
-          if (Array.isArray(item.remark)) {
-            // Handle array of remark objects
-            const remarkTexts = item.remark
-              .filter(remarkObj => remarkObj && remarkObj.remark) // Filter out invalid objects
-              .map(remarkObj => remarkObj.remark.trim()) // Extract remark text and trim
-              .filter(text => text.length > 0); // Filter out empty strings
-            
-            itemRemarks = remarkTexts;
-          } else if (typeof item.remark === 'string') {
-            // Handle string remark
-            const trimmedRemark = item.remark.trim();
-            if (trimmedRemark) {
-              itemRemarks = [trimmedRemark];
-            }
-          }
-        }
-        
-        // Use global remark if item remark is empty
-        if (itemRemarks.length === 0 && remark) {
-          itemRemarks = [remark];
-        }
-        
-        // Add remark fields below the title - each remark on a separate line
-        let yPosition = 140; // Starting y position for remarks
-        const lineHeight = 30; // Height between lines
-        
-        for (let j = 0; j < itemRemarks.length; j++) {
-          content += `<TEXT x="9" y="${yPosition}" font="12" w="1" h="1" r="0">*: ${itemRemarks[j]}</TEXT>`;
-          yPosition += lineHeight; // Move to next line
-        }
-        
-        // Adjust contact info position based on number of remarks
-        const contactYPosition = yPosition + 10; // Add some spacing after remarks
-        
-        // Add customer name and phone at the bottom if provided
-        if (name || phone) {
-          let contactInfo = "";
-          if (name) {
-            contactInfo += `${name}`;
-          }
-          if (phone) {
-            if (contactInfo) {
-              contactInfo += "       "; // Add spacing between name and phone
-            }
-            contactInfo += phone;
-          }
-          
-          if (contactInfo) {
-            content += `<TEXT x="9" y="${contactYPosition}" font="12" w="1" h="1" r="0">${contactInfo}</TEXT>`;
-          }
-        }
-        
-        // Print the label
+      for (const job of labelJobs) {
+        const { item, i, totalItems } = job;
+        const itemPosition = `${i + 1}/${totalItems}`;
+        const itemRemarks = extractLabelItemRemarks(item, remark, enableBuzzer);
+
+        const content = buildFeieLabelContent({
+          orderId,
+          tableId,
+          item,
+          totalItems,
+          i,
+          name,
+          phone,
+          remark,
+          enableBuzzer,
+          orderMode,
+          dateTime,
+          dateTimeLabel
+        });
+
         const printResult = await feie.printLabel(sn, content, 1, true);
         results.push({
           item: item.title,
           position: itemPosition,
-          remark: itemRemarks.join(', '), // Keep as joined string for response
+          remark: itemRemarks.join(', '),
           remarkCount: itemRemarks.length,
           result: printResult
         });
@@ -247,7 +192,8 @@ class PosRouter {
         message: 'Labels printed successfully', 
         orderId,
         tableId,
-        itemsProcessed: totalItems,
+        orderItemsCount: orderItems.length,
+        labelsPrinted: labelJobs.length,
         results
       });
     }
@@ -283,11 +229,61 @@ class PosRouter {
     }
 
     const cancelled = honourCancelledParam && req.body.cancelled === true;
+    const style = normalizeOrderSlipStyle(req.body.style);
 
     try {
       let feieOrder = feie.createFeieOrderSlipFromJSON(req.body);
-      let feieResult = await feie.printFeie2(feieOrder.sn, feie.printOrderItemSlipPOS(feieOrder, req.body.isReprint, req.body.type, cancelled), isJP);
+      const slipContent = printOrderItemSlipPOSByStyle(
+        feie,
+        feieOrder,
+        req.body.isReprint,
+        req.body.type,
+        cancelled,
+        style,
+      );
+      let feieResult = await feie.printFeie2(feieOrder.sn, slipContent, isJP);
       
+      res.json({ message: feieResult });
+    }
+    catch(ex) {
+      console.log(ex);
+      res.status(401).json({ error: ex });
+    }
+  }
+
+  async printReceipt(req, res, isJP) {
+    const feie = new UtilFeie();
+
+    if (!req.body) {
+      res.status(400).json({ error: 'Request body is missing or empty' });
+      return;
+    }
+
+    const requiredFields = ['sn', 'orderId', 'orderItems'];
+    for (const field of requiredFields) {
+      if (!(field in req.body)) {
+        res.status(400).json({ error: `Missing required field: ${field}` });
+        return;
+      }
+    }
+
+    if (!Array.isArray(req.body.orderItems)) {
+      res.status(400).json({ error: 'orderItems must be an array' });
+      return;
+    }
+
+    const receiptType = Number(req.body.type) === 1 ? 1 : 0;
+    const isReprint = req.body.isReprint === true;
+
+    try {
+      const storeModel = { title: req.body.storeTitle, id: req.body.storeId };
+      const receiptLines = UtilFeieReceipt.printOrderReceiptFromOrder(
+        storeModel,
+        req.body,
+        { bReprint: isReprint, type: receiptType }
+      );
+      const feieResult = await feie.printFeie2(req.body.sn, receiptLines, isJP);
+
       res.json({ message: feieResult });
     }
     catch(ex) {
@@ -461,6 +457,7 @@ class PosRouter {
         // merchant_id: vendingMerchantId,
         devicenumber: vendingDeviceNumber,
         merchantid: vendingMerchantId,
+        storeid: storeId,
         store_id: storeId,
         totalqty: totalQty,
         totalprice: totalPrice,
@@ -614,7 +611,16 @@ class PosRouter {
         });
       }
 
-      const { receipt_id, amount, currency, device_number, list } = req.body;
+      const { receipt_id, amount, currency, device_number, list, version } = req.body;
+
+      const versionResult = resolveCeriaAppVersion(version);
+      if (!versionResult.ok) {
+        return res.status(400).json({
+          success: false,
+          message: versionResult.message,
+        });
+      }
+      const appVersion = versionResult.version;
 
       if (!receipt_id || !currency || !device_number || !list) {
         return res.status(400).json({
@@ -717,12 +723,13 @@ class PosRouter {
         payment_type: 'CeriaPay QR',
         subtotal,
         grand_total: grandTotal,
-        mode: 'ceriapay',
+        mode: appVersion,
         kiosk_machine: vendingDeviceNumber,
         customer_payment: grandTotal,
         currency,
         devicenumber: vendingDeviceNumber,
         merchantid: vendingMerchantId,
+        storeid: storeId,
         store_id: storeId,
         machine_model_id: machineModel.id,
         totalqty: totalQty,
@@ -735,7 +742,7 @@ class PosRouter {
       await orderDocRef.set(orderData);
       console.log(`[getqrcode] Order saved to Firestore: ceriapay/${device_number}/order/${orderDocId}`);
 
-      const payUrl = `${CERIAPAY_PAY_BASE_URL}${orderDocId}`;
+      const payUrl = getCeriaAppPayUrl(appVersion, orderDocId);
 
       res.json({
         success: true,

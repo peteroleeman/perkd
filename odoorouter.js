@@ -489,6 +489,11 @@ class OdooRouter {
         res.status(200).json(JSON.stringify(response.data));
       })
       .catch((error) => {
+        const upstreamData = error.response && error.response.data;
+        if (upstreamData) {
+          console.log(JSON.stringify(upstreamData));
+          return res.status(200).json({ error: upstreamData });
+        }
         console.log(error);
         res.status(401).json({ error: error });
       });
@@ -554,6 +559,11 @@ class OdooRouter {
         res.status(200).json(JSON.stringify(response.data));
       })
       .catch((error) => {
+        const upstreamData = error.response && error.response.data;
+        if (upstreamData) {
+          console.log(JSON.stringify(upstreamData));
+          return res.status(200).json({ error: upstreamData });
+        }
         console.log(error);
         res.status(401).json({ error: error });
       });

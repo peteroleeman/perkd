@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
 const UtilFeie = require("./feie/util_feie");
+const { buildFeieLabelContent, expandOrderItemsForLabels } = UtilFeie;
 const UtilFeieReceipt = require("./util/util_feie_receipt");
 const querystring = require('querystring');
 const bodyParser = require('body-parser');
@@ -10,6 +11,7 @@ const UtilDateTime = require("./util/util_datetime");
 const firebase = require("./db");
 const https = require('https');
 const VendingRouter = require('./vendingrouter');
+const VendingPlusRouter = require('./vendingplusrouter');
 const SqlAccountRouter = require('./sqlaccountrouter');
 const { UserModel } = require('./models/UserModel');
 const { StampCardModel } = require('./models/StampCardModel');
@@ -23,10 +25,15 @@ const {
   writeGKashTransaction
 } = require("./storeController");
 
-const KaotimActivityLogger = require("./util/kaotim_activity_logger");
-const { getBaseUrlFromRequest } = require("./gkash/shared/appUrl");
+const {
+  getFeiePrintersFromFeiesArray,
+  convertToStoreModel: convertStoreDocToModel,
+  handleFeieKitchenSlipsOnly: printKitchenSlipsOnly,
+} = require('./util/feie_store_helper');
+const { getBaseUrlFromRequest, normalizeAppHostVersion } = require("./gkash/shared/appUrl");
 /** Branches on processOrderTransaction result.status and redirects; see gkash/shared/gkashReturnFlow.js */
 const { handleGkashReturnSettlement } = require("./gkash/shared/gkashReturnFlow");
+const CeriaRouter = require('./ceriarouter');
 
 // Feie print API routes (same as Flutter / posrouter: api.foodio.online/pos/...)
 const FEIE_API_BASE_URL = 'https://api.foodio.online';
@@ -50,6 +57,9 @@ class GKashRouter {
     
     // Initialize internal vending router for direct method calls
     this.vendingRouter = new VendingRouter();
+    
+    // Initialize internal vending plus router (Fudbox) for direct method calls
+    this.vendingPlusRouter = new VendingPlusRouter();
     
     // Initialize SQL Account router for invoice creation
     this.sqlAccountRouter = new SqlAccountRouter();
@@ -75,51 +85,66 @@ class GKashRouter {
      // Normal endpoints (isBeta = false)
      this.router.post('/return', (req, res) => {
        const parsedUrl = url.parse(req.url, true);
-       const version = parsedUrl.query.version || req.body.version || undefined;
+       const version = parsedUrl.query.version || undefined;
        this.paymentTBReturn(req, res, false, version); //this is used for table ordering
      });
      this.router.post('/crmreturn', (req, res) => {
        const parsedUrl = url.parse(req.url, true);
-       const version = parsedUrl.query.version || req.body.version || undefined;
+       const version = parsedUrl.query.version || undefined;
        this.paymentCRMReturn(req, res, false, version);
+     });
+     this.router.post('/masukreturn', (req, res) => {
+       const parsedUrl = url.parse(req.url, true);
+       const version = parsedUrl.query.version || undefined;
+       this.paymentMasukReturn(req, res, false, version);
      });
      this.router.post('/coinreturn', (req, res) => {
        const parsedUrl = url.parse(req.url, true);
-       const version = parsedUrl.query.version || req.body.version || undefined;
+       const version = parsedUrl.query.version || undefined;
        this.paymentCoinReturn(req, res, false, version);
      });
      this.router.post('/vmreturn', (req, res) => {
        const parsedUrl = url.parse(req.url, true);
-       const version = parsedUrl.query.version || req.body.version || undefined;
+       const version = parsedUrl.query.version || undefined;
        this.paymentVMReturn(req, res, false, version);
      });
      this.router.post('/kaotimreturn', (req, res) => {
        const parsedUrl = url.parse(req.url, true);
-       const version = parsedUrl.query.version || req.body.version || undefined;
+       const version = parsedUrl.query.version || undefined;
        this.paymentKaotimReturn(req, res, false, version);
      });
      this.router.post('/ceriapayreturn', (req, res) => {
        const parsedUrl = url.parse(req.url, true);
-       const version = parsedUrl.query.version || req.body.version || undefined;
+       const version = parsedUrl.query.version || undefined;
        this.paymentCeriaPayReturn(req, res, false, version);
      });
 
      // Beta endpoints (isBeta = true)
      this.router.post('/betareturn', (req, res) => {
        const parsedUrl = url.parse(req.url, true);
-       const version = parsedUrl.query.version || req.body.version || undefined;
+       const version = parsedUrl.query.version || undefined;
        this.paymentReturn(req, res, false, version);
      });
      this.router.post('/betacrmreturn', (req, res) => {
        const parsedUrl = url.parse(req.url, true);
-       const version = parsedUrl.query.version || req.body.version || undefined;
+       const version = parsedUrl.query.version || undefined;
        this.paymentCRMReturn(req, res, false, version);
      });
      this.router.post('/betavmreturn', (req, res) => {
        const parsedUrl = url.parse(req.url, true);
-       const version = parsedUrl.query.version || req.body.version || undefined;
+       const version = parsedUrl.query.version || undefined;
        this.paymentVMReturn(req, res, false, version);
      });
+    this.router.post('/crmplusreturn', (req, res) => {
+      const parsedUrl = url.parse(req.url, true);
+      const version = parsedUrl.query.version || undefined;
+      this.paymentCRMPlusReturn(req, res, false, version);
+    });
+    this.router.post('/vmplusreturn', (req, res) => {
+      const parsedUrl = url.parse(req.url, true);
+      const version = parsedUrl.query.version || undefined;
+      this.paymentVMPlusReturn(req, res, false, version);
+    });
 
 
      this.router.post('/crmsimplereturn', this.paymentCRMSimpleReturn.bind(this));
@@ -143,9 +168,11 @@ class GKashRouter {
     //customer scan
     this.router.post('/remotegetqr', this.remote_getQR.bind(this));
     this.router.post('/remotegetqrcallback', this.remote_getQRCallBack.bind(this));
+    this.router.post('/remotegetmasukqrcallback', this.remote_getMASUKQRCallBack.bind(this));
 
     // Direct order processing endpoint (no GKash payment required)
     this.router.post('/processOrder', this.handleProcessOrder.bind(this));
+    this.router.post('/processOrderPlus', this.handleProcessOrderPlus.bind(this));
     this.router.post('/processPOSOrder', this.handlePOSProcessOrder.bind(this));
     this.router.post('/processGamePlayOrder', this.handleGamePlayProcessOrder.bind(this));
 
@@ -995,17 +1022,107 @@ async remote_Status(req, res)  {
 
 
 
-async remote_getQRCallBack(req,res)
-{
-  console.log("remote_getQRCallBack");
-
+async remote_getMASUKQRCallBack(req, res) {
+  console.log('[REMOTEQR] remote_getMASUKQRCallBack');
   console.log(req.body);
-  var cCartID = req.body['cartid'] ?? "test";
-  console.log("cartid:" + cCartID);
-  this.writeWithRetry(fireStore.collection("gkash_qr").doc(cCartID), req.body);
-  console.log("remote_getQRCallBack write ok ");
+
+  const vCID = req.body['CID'] ?? "";
+  const vPOID = req.body['POID'] ?? "";
+  const vCartID = req.body['cartid'] ?? "test";
+  const vStatus = req.body['status'] ?? "";
+  const vCurrency = req.body['currency'] ?? "MYR";
+  const vAmount = req.body['amount'] ?? "";
+  const vSignature = req.body['signature'] ?? "";
+  const vDesc = req.body['description'] ?? "";
+
+  console.log('[REMOTEQR] cartid:', vCartID, 'status:', vStatus);
+
+  this.writeWithRetry(fireStore.collection("gkash_qr").doc(vCartID), req.body);
+  console.log('[REMOTEQR] write to gkash_qr ok');
+
+  res.status(200).send("OK");
+
+  if (!vStatus.includes("88")) {
+    console.log('[REMOTEQR] Payment not successful, skipping order processing, status:', vStatus);
+    return;
+  }
+
+  try {
+    const FieldPath = firebase.firestore.FieldPath;
+    const pendingQuery = await fireStore
+      .collectionGroup('pending_scan')
+      .where(FieldPath.documentId(), '==', vCartID)
+      .limit(1)
+      .get();
+
+    if (pendingQuery.empty) {
+      console.warn('[REMOTEQR] No pending_scan document found for cartId:', vCartID);
+      return;
+    }
+
+    const pendingDoc = pendingQuery.docs[0];
+    const pendingData = pendingDoc.data();
+    const storeId =
+      pendingData.storeid ??
+      pendingData.storeId ??
+      '';
+
+    if (!storeId) {
+      console.error('[REMOTEQR] pending_scan document has no storeid:', vCartID);
+      return;
+    }
+
+    console.log('[REMOTEQR] Found pending_scan for cartId:', vCartID, 'storeId:', storeId);
+
+    const gkashResult = {
+      CID: vCID,
+      POID: vPOID,
+      CARTID: vCartID,
+      STATUS: vStatus,
+      CURRENCY: vCurrency || "MYR",
+      AMOUNT: vAmount,
+      SIGNATURE: vSignature,
+      DESC: vDesc || 'Merchant scan payment result',
+      PAYMENT_TYPE: 'ePayment',
+    };
+
+    const options = {
+      enablePrinting: false,
+      enablePickingList: false,
+      enableFullProcessing: true,
+      deleteOrderTemp: false,
+    };
+
+    const result = await this.processOrderTransaction(storeId, vCartID, gkashResult, options, 'MASUK');
+    console.log('[REMOTEQR] processOrderTransaction result:', result?.status);
+
+    if (result?.status === 'success') {
+      await fireStore
+        .collection('masukio_pending_scan')
+        .doc(storeId)
+        .collection('pending_scan')
+        .doc(vCartID)
+        .delete();
+      console.log('[REMOTEQR] Deleted pending_scan doc:', vCartID);
+
+      await fireStore.collection('gkash_qr').doc(vCartID).delete();
+      console.log('[REMOTEQR] Deleted gkash_qr doc:', vCartID);
+    }
+  } catch (err) {
+    console.error('[REMOTEQR] Error processing remote QR order:', err);
+  }
+}
+
+async remote_getQRCallBack(req, res) {
+  console.log('[REMOTEQR] remote_getQRCallBack');
+  console.log(req.body);
+  const vCartID = req.body['cartid'] ?? "test";
+  console.log('[REMOTEQR] cartid:', vCartID);
+  this.writeWithRetry(fireStore.collection("gkash_qr").doc(vCartID), req.body);
+  console.log('[REMOTEQR] write to gkash_qr ok');
   res.status(200).send("OK");
 }
+
 
 async remote_getQR(req,res)
 {
@@ -1031,9 +1148,14 @@ async remote_getQR(req,res)
    if (req.body['Signature']) {
      cSignatureKey = req.body['Signature'];
    }
-  // cEmail = req.body['Email'] ?? "";
-  // cMobileNo = req.body['MobileNo'] ?? "";
-  
+  const caller = String(req.body['caller'] ?? req.body['Caller'] ?? '').trim().toUpperCase();
+  const callbackPath =
+    caller === 'MASUK'
+      ? 'remotegetmasukqrcallback'
+      : 'remotegetqrcallback';
+  const callbackUrl = `https://api.foodio.online/gkash/${callbackPath}`;
+  console.log('[REMOTEQR] remote_getQR caller:', caller || '(default)', 'callback:', callbackUrl);
+
   const formattedAmount = Math.round(parseFloat(cAmount.toString().replace(/,/g, '')) * 100).toString().padStart(3, '0');
   const signatureString = `${cSignatureKey};${cCID};${cCartID};${formattedAmount};${cCurrency}`;
 
@@ -1054,7 +1176,7 @@ async remote_getQR(req,res)
     "signature" : signatureKey,
     "paymentid" : cPaymentId,
     "terminalID" : cTID,
-    "callbackurl" : "https://api.foodio.online/gkash/remotegetqrcallback"
+    "callbackurl" : callbackUrl
     
     // "Amount": cAmount,
     // "Currency": cCurrency,
@@ -1521,7 +1643,7 @@ async testSendOTP()
 
   /**
    * Get the base URL for a given version
-   * @param {string} version - Version identifier (ab3b2, code8, cloud9, best10, market)
+   * @param {string} version - Version identifier (ceriapay, ceriarewards, leaderenergy, ab3b2, code8, cloud9, best10, market)
    * @param {boolean} isBeta - Whether this is a beta endpoint
    * @returns {string} Base URL for the version
    */
@@ -1529,11 +1651,14 @@ async testSendOTP()
     // If version is specified, use it
     if (version) {
       const versionMap = {
-        'ab3b2': 'foodio-online-ab3b2.web.app',
-        'code8': 'foodio-online-code8.web.app',
-        'cloud9': 'foodio-online-cloud9.web.app',
-        'best10': 'foodio-online-best10.web.app',
-        'market': 'foodio-market.web.app'
+        ceriapay: 'ceriapay.web.app',
+        ceriarewards: 'ceriarewards.web.app',
+        leaderenergy: 'leaderenergy.web.app',
+        ab3b2: 'foodio-online-ab3b2.web.app',
+        code8: 'foodio-online-code8.web.app',
+        cloud9: 'foodio-online-cloud9.web.app',
+        best10: 'foodio-online-best10.web.app',
+        market: 'foodio-market.web.app',
       };
       
       const baseUrl = versionMap[version.toLowerCase()];
@@ -1548,6 +1673,22 @@ async testSendOTP()
     } else {
       return 'https://foodio-online-best10.web.app';
     }
+  }
+
+  /**
+   * CeriaPay Flutter host from gkash return `version` query param.
+   * @param {string} version - ceriapay | ceriarewards | leaderenergy
+   * @returns {string} Base URL e.g. https://ceriapay.web.app
+   */
+  getCeriaPayBaseUrl(version) {
+    const map = {
+      ceriapay: 'ceriapay.web.app',
+      ceriarewards: 'ceriarewards.web.app',
+      leaderenergy: 'leaderenergy.web.app',
+    };
+    const normalized = normalizeAppHostVersion(version);
+    const host = normalized && map[normalized];
+    return host ? `https://${host}` : 'https://ceriapay.web.app';
   }
 
   async paymentCoinReturn (req, res, isBeta, version){
@@ -1572,6 +1713,7 @@ async testSendOTP()
     let vSignature = req.body['signature'] ?? "";
     let vDescription = req.body['description'] ?? "";
     let vPaymentType = req.body['PaymentType'] ?? "";
+    let vVersion = version ?? queryParams.version ?? "";
 
     console.log('vCID:', vCID);
     console.log('vPOID:', vPOID);
@@ -1599,7 +1741,7 @@ async testSendOTP()
     );
 
     // Setup redirect URLs
-    const baseUrl = getBaseUrlFromRequest(req, isBeta);
+    const baseUrl = getBaseUrlFromRequest(req, isBeta, vVersion);
     var urlSuccessHeader = baseUrl + "/#/coinsuccess/" + storeId + "/" + vCartID + "/" ;
     var urlFailHeader = baseUrl + "/#/coinfailed/" + storeId + "/" + vCartID + "/" ;
 
@@ -1644,7 +1786,7 @@ async testSendOTP()
     });
   }
 
-  async paymentCRMReturn (req, res, isBeta, version){
+  async paymentCRMReturn (req, res, isBeta, version, successPageName, failPageName){
 
     const dateTime = new UtilDateTime();
     
@@ -1654,6 +1796,8 @@ async testSendOTP()
 
     // Access individual parameters
     const storeId = queryParams.STOREID || 'defaultStore';
+    const successPage = successPageName || queryParams.SUCCESSPAGE || queryParams.successpage || 'crmsuccess';
+    const failPage = failPageName || queryParams.FAILPAGE || queryParams.failpage || 'crmfailed';
     console.log("storeid:" + storeId);
 
       
@@ -1666,6 +1810,7 @@ async testSendOTP()
     let vSignature = req.body['signature'] ?? "";
     let vDescription = req.body['description'] ?? "";
     let vPaymentType = req.body['PaymentType'] ?? "";
+    let vVersion = version ?? queryParams.version ?? "";
 
     console.log('vCID:', vCID);
     console.log('vPOID:', vPOID);
@@ -1693,9 +1838,9 @@ async testSendOTP()
     );
 
     // Setup redirect URLs
-    const baseUrl = getBaseUrlFromRequest(req, isBeta);
-    var urlSuccessHeader = baseUrl + "/#/crmsuccess/" + storeId + "/" + vCartID + "/" ;
-    var urlFailHeader = baseUrl + "/#/crmfailed/" + storeId + "/" + vCartID + "/" ;
+    const baseUrl = getBaseUrlFromRequest(req, isBeta, vVersion);
+    var urlSuccessHeader = baseUrl + "/#/" + successPage + "/" + storeId + "/" + vCartID + "/" ;
+    var urlFailHeader = baseUrl + "/#/" + failPage + "/" + storeId + "/" + vCartID + "/" ;
 
     var redirectTo = urlSuccessHeader;
 
@@ -1738,6 +1883,200 @@ async testSendOTP()
     });
   }
 
+  async paymentMasukReturn(req, res, isBeta, version, successPageName, failPageName) {
+
+    const dateTime = new UtilDateTime();
+
+    // Parse the query parameters
+    const parsedUrl = url.parse(req.url);
+    const queryParams = querystring.parse(parsedUrl.query);
+
+    // Access individual parameters
+    const storeId = queryParams.STOREID || 'defaultStore';
+    const successPage = successPageName || queryParams.SUCCESSPAGE || queryParams.successpage || 'yourordersuccess';
+    const failPage = failPageName || queryParams.FAILPAGE || queryParams.failpage || 'yourorderfailed';
+    console.log("[MASUK] storeid:" + storeId);
+
+    let vCID = req.body['CID'] ?? "";
+    let vPOID = req.body['POID'] ?? "";
+    let vCartID = req.body['cartid'] ?? "";
+    let vStatus = req.body['status'] ?? "";
+    let vCurrency = req.body['currency'] ?? "";
+    let vAmount = req.body['amount'] ?? "";
+    let vSignature = req.body['signature'] ?? "";
+    let vDescription = req.body['description'] ?? "";
+    let vPaymentType = req.body['PaymentType'] ?? "";
+
+    console.log('[MASUK] vCID:', vCID);
+    console.log('[MASUK] vPOID:', vPOID);
+    console.log('[MASUK] vCartID:', vCartID);
+    console.log('[MASUK] vStatus:', vStatus);
+    console.log('[MASUK] vCurrency:', vCurrency);
+    console.log('[MASUK] vAmount:', vAmount);
+    console.log('[MASUK] vSignature:', vSignature);
+    console.log('[MASUK] vDescription:', vDescription);
+    console.log('[MASUK] vPaymentType:', vPaymentType);
+
+    // Write GKash transaction log
+    writeGKashTransaction(storeId, dateTime.getCurrentDateString(),
+      {
+        CID: vCID,
+        POID: vPOID,
+        CARTID: vCartID,
+        STATUS: vStatus,
+        CURRENCY: vCurrency,
+        AMOUNT: vAmount,
+        SIGNATURE: vSignature,
+        DESC: vDescription,
+        PAYMENT_TYPE: vPaymentType,
+        SOURCE: 'MASUK'
+      }
+    );
+
+    // Setup redirect URLs
+    const baseUrl = "https://yourorder.web.app";
+    var urlSuccessHeader = baseUrl + "/#/" + successPage + "/" + storeId + "/" + vCartID + "/";
+    var urlFailHeader = baseUrl + "/#/" + failPage + "/" + storeId + "/" + vCartID + "/";
+
+    var redirectTo = urlSuccessHeader;
+
+    // Check if payment was successful
+    if (vStatus.includes("88") == false) {
+      redirectTo = urlFailHeader;
+      res.redirect(redirectTo);
+      console.log("[MASUK] payment failed, redirected with status " + vStatus);
+      console.log("[MASUK] payment redirected to " + redirectTo);
+      return;
+    }
+
+    console.log("[MASUK] Payment successful, processing order transaction...");
+    const gkashResult = {
+      CID: vCID,
+      POID: vPOID,
+      CARTID: vCartID,
+      STATUS: vStatus,
+      CURRENCY: vCurrency,
+      AMOUNT: vAmount,
+      SIGNATURE: vSignature,
+      DESC: vDescription,
+      PAYMENT_TYPE: vPaymentType
+    };
+    const masukOptions = {
+      enablePrinting: false,
+      enablePickingList: false,
+      enableFullProcessing: true,
+      deleteOrderTemp: false
+    };
+    await handleGkashReturnSettlement({
+      vCartID,
+      urlSuccessHeader,
+      urlFailHeader,
+      lockSource: 'gkash_masukreturn',
+      res,
+      runProcess: async () => {
+        return this.processOrderTransaction(storeId, vCartID, gkashResult, masukOptions, 'MASUK');
+      },
+    });
+  }
+
+  async paymentCRMPlusReturn(req, res, isBeta, version, successPageName, failPageName) {
+
+    const dateTime = new UtilDateTime();
+
+    // Parse the query parameters
+    const parsedUrl = url.parse(req.url);
+    const queryParams = querystring.parse(parsedUrl.query);
+
+    // Access individual parameters
+    const storeId = queryParams.STOREID || 'defaultStore';
+    const successPage = successPageName || queryParams.SUCCESSPAGE || queryParams.successpage || 'crmsuccess';
+    const failPage = failPageName || queryParams.FAILPAGE || queryParams.failpage || 'crmfailed';
+    console.log("[CRMPLUS] storeid:" + storeId);
+
+    let vCID =  req.body['CID'] ?? "";
+    let vPOID = req.body['POID'] ?? "";
+    let vCartID = req.body['cartid'] ?? "";
+    let vStatus = req.body['status'] ?? "";
+    let vCurrency = req.body['currency'] ?? "";
+    let vAmount = req.body['amount'] ?? "";
+    let vSignature = req.body['signature'] ?? "";
+    let vDescription = req.body['description'] ?? "";
+    let vPaymentType = req.body['PaymentType'] ?? "";
+    let vVersion = version ?? queryParams.version ?? "";
+
+    console.log('[CRMPLUS] vCID:', vCID);
+    console.log('[CRMPLUS] vPOID:', vPOID);
+    console.log('[CRMPLUS] vCartID:', vCartID);
+    console.log('[CRMPLUS] vStatus:', vStatus);
+    console.log('[CRMPLUS] vCurrency:', vCurrency);
+    console.log('[CRMPLUS] vAmount:', vAmount);
+    console.log('[CRMPLUS] vSignature:', vSignature);
+    console.log('[CRMPLUS] vDescription:', vDescription);
+    console.log('[CRMPLUS] vPaymentType:', vPaymentType);
+
+    // Write GKash transaction log
+    writeGKashTransaction(storeId, dateTime.getCurrentDateString(),
+      {
+        CID: vCID,
+        POID: vPOID,
+        CARTID: vCartID,
+        STATUS: vStatus,
+        CURRENCY: vCurrency,
+        AMOUNT: vAmount,
+        SIGNATURE: vSignature,
+        DESC: vDescription,
+        PAYMENT_TYPE: vPaymentType,
+        SOURCE: 'CRMPLUS'
+      }
+    );
+
+    // Setup redirect URLs
+    const baseUrl = getBaseUrlFromRequest(req, isBeta, vVersion);
+    var urlSuccessHeader = baseUrl + "/#/" + successPage + "/" + storeId + "/" + vCartID + "/";
+    var urlFailHeader = baseUrl + "/#/" + failPage + "/" + storeId + "/" + vCartID + "/";
+
+    var redirectTo = urlSuccessHeader;
+
+    // Check if payment was successful
+    if (vStatus.includes("88") == false) {
+      redirectTo = urlFailHeader;
+      res.redirect(redirectTo);
+      console.log("[CRMPLUS] payment failed, redirected with status " + vStatus);
+      console.log("[CRMPLUS] payment redirected to " + redirectTo);
+      return;
+    }
+
+    console.log("[CRMPLUS] Payment successful, processing order transaction via VendingPlus...");
+    const gkashResult = {
+      CID: vCID,
+      POID: vPOID,
+      CARTID: vCartID,
+      STATUS: vStatus,
+      CURRENCY: vCurrency,
+      AMOUNT: vAmount,
+      SIGNATURE: vSignature,
+      DESC: vDescription,
+      PAYMENT_TYPE: vPaymentType
+    };
+    const crmPlusOptions = {
+      enablePrinting: false,
+      enablePickingList: false,
+      enableFullProcessing: true,
+      deleteOrderTemp: false,
+      usePlus: true,
+    };
+    await handleGkashReturnSettlement({
+      vCartID,
+      urlSuccessHeader,
+      urlFailHeader,
+      lockSource: 'gkash_crmplusreturn',
+      res,
+      runProcess: async () => {
+        return this.processOrderTransaction(storeId, vCartID, gkashResult, crmPlusOptions, 'CRM');
+      },
+    });
+  }
+
   /**
    * Payment return handler for Kaotim credit top-up
    * Routes to /kaotimsuccess/:storeid/:orderid/:userid or /kaotimfailed/:storeid/:orderid/:userid
@@ -1763,6 +2102,7 @@ async testSendOTP()
     let vSignature = req.body['signature'] ?? "";
     let vDescription = req.body['description'] ?? "";
     let vPaymentType = req.body['PaymentType'] ?? "";
+    let vVersion = version ?? queryParams.version ?? "";
 
     console.log('[KAOTIM] vCID:', vCID);
     console.log('[KAOTIM] vPOID:', vPOID);
@@ -1791,7 +2131,7 @@ async testSendOTP()
     );
 
     // Setup redirect URLs for Kaotim
-    const baseUrl = getBaseUrlFromRequest(req, isBeta);
+    const baseUrl = getBaseUrlFromRequest(req, isBeta, vVersion);
     var urlSuccessHeader = baseUrl + "/#/kaotimsuccess/" + storeId + "/" + vCartID + "/" + userId;
     var urlFailHeader = baseUrl + "/#/kaotimfailed/" + storeId + "/" + vCartID + "/" + userId;
 
@@ -1939,6 +2279,7 @@ async testSendOTP()
     let vSignature = req.body['signature'] ?? "";
     let vDescription = req.body['description'] ?? "";
     let vPaymentType = req.body['PaymentType'] ?? "";
+    let vVersion = version ?? queryParams.version ?? "";
 
     console.log('[CERIAPAY] vCID:', vCID);
     console.log('[CERIAPAY] vPOID:', vPOID);
@@ -1967,8 +2308,9 @@ async testSendOTP()
     );
 
     // Setup redirect URLs for CeriaPay
-    var urlSuccessHeader = "https://ceriapay.web.app/#/ceriapaysuccess/" + storeId + "/" + vCartID + "/" + userId;
-    var urlFailHeader = "https://ceriapay.web.app/#/ceriapayfailed/" + storeId + "/" + vCartID + "/" + userId;
+    const ceriaPayBaseUrl = this.getCeriaPayBaseUrl(vVersion);
+    var urlSuccessHeader = ceriaPayBaseUrl + "/#/ceriapaysuccess/" + storeId + "/" + vCartID + "/" + userId;
+    var urlFailHeader = ceriaPayBaseUrl + "/#/ceriapayfailed/" + storeId + "/" + vCartID + "/" + userId;
 
     var redirectTo = urlSuccessHeader;
 
@@ -2062,6 +2404,7 @@ async testSendOTP()
     let vSignature = req.body['signature'] ?? "";
     let vDescription = req.body['description'] ?? "";
     let vPaymentType = req.body['PaymentType'] ?? "";
+    let vVersion = version ?? queryParams.version ?? "";
 
     console.log("paymentTBReturn return called");
     console.log('vCID:', vCID);
@@ -2092,7 +2435,7 @@ async testSendOTP()
       );
 
 
-      const baseUrl = getBaseUrlFromRequest(req, isBeta);
+      const baseUrl = getBaseUrlFromRequest(req, isBeta, vVersion);
       var urlSuccessHeader = baseUrl + "/#/tbsuccess/" + storeId + "/" + vCartID + "/" ;
       var urlFailHeader = baseUrl + "/#/tbfailed/" + storeId + "/" + vCartID + "/" ;
       var redirectTo = urlSuccessHeader;
@@ -2175,6 +2518,7 @@ async testSendOTP()
     let vSignature = req.body['signature'] ?? "";
     let vDescription = req.body['description'] ?? "";
     let vPaymentType = req.body['PaymentType'] ?? "";
+    let vVersion = version ?? queryParams.version ?? "";
 
     console.log('vCID:', vCID);
     console.log('vPOID:', vPOID);
@@ -2204,7 +2548,7 @@ async testSendOTP()
       );
 
 
-      const baseUrl = getBaseUrlFromRequest(req, isBeta);
+      const baseUrl = getBaseUrlFromRequest(req, isBeta, vVersion);
       var urlSuccessHeader = baseUrl + "/#/success/" + storeId + "/" + vCartID + "/" ;
       var urlFailHeader = baseUrl + "/#/failed/" + storeId + "/" + vCartID + "/" ;
       var redirectTo = urlSuccessHeader;
@@ -2247,6 +2591,102 @@ async testSendOTP()
       },
     });
 
+  }
+
+  async paymentVMPlusReturn(req, res, isBeta, version) {
+
+    const dateTime = new UtilDateTime();
+
+    // Parse the query parameters
+    const parsedUrl = url.parse(req.url);
+    const queryParams = querystring.parse(parsedUrl.query);
+
+    // Access individual parameters
+    const storeId = queryParams.STOREID || 'defaultStore';
+    console.log("[VMPLUS] storeid:" + storeId);
+
+    let vCID =  req.body['CID'] ?? "";
+    let vPOID = req.body['POID'] ?? "";
+    let vCartID = req.body['cartid'] ?? "";
+    let vStatus = req.body['status'] ?? "";
+    let vCurrency = req.body['currency'] ?? "";
+    let vAmount = req.body['amount'] ?? "";
+    let vSignature = req.body['signature'] ?? "";
+    let vDescription = req.body['description'] ?? "";
+    let vPaymentType = req.body['PaymentType'] ?? "";
+    let vVersion = version ?? queryParams.version ?? "";
+
+    console.log('[VMPLUS] vCID:', vCID);
+    console.log('[VMPLUS] vPOID:', vPOID);
+    console.log('[VMPLUS] vCartID:', vCartID);
+    console.log('[VMPLUS] vStatus:', vStatus);
+    console.log('[VMPLUS] vCurrency:', vCurrency);
+    console.log('[VMPLUS] vAmount:', vAmount);
+    console.log('[VMPLUS] vSignature:', vSignature);
+    console.log('[VMPLUS] vDescription:', vDescription);
+    console.log('[VMPLUS] vPaymentType:', vPaymentType);
+
+    // Write GKash transaction log
+    writeGKashTransaction(storeId, dateTime.getCurrentDateString(),
+      {
+        CID: vCID,
+        POID: vPOID,
+        CARTID: vCartID,
+        STATUS: vStatus,
+        CURRENCY: vCurrency,
+        AMOUNT: vAmount,
+        SIGNATURE: vSignature,
+        DESC: vDescription,
+        PAYMENT_TYPE: vPaymentType,
+        SOURCE: 'VMPLUS'
+      }
+    );
+
+    // Setup redirect URLs
+    const baseUrl = getBaseUrlFromRequest(req, isBeta, vVersion);
+    var urlSuccessHeader = baseUrl + "/#/success/" + storeId + "/" + vCartID + "/";
+    var urlFailHeader = baseUrl + "/#/failed/" + storeId + "/" + vCartID + "/";
+
+    var redirectTo = urlSuccessHeader;
+
+    // Check if payment was successful
+    if (vStatus.includes("88") == false) {
+      redirectTo = urlFailHeader;
+      res.redirect(redirectTo);
+      console.log("[VMPLUS] payment failed, redirected with status " + vStatus);
+      console.log("[VMPLUS] payment redirected to " + redirectTo);
+      return;
+    }
+
+    console.log("[VMPLUS] Payment successful, processing order transaction via VendingPlus...");
+    const gkashResult = {
+      CID: vCID,
+      POID: vPOID,
+      CARTID: vCartID,
+      STATUS: vStatus,
+      CURRENCY: vCurrency,
+      AMOUNT: vAmount,
+      SIGNATURE: vSignature,
+      DESC: vDescription,
+      PAYMENT_TYPE: vPaymentType
+    };
+    const vmPlusOptions = {
+      enablePrinting: false,
+      enablePickingList: false,
+      enableFullProcessing: true,
+      deleteOrderTemp: false,
+      usePlus: true,
+    };
+    await handleGkashReturnSettlement({
+      vCartID,
+      urlSuccessHeader,
+      urlFailHeader,
+      lockSource: 'gkash_vmplusreturn',
+      res,
+      runProcess: async () => {
+        return this.processOrderTransaction(storeId, vCartID, gkashResult, vmPlusOptions, 'VM');
+      },
+    });
   }
 
 
@@ -2360,9 +2800,11 @@ async testSendOTP()
       const phoneString = this.getPhoneString(currentOrderModel);
       console.log('📞 [DEBUG] Phone string extracted:', phoneString);
       let currentUserModel = null;
-      if (phoneString !== "0") {
-        currentUserModel = await this.loadUserModel(phoneString);
-        console.log('✅ [DEBUG] Step 4 Complete: User model loaded for phone:', phoneString);
+      let userDocId = null;
+      if (phoneString !== "0" || this.isCorporateOrder(currentOrderModel)) {
+        currentUserModel = await this.loadUserModel(phoneString, currentOrderModel);
+        userDocId = this.getUserFirestoreDocId(currentOrderModel, phoneString, currentUserModel);
+        console.log('✅ [DEBUG] Step 4 Complete: User model loaded for phone:', phoneString, 'userDocId:', userDocId);
       } else {
         console.log('⚠️ [DEBUG] Step 4 Skipped: No valid phone number found');
       }
@@ -2420,7 +2862,7 @@ async testSendOTP()
       //   console.log('🎫 [DEBUG] Processing voucher items for regular order...');
       //   await this.handleVoucherItems(currentOrderModel, phoneString);
          console.log('💰 [DEBUG] Processing credit items for regular order...');
-         await this.handleCreditItems(currentOrderModel, phoneString);
+         await this.handleCreditItems(currentOrderModel, userDocId, caller);
       // } else {
       //   console.log('🎫 [DEBUG] Redeeming assigned vouchers for vending order...');
       //   await this.redeemAssignedVouchers(currentOrderModel, phoneString);
@@ -2582,7 +3024,8 @@ async testSendOTP()
       enablePrinting = false,        // Whether to enable receipt printing
       enablePickingList = false,     // Whether to generate picking lists
       enableFullProcessing = true,  // Whether to enable all processing features
-      deleteOrderTemp = false       // Whether to delete order_temp after processing
+      deleteOrderTemp = false,      // Whether to delete order_temp after processing
+      usePlus = false,              // Whether to use VendingPlus (Fudbox) instead of legacy vending
     } = options;
 
     let isCOIN = (caller === "COIN");
@@ -2690,9 +3133,11 @@ async testSendOTP()
       const phoneString = this.getPhoneString(currentOrderModel);
       console.log('📞 [DEBUG] Phone string extracted:', phoneString);
       let currentUserModel = null;
-      if (phoneString !== "0") {
-        currentUserModel = await this.loadUserModel(phoneString);
-        console.log('✅ [DEBUG] Step 4 Complete: User model loaded for phone:', phoneString, '(', Date.now() - step4Start, 'ms)');
+      let userDocId = null;
+      if (phoneString !== "0" || this.isCorporateOrder(currentOrderModel)) {
+        currentUserModel = await this.loadUserModel(phoneString, currentOrderModel);
+        userDocId = this.getUserFirestoreDocId(currentOrderModel, phoneString, currentUserModel);
+        console.log('✅ [DEBUG] Step 4 Complete: User model loaded for phone:', phoneString, 'userDocId:', userDocId, '(', Date.now() - step4Start, 'ms)');
       } else {
         console.log('⚠️ [DEBUG] Step 4 Skipped: No valid phone number found', '(', Date.now() - step4Start, 'ms)');
       }
@@ -2723,6 +3168,10 @@ async testSendOTP()
       await this.updateTransactionDetails(currentOrderModel, gkashResult);
       console.log('✅ [DEBUG] Step 6 Complete: Transaction details updated - Payment Status:', currentOrderModel.paymentstatus, '(', Date.now() - step6Start, 'ms)');
 
+      if (caller === 'MASUK') {
+        await this.finalizeMasukioOrder(orderId, currentOrderModel);
+      }
+
       // Step 7: Save order based on payment type
       const step7Start = Date.now();
       console.log('💾 [DEBUG] Step 7: Saving order based on payment type...');
@@ -2731,7 +3180,7 @@ async testSendOTP()
         await this.saveCounterOrder(storeId, currentOrderModel);
       } else {
         console.log('🌐 [DEBUG] Saving online order to multiple collections...');
-        await this.saveOrderToCollections(storeId, currentOrderModel, phoneString);
+        await this.saveOrderToCollections(storeId, currentOrderModel, userDocId);
       }
       
       // Always save to myInvois collection (non-blocking)
@@ -2757,27 +3206,27 @@ async testSendOTP()
       // Step 8: Handle vouchers and credits
       if (!isVendingOrder) {
         parallelTasks.push(
-          this.handleVoucherItems(currentOrderModel, phoneString)
+          this.handleVoucherItems(currentOrderModel, userDocId)
             .then(() => console.log('✅ [DEBUG] Step 8a: Voucher items processed'))
             .catch(err => console.error('❌ [DEBUG] Step 8a Failed:', err))
         );
         parallelTasks.push(
-          this.handleCreditItems(currentOrderModel, phoneString)
+          this.handleCreditItems(currentOrderModel, userDocId)
             .then(() => console.log('✅ [DEBUG] Step 8b: Credit items processed'))
             .catch(err => console.error('❌ [DEBUG] Step 8b Failed:', err))
         );
       } else {
         parallelTasks.push(
-          this.redeemAssignedVouchers(currentOrderModel, phoneString)
+          this.redeemAssignedVouchers(currentOrderModel, userDocId)
             .then(() => console.log('✅ [DEBUG] Step 8: Assigned vouchers redeemed'))
             .catch(err => console.error('❌ [DEBUG] Step 8 Failed:', err))
         );
       }
 
       // Step 8.5: Handle free vouchers
-      if (currentOrderModel.freevouchers && Array.isArray(currentOrderModel.freevouchers) && currentOrderModel.freevouchers.length > 0 && phoneString !== "0") {
+      if (currentOrderModel.freevouchers && Array.isArray(currentOrderModel.freevouchers) && currentOrderModel.freevouchers.length > 0 && userDocId) {
         parallelTasks.push(
-          this.handleFreeVouchers(currentOrderModel, phoneString)
+          this.handleFreeVouchers(currentOrderModel, userDocId)
             .then(() => console.log('✅ [DEBUG] Step 8.5: Free vouchers processed'))
             .catch(err => console.error('❌ [DEBUG] Step 8.5 Failed:', err))
         );
@@ -2786,15 +3235,15 @@ async testSendOTP()
       // Step 9: Add loyalty points
       let pointsAdded = 0;
       parallelTasks.push(
-        this.addOrderWithLoyaltyPoints(phoneString, currentOrderModel, currentStoreModel)
+        this.addOrderWithLoyaltyPoints(userDocId, currentOrderModel, currentStoreModel)
           .then(pts => { pointsAdded = pts; console.log('✅ [DEBUG] Step 9: Loyalty points added -', pts); })
           .catch(err => console.error('❌ [DEBUG] Step 9 Failed:', err))
       );
 
       // Step 9.2: Award stamp card progress (off critical path: not awaited so order returns sooner)
-      if (phoneString !== "0") {
+      if (userDocId) {
         const orderTotalForStamp = parseFloat(currentOrderModel.totalpaid);
-        this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid, currentStoreModel?.companyid || currentStoreModel?.companyId || '')
+        this.awardStampForOrder(userDocId, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid, currentStoreModel?.companyid || currentStoreModel?.companyId || '')
           .then(() => console.log('✅ [DEBUG] Step 9.2: Stamp card awarded'))
           .catch(err => console.error('❌ [DEBUG] Step 9.2 Failed:', err));
       }
@@ -2805,11 +3254,8 @@ async testSendOTP()
       // Step 10: Handle vending machine specific logic
       const step10Start = Date.now();
       if (isVendingOrder) {
-        // console.log('🤖 [DEBUG] Step 10: Processing vending order specifics...');
-        // console.log('📦 [DEBUG] Saving to pickup collection...');
-        // await this.saveToPickupCollection(currentOrderModel);
-        console.log('📞 [DEBUG] Triggering vending payment callback...');
-        await this.triggerVendingPaymentCallback(currentOrderModel, currentStoreModel);
+        console.log('📞 [DEBUG] Step 10: Triggering vending payment callback (usePlus=' + usePlus + ')...');
+        await this.triggerVendingPaymentCallback(currentOrderModel, currentStoreModel, usePlus);
         console.log('✅ [DEBUG] Step 10 Complete: Vending order processing done', '(', Date.now() - step10Start, 'ms)');
       } else {
         console.log('⏭️ [DEBUG] Step 10 Skipped: Not a vending order', '(', Date.now() - step10Start, 'ms)');
@@ -2842,8 +3288,8 @@ async testSendOTP()
       // Step 10.7: Retrieve pickup code for vending orders
       const step107Start = Date.now();
       if (enableFullProcessing && isVendingOrder && currentOrderModel.vendingid && !isCOIN) {
-        console.log('🔑 [DEBUG] Step 10.7: Retrieving pickup code for vending order...');
-        await this.retrievePickupCode(currentOrderModel, phoneString);
+        console.log('🔑 [DEBUG] Step 10.7: Retrieving pickup code (usePlus=' + usePlus + ')...');
+        await this.retrievePickupCode(currentOrderModel, phoneString, usePlus);
         console.log('✅ [DEBUG] Step 10.7 Complete: Pickup code retrieved', '(', Date.now() - step107Start, 'ms)');
 
         console.log('🤖 [DEBUG] Step 10.7: Processing vending order specifics...');
@@ -2886,7 +3332,7 @@ async testSendOTP()
         this.updateCurrentOrderToUser(currentOrderModel, caller)
           .then(() => console.log('✅ [DEBUG] Step 11.1 Complete: user cart_order updated'))
           .catch(err => console.error('❌ [DEBUG] Step 11.1 Failed:', err)),
-        this.processBlindboxVoucher(currentOrderModel, phoneString)
+        this.processBlindboxVoucher(currentOrderModel, userDocId)
           .then(() => console.log('✅ [DEBUG] Step 11.2 Complete: blindbox voucher processed'))
           .catch(err => console.error('❌ [DEBUG] Step 11.2 Failed:', err)),
       ]);
@@ -3038,9 +3484,11 @@ async testSendOTP()
       const phoneString = this.getPhoneString(currentOrderModel);
       console.log('📞 [POS DEBUG] Phone string extracted:', phoneString);
       let currentUserModel = null;
-      if (phoneString !== "0") {
-        currentUserModel = await this.loadUserModel(phoneString);
-        console.log('✅ [POS DEBUG] Step 4 Complete: User model loaded for phone:', phoneString);
+      let userDocId = null;
+      if (phoneString !== "0" || this.isCorporateOrder(currentOrderModel)) {
+        currentUserModel = await this.loadUserModel(phoneString, currentOrderModel);
+        userDocId = this.getUserFirestoreDocId(currentOrderModel, phoneString, currentUserModel);
+        console.log('✅ [POS DEBUG] Step 4 Complete: User model loaded for phone:', phoneString, 'userDocId:', userDocId);
       } else {
         console.log('⚠️ [POS DEBUG] Step 4 Skipped: No valid phone number found');
       }
@@ -3104,20 +3552,20 @@ async testSendOTP()
       
       if (!isVendingOrder) {
         console.log('🎫 [POS DEBUG] Processing voucher items for regular order...');
-        await this.handleVoucherItems(currentOrderModel, phoneString);
+        await this.handleVoucherItems(currentOrderModel, userDocId);
         console.log('💰 [POS DEBUG] Processing credit items for regular order...');
-        await this.handleCreditItems(currentOrderModel, phoneString);
+        await this.handleCreditItems(currentOrderModel, userDocId);
       } else {
         console.log('🎫 [POS DEBUG] Redeeming assigned vouchers for vending order...');
-        await this.redeemAssignedVouchers(currentOrderModel, phoneString);
+        await this.redeemAssignedVouchers(currentOrderModel, userDocId);
         
       }
       console.log('✅ [POS DEBUG] Step 5 Complete: Vouchers and credits processed');
 
       // Step 5.5: Handle free vouchers (if provided in order model)
-      if (currentOrderModel.freevouchers && Array.isArray(currentOrderModel.freevouchers) && currentOrderModel.freevouchers.length > 0 && phoneString !== "0") {
+      if (currentOrderModel.freevouchers && Array.isArray(currentOrderModel.freevouchers) && currentOrderModel.freevouchers.length > 0 && userDocId) {
         console.log('🎁 [POS DEBUG] Step 5.5: Processing free vouchers...');
-        await this.handleFreeVouchers(currentOrderModel, phoneString);
+        await this.handleFreeVouchers(currentOrderModel, userDocId);
         console.log('✅ [POS DEBUG] Step 5.5 Complete: Free vouchers processed');
       } else {
         console.log('⏭️ [POS DEBUG] Step 5.5 Skipped: No free vouchers or invalid phone number');
@@ -3127,15 +3575,15 @@ async testSendOTP()
 
       // Step 6: Add loyalty points
       console.log('⭐ [POS DEBUG] Step 6: Adding loyalty points...');
-      const pointsAdded = await this.addOrderWithLoyaltyPoints(phoneString, currentOrderModel, currentStoreModel);
+      const pointsAdded = await this.addOrderWithLoyaltyPoints(userDocId, currentOrderModel, currentStoreModel);
       console.log('✅ [POS DEBUG] Step 6 Complete: Loyalty points added -', pointsAdded, 'points');
 
       // Step 7: Award stamp card progress (if eligible)
       try {
-        if (phoneString !== "0") {
+        if (userDocId) {
           console.log('🟩 [POS DEBUG] Step 7: Awarding stamp card (if eligible)... ',   parseFloat(currentOrderModel.totalpaid ));
           const orderTotalForStamp =  parseFloat(currentOrderModel.totalpaid ); //parseFloat(currentOrderModel.totalpaid || currentOrderModel.totalprice);
-          await this.awardStampForOrder(phoneString, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid, currentStoreModel?.companyid || currentStoreModel?.companyId || '');
+          await this.awardStampForOrder(userDocId, currentOrderModel.id, orderTotalForStamp, currentOrderModel.storeid, currentStoreModel?.companyid || currentStoreModel?.companyId || '');
           console.log('✅ [POS DEBUG] Step 7 Complete: Stamp card award step executed');
         } else {
           console.log('⏭️ [POS DEBUG] Step 7 Skipped: No valid phone number for stamp card');
@@ -3674,26 +4122,99 @@ console.log("set payment status :", orderModel.paymentstatus);
     return phoneString;
   }
 
-  async loadUserModel(phoneString) {
-    console.log("Loading user model for phone:", phoneString);
+  /** @returns {boolean} */
+  isCorporateOrder(orderModel) {
+    if (!orderModel) return false;
+    const truthy = (v) =>
+      v === true ||
+      v === 1 ||
+      (typeof v === "string" && ["true", "1", "yes", "corporate"].includes(v.trim().toLowerCase()));
+    if (truthy(orderModel.iscorporate)) return true;
+    if (truthy(orderModel.isCorporate)) return true;
+    if (truthy(orderModel.is_corporate)) return true;
+    if (truthy(orderModel.corporate)) return true;
+    const pt = String(orderModel.paymenttype ?? orderModel.paymentType ?? "").toUpperCase();
+    if (pt === "CORPORATE" || pt.includes("CORPORATE")) return true;
+    return false;
+  }
+
+  /**
+   * Firestore `user` collection document id: `FU_{phone}` for retail, `CORP_{employeeId}` for corporate when employee id is known.
+   * @param {object|null} orderModel
+   * @param {string} phoneString normalized phone from getPhoneString (no FU_ prefix)
+   * @param {object|null} userModel loaded UserModel instance
+   * @returns {string|null}
+   */
+  getUserFirestoreDocId(orderModel, phoneString, userModel) {
+    if (!phoneString || phoneString === "0") return null;
+    if (!this.isCorporateOrder(orderModel)) return `FU_${phoneString}`;
+    const emp = String(
+      userModel?.employeeId ?? orderModel?.employee_id ?? orderModel?.employeeId ?? ""
+    ).trim();
+    if (emp) return `CORP_${emp}`;
+    return `FU_${phoneString}`;
+  }
+
+  async loadUserModel(phoneString, orderModel = null) {
+    const isCorp = this.isCorporateOrder(orderModel);
+    console.log("Loading user model for phone:", phoneString, "corporate:", isCorp);
+
+    const fetchUser = async (docId) => {
+      const userResult = await fireStore.collection("user").doc(docId).get();
+      return UserModel.fromDocument(userResult);
+    };
+
     try {
-      const userResult = await fireStore.collection("user").doc(`FU_${phoneString}`).get();
-      const userModel = UserModel.fromDocument(userResult);
-      if (userModel) {
-        console.log("User model loaded successfully:", userModel.displayName || "");
+      // Non-corporate: phone is mandatory
+      if (!isCorp) {
+        if (!phoneString || phoneString === "0") return null;
+        const userModel = await fetchUser(`FU_${phoneString}`);
+        if (userModel) {
+          console.log("User model loaded successfully:", userModel.displayName || "");
+        } else {
+          console.log("User document not found for:", `FU_${phoneString}`);
+        }
         return userModel;
-      } else {
-        console.log("User document not found for:", `FU_${phoneString}`);
-        return null;
       }
+
+      // Corporate path — employee_id is the primary key
+      const orderEmp = String(orderModel?.employee_id ?? orderModel?.employeeId ?? "").trim();
+
+      // Only attempt phone lookup when we actually have a phone
+      let phoneUser = null;
+      if (phoneString && phoneString !== "0") {
+        phoneUser = await fetchUser(`FU_${phoneString}`);
+      }
+
+      const empFromUser = String(phoneUser?.employeeId ?? "").trim();
+      const employeeId = empFromUser || orderEmp; // prefer user-doc value
+
+      if (employeeId) {
+        const corpDocId = `CORP_${employeeId}`;
+        const corpUser = await fetchUser(corpDocId);
+        if (corpUser) {
+          console.log("Corporate user model loaded from:", corpDocId, corpUser.displayName || "");
+          return corpUser;
+        }
+        console.log("No CORP_ doc at", corpDocId, "- falling back");
+      }
+
+      if (phoneUser) {
+        console.log("Corporate order: using phone-based user FU_", phoneString);
+        return phoneUser;
+      }
+
+      console.log("User not found for corporate phone:", phoneString, "employeeId:", employeeId);
+      return null;
+
     } catch (ex) {
       console.error("Error loading user model:", ex);
       return null;
     }
   }
 
-  async saveOrderToCollections(storeId, orderModel, phoneString) {
-    console.log("Saving order to collections to " + phoneString);
+  async saveOrderToCollections(storeId, orderModel, userDocId) {
+    console.log("Saving order to collections to " + userDocId);
     
     const orderData = orderModel;
     
@@ -3733,11 +4254,11 @@ console.log("set payment status :", orderModel.paymentstatus);
         .set(orderData),
     ];
 
-    // Save to user orders (only if valid phone)
-    if (phoneString !== "0") {
+    // Save to user orders (only when we have a resolved user document id)
+    if (userDocId) {
       writePromises.push(
         fireStore.collection("user")
-          .doc(`FU_${phoneString}`)
+          .doc(userDocId)
           .collection("order")
           .doc(orderModel.id)
           .set(orderData)
@@ -3748,14 +4269,14 @@ console.log("set payment status :", orderModel.paymentstatus);
     await Promise.all(writePromises);
   }
 
-  async handleVoucherItems(orderModel, phoneString) {
+  async handleVoucherItems(orderModel, userDocId) {
     console.log("🎫 [VOUCHER] ========== HANDLING VOUCHER ITEMS ==========");
-    console.log("🎫 [VOUCHER] Phone String:", phoneString);
+    console.log("🎫 [VOUCHER] User doc id:", userDocId);
     console.log("🎫 [VOUCHER] Order ID:", orderModel.id);
     console.log("🎫 [VOUCHER] Total Order Items:", orderModel.orderitems?.length || 0);
     
-    if (!orderModel.orderitems || phoneString === "0") {
-      console.log("🎫 [VOUCHER] No order items or invalid phone - skipping voucher processing");
+    if (!orderModel.orderitems || !userDocId) {
+      console.log("🎫 [VOUCHER] No order items or invalid user doc - skipping voucher processing");
       return;
     }
 
@@ -3775,8 +4296,8 @@ console.log("set payment status :", orderModel.paymentstatus);
         console.log("🎫 [VOUCHER] Store Title:", orderItem.store);
         
         try {
-          const userRef = fireStore.collection("user").doc(`FU_${phoneString}`);
-          console.log("🎫 [VOUCHER] User Document Path:", `FU_${phoneString}`);
+          const userRef = fireStore.collection("user").doc(userDocId);
+          console.log("🎫 [VOUCHER] User Document Path:", userDocId);
           
           // Query existing vouchers
           console.log("🎫 [VOUCHER] Querying for existing vouchers with menuid:", orderItem.menuid + " voucher menu id " + orderItem.menuvoucherid);
@@ -3967,10 +4488,10 @@ console.log("set payment status :", orderModel.paymentstatus);
     console.log("🎫 [VOUCHER] Successfully processed", processedVouchers.length, "out of", voucherItems.length, "voucher items");
   }
 
-  async handleFreeVouchers(orderModel, phoneString) {
+  async handleFreeVouchers(orderModel, userDocId) {
     console.log("🎁 [FREE_VOUCHER] ========== STARTING FREE VOUCHER PROCESSING ==========");
     console.log("🎁 [FREE_VOUCHER] Order ID:", orderModel.id);
-    console.log("🎁 [FREE_VOUCHER] Phone String:", phoneString);
+    console.log("🎁 [FREE_VOUCHER] User doc id:", userDocId);
     console.log("🎁 [FREE_VOUCHER] Free Vouchers Count:", orderModel.freevouchers?.length || 0);
 
     if (!orderModel.freevouchers || !Array.isArray(orderModel.freevouchers) || orderModel.freevouchers.length === 0) {
@@ -3978,12 +4499,12 @@ console.log("set payment status :", orderModel.paymentstatus);
       return;
     }
 
-    if (phoneString === "0") {
-      console.log("❌ [FREE_VOUCHER] Invalid phone number, cannot save vouchers");
+    if (!userDocId) {
+      console.log("❌ [FREE_VOUCHER] Invalid user document id, cannot save vouchers");
       return;
     }
 
-    const userRef = fireStore.collection("user").doc(`FU_${phoneString}`);
+    const userRef = fireStore.collection("user").doc(userDocId);
 
     // Process each free voucher
     for (let index = 0; index < orderModel.freevouchers.length; index++) {
@@ -4066,6 +4587,8 @@ console.log("set payment status :", orderModel.paymentstatus);
     try {
       const userRef = fireStore.collection('user').doc(userId);
       const cardBatch = fireStore.batch();
+      /** Loyalty cards copied this run that have `isforevent`; used for `event_voucher` grants. */
+      let eventLoyaltyCardIds = [];
 
       // Copy loyalty cards if any are configured
       if (loyaltyCardIds.length > 0) {
@@ -4112,10 +4635,17 @@ console.log("set payment status :", orderModel.paymentstatus);
             console.log("⚠️ [LOYALTY_CARDS] Missing cards (not found in database):", missingCardIds);
           }
 
+          const eventCardIdSet = new Set();
+
           // Copy only new cards to user's collection
           for (const doc of loyaltyCardsSnapshot.docs) {
             const loyaltyCardData = doc.data();
             const cardId = loyaltyCardData.id;
+            const isForEvent =
+              loyaltyCardData.isforevent === true || loyaltyCardData.isForEvent === true;
+            if (isForEvent && cardId) {
+              eventCardIdSet.add(cardId);
+            }
             const newLoyaltyCardRef = userRef
               .collection('loyalty_cards')
               .doc(cardId);
@@ -4134,6 +4664,13 @@ console.log("set payment status :", orderModel.paymentstatus);
             console.log("🎫 [LOYALTY_CARDS] Target Collection: loyalty_cards");
             console.log("🎫 [LOYALTY_CARDS] ===== END LOYALTY CARD INFO =====");
           }
+          eventLoyaltyCardIds = Array.from(eventCardIdSet);
+          if (eventLoyaltyCardIds.length > 0) {
+            console.log(
+              "🎫 [LOYALTY_CARDS] Event loyalty card IDs (isforevent) for voucher copy:",
+              eventLoyaltyCardIds,
+            );
+          }
           console.log(`✅ [LOYALTY_CARDS] Queued ${cardsToAdd.length} new loyalty cards for copying`);
         } else {
           console.log("⏭️ [LOYALTY_CARDS] All loyalty cards already exist for user, skipping card copying");
@@ -4150,10 +4687,27 @@ console.log("set payment status :", orderModel.paymentstatus);
       // Phase 2a: copy relevant vouchers in a fresh batch so reads include committed cards
       const voucherBatch = fireStore.batch();
       await this._copyRelevantVouchersToUser(userRef, voucherBatch, machineModelId);
+      await this._copyEventVouchersForEventLoyaltyCards(
+        userRef,
+        voucherBatch,
+        eventLoyaltyCardIds,
+        machineModelId,
+      );
 
       console.log("💾 [VOUCHERS] ===== COMMITTING VOUCHERS BATCH =====");
       await voucherBatch.commit();
       console.log("✅ [VOUCHERS] Vouchers batch committed");
+
+      if (eventLoyaltyCardIds.length > 0) {
+        console.log(
+          "🎫 [LOYALTY_CARDS] Event loyalty path: vouchers committed; skipping stamp cards and promotions",
+        );
+        console.log("🎫 [LOYALTY_CARDS] ========== COMPLETED LOYALTY CARD COPYING (event) ==========");
+        return {
+          success: true,
+          message: "Loyalty cards and event vouchers copied successfully",
+        };
+      }
 
       // Phase 2b: copy relevant stamp cards from crm_stamp_card into user/stampcard
       console.log("🎫 [STAMP] ===== STARTING STAMP CARD COPYING ===== " + userId);
@@ -4178,6 +4732,102 @@ console.log("set payment status :", orderModel.paymentstatus);
       console.error("❌ [LOYALTY_CARDS] Error copying loyalty cards and vouchers:", error);
       console.error("❌ [LOYALTY_CARDS] Error stack:", error.stack);
       throw error;
+    }
+  }
+
+  /**
+   * Copies `event_voucher` docs linked by `loyaltyCardId` to `user/{id}/vouchers` after event
+   * loyalty cards are committed. Event catalog is separate from `crm_voucher`; no voucher-limit
+   * increment is applied here. Each copied user voucher sets `qrCodeString` to
+   * `${qrCodePrefix}_${userId}_${voucherId}` (matches camelCase beside template `qrCodePrefix`).
+   */
+  async _copyEventVouchersForEventLoyaltyCards(
+    userRef,
+    batch,
+    eventLoyaltyCardIds = [],
+    machineModelId = null,
+  ) {
+    console.log("[EVENT_VOUCHER] ========== COPYING EVENT VOUCHERS ==========");
+    if (!Array.isArray(eventLoyaltyCardIds) || eventLoyaltyCardIds.length === 0) {
+      console.log("[EVENT_VOUCHER] No event loyalty cards; skipping event_voucher copy");
+      return;
+    }
+
+    try {
+      const existingSnap = await userRef.collection("vouchers").get();
+      const existingVoucherIds = new Set(existingSnap.docs.map((d) => d.id));
+
+      let queued = 0;
+      const chunkSize = 10;
+      const now = new Date();
+
+      for (let i = 0; i < eventLoyaltyCardIds.length; i += chunkSize) {
+        const chunk = eventLoyaltyCardIds.slice(i, i + chunkSize);
+        const snapshot = await fireStore
+          .collection("event_voucher")
+          .where("loyaltyCardId", "in", chunk)
+          .get();
+
+        for (const voucherDoc of snapshot.docs) {
+          const voucherData = voucherDoc.data() || {};
+          const voucherId =
+            (voucherData.id !== undefined && voucherData.id !== null
+              ? String(voucherData.id)
+              : "") || voucherDoc.id;
+          if (!voucherId) {
+            continue;
+          }
+
+          if (existingVoucherIds.has(voucherId)) {
+            continue;
+          }
+
+          if (voucherData.isEnabled === false) {
+            continue;
+          }
+
+          const expiresAtRaw = voucherData.expiresAt || voucherData.expires_at;
+          if (expiresAtRaw) {
+            const expiryDate = expiresAtRaw.toDate
+              ? expiresAtRaw.toDate()
+              : new Date(expiresAtRaw);
+            if (now > expiryDate) {
+              continue;
+            }
+          }
+
+          const linkCardId = voucherData.loyaltyCardId || voucherData.loyalty_card_id || "";
+          const qrCodePrefix = String(
+            voucherData.qrCodePrefix ?? voucherData.qr_code_prefix ?? "",
+          );
+          const userIdForQr = userRef.id;
+          const qrCodeString = `${qrCodePrefix}_${userIdForQr}_${voucherId}`;
+          const newVoucherData = { ...voucherData };
+          newVoucherData.qrCodeString = qrCodeString;
+          newVoucherData.isRedeemed = false;
+          delete newVoucherData.redeemedAt;
+          newVoucherData.redeemedCount = 0;
+          newVoucherData.addedAt = new Date();
+          newVoucherData.machineModelId = machineModelId || null;
+          newVoucherData.copyReason =
+            linkCardId !== ""
+              ? `event_voucher for loyaltyCardId ${linkCardId}`
+              : "event_voucher";
+
+          const newVoucherRef = userRef.collection("vouchers").doc(voucherId);
+          batch.set(newVoucherRef, newVoucherData);
+          existingVoucherIds.add(voucherId);
+          queued++;
+          console.log(
+            `[EVENT_VOUCHER] Queued event voucher ${voucherId} (loyaltyCardId=${linkCardId})`,
+          );
+        }
+      }
+
+      console.log(`[EVENT_VOUCHER] Queued ${queued} event voucher(s) total`);
+    } catch (error) {
+      console.error("[EVENT_VOUCHER] Error copying event vouchers:", error);
+      console.error("[EVENT_VOUCHER] Error stack:", error.stack);
     }
   }
 
@@ -4241,6 +4891,11 @@ console.log("set payment status :", orderModel.paymentstatus);
           // Check if user has a loyalty card that matches the voucher's store/company
           for (const cardDoc of existingUserCards.docs) {
             const cardData = cardDoc.data();
+            const isEventLoyaltyCard =
+              cardData.isforevent === true || cardData.isForEvent === true;
+            if (isEventLoyaltyCard) {
+              continue; // Event cards pair with event_voucher only, not crm_voucher store/company match
+            }
             const cardStoreId = cardData.storeId || cardData.storeid || '';
             const cardCompanyId = cardData.companyId || cardData.companyid || '';
             
@@ -4725,6 +5380,18 @@ console.log("set payment status :", orderModel.paymentstatus);
       console.log("✅ [AWARD_LOYALTY] Step 1 Complete: Order loaded successfully");
       console.log("🎁 [AWARD_LOYALTY] Order Total Paid:", orderModel.totalpaid);
 
+      const userModelForDoc = await this.loadUserModel(userPhoneNumber, orderModel);
+      const userDocId = this.getUserFirestoreDocId(orderModel, userPhoneNumber, userModelForDoc);
+      if (!userDocId) {
+        console.log("❌ [AWARD_LOYALTY] Could not resolve user document id");
+        return {
+          success: false,
+          error: "User document could not be resolved",
+          storeId: formattedStoreId,
+          orderId: formattedOrderId
+        };
+      }
+
       // Step 3: Extract devicenumber and merchantid from the order
       const deviceNumber = orderModel.devicenumber;
       const merchantId = orderModel.merchantid;
@@ -4773,7 +5440,7 @@ console.log("set payment status :", orderModel.paymentstatus);
       console.log("🎁 [AWARD_LOYALTY] Loyalty Card IDs:", loyaltyCardIds);
 
       // Step 6: Format user ID and copy loyalty cards if needed
-      const userId = `FU_${userPhoneNumber}`;
+      const userId = userDocId;
       console.log("🎁 [AWARD_LOYALTY] Step 5: Processing loyalty cards for user:", userId);
 
       let loyaltyCardsResult = null;
@@ -4804,13 +5471,13 @@ console.log("set payment status :", orderModel.paymentstatus);
 
       // Step 8: Award loyalty points
       console.log("🎁 [AWARD_LOYALTY] Step 7: Awarding loyalty points...");
-      const pointsAdded = await this.addOrderWithLoyaltyPoints(userPhoneNumber, orderModel, storeModel);
+      const pointsAdded = await this.addOrderWithLoyaltyPoints(userDocId, orderModel, storeModel);
       console.log("✅ [AWARD_LOYALTY] Step 7 Complete: Loyalty points added -", pointsAdded, "points");
 
       // Step 9: Award stamp card progress
       console.log("🎁 [AWARD_LOYALTY] Step 8: Awarding stamp card progress...");
       const orderTotalForStamp = parseFloat(orderModel.totalpaid || 0);
-      await this.awardStampForOrder(userPhoneNumber, formattedOrderId, orderTotalForStamp, orderModel.storeid || formattedStoreId, storeModel?.companyid || storeModel?.companyId || '');
+      await this.awardStampForOrder(userDocId, formattedOrderId, orderTotalForStamp, orderModel.storeid || formattedStoreId, storeModel?.companyid || storeModel?.companyId || '');
       console.log("✅ [AWARD_LOYALTY] Step 8 Complete: Stamp card progress awarded");
 
 
@@ -4819,7 +5486,7 @@ console.log("set payment status :", orderModel.paymentstatus);
       await this.updateOrderTempMyReport(formattedStoreId, formattedOrderId, orderModel);
 
       // Step 7: Save order based on payment type
-      await this.saveOrderToCollections(formattedStoreId, orderModel, userPhoneNumber);
+      await this.saveOrderToCollections(formattedStoreId, orderModel, userDocId);
       //console.log('✅ [AWARD_ORDER_LOYALTY] Complete: order_temp updated to cart order with processed data');
       //  await this.updateCurrentOrderToUser(orderModel); //this will save order to user -> cart_order
       //  console.log('✅ [AWARD_ORDER_LOYALTY] Complete: current gkash order to user updated with processed data');
@@ -4865,21 +5532,53 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async handleCreditItems(orderModel, phoneString) {
+  async handleCreditItems(orderModel, userDocId, caller = 'UNKNOWN') {
     console.log("Handling credit items");
-    if (!orderModel.orderitems || phoneString === "0") return;
+    if (!orderModel.orderitems || !userDocId) return;
+
+    const target = this.parseCreditPurchaseTarget(orderModel);
+    const isCorpUser = String(userDocId).startsWith("CORP_");
+    const isCorpOrder = this.isCorporateOrder(orderModel);
+    let companyId = target.companyId;
+
+    if ((isCorpUser || isCorpOrder || target.toSelf) && !companyId) {
+      companyId = await this.resolveStoreCompanyId(orderModel);
+    }
+
+    const useCompanySelf =
+      (isCorpUser || isCorpOrder || target.toSelf) &&
+      Boolean(companyId);
 
     for (const orderItem of orderModel.orderitems) {
       if (orderItem.iscredit) {
         console.log("Processing credit item:", orderItem.title);
-        
+
         try {
           const creditsToAdd = (orderItem.creditamount || 0) * (orderItem.qty || 1);
           const pointsToAdd = (orderItem.pointamount || 0) * (orderItem.qty || 1);
-          
+
           if (creditsToAdd > 0 || pointsToAdd > 0) {
             const storeId = orderItem.storeid || orderModel.storeid;
-            await this.addCreditsAndPoints(phoneString, storeId, creditsToAdd, pointsToAdd);
+
+            if (useCompanySelf) {
+              if (creditsToAdd > 0) {
+                await CeriaRouter.recordSelfTopupLedgerEntry({
+                  companyId,
+                  userDocId,
+                  creditsToAdd,
+                  adjustedBy: caller,
+                  orderId: orderModel.id || '',
+                });
+                console.log(
+                  `Added ${creditsToAdd} to company_credit.${companyId}.self for ${userDocId} (ledger recorded)`
+                );
+              }
+              if (pointsToAdd > 0) {
+                await this.addCreditsAndPoints(userDocId, storeId, 0, pointsToAdd);
+              }
+            } else {
+              await this.addCreditsAndPoints(userDocId, storeId, creditsToAdd, pointsToAdd);
+            }
           }
         } catch (ex) {
           console.error("Error processing credit item:", ex);
@@ -4888,26 +5587,64 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async addCreditsAndPoints(phoneString, storeId, creditsToAdd, pointsToAdd) {
+  parseCreditPurchaseTarget(orderModel) {
+    let toSelf = false;
+    let companyId = "";
+    const payload = orderModel?.payload ?? orderModel?.Payload ?? "";
+    if (!payload) {
+      return { toSelf, companyId };
+    }
     try {
-      await UserModel.addCreditsAndPoints(fireStore.collection("user"), phoneString, storeId, creditsToAdd, pointsToAdd);
+      const map =
+        typeof payload === "string"
+          ? payload.trim().startsWith("{")
+            ? JSON.parse(payload)
+            : null
+          : payload;
+      if (map && map.credit_target === "company_credit_self") {
+        toSelf = true;
+        companyId = String(map.company_id || "").trim();
+      }
+    } catch (ex) {
+      console.warn("parseCreditPurchaseTarget failed:", ex.message || ex);
+    }
+    return { toSelf, companyId };
+  }
+
+  async resolveStoreCompanyId(orderModel) {
+    const storeId = orderModel?.storeid || orderModel?.storeId || "";
+    if (!storeId) return "";
+    try {
+      const storeDoc = await fireStore.collection("store").doc(storeId).get();
+      if (!storeDoc.exists) return "";
+      const data = storeDoc.data() || {};
+      return String(data.companyid || data.companyId || "").trim();
+    } catch (ex) {
+      console.error("resolveStoreCompanyId failed:", ex);
+      return "";
+    }
+  }
+
+  async addCreditsAndPoints(userDocId, storeId, creditsToAdd, pointsToAdd) {
+    try {
+      await UserModel.addCreditsAndPoints(fireStore.collection("user"), userDocId, storeId, creditsToAdd, pointsToAdd);
     } catch (error) {
       console.error('Error adding credits and points:', error);
       throw error;
     }
   }
 
-  async redeemAssignedVouchers(orderModel, phoneString) {
+  async redeemAssignedVouchers(orderModel, userDocId) {
 
-    console.log("Redeeming assigned vouchers for order:", phoneString);
+    console.log("Redeeming assigned vouchers for order:", userDocId);
 
     if (!orderModel.assignedvouchers || !Array.isArray(orderModel.assignedvouchers) || orderModel.assignedvouchers.length === 0) {
       console.log("No assigned vouchers to redeem");
       return;
     }
 
-    if (phoneString === "0") {
-      console.log("No valid phone number for voucher redemption");
+    if (!userDocId) {
+      console.log("No valid user document id for voucher redemption");
       return;
     }
 
@@ -4920,7 +5657,7 @@ console.log("set payment status :", orderModel.paymentstatus);
 
           // Get current voucher data from user's voucher collection
           const voucherRef = fireStore.collection("user")
-            .doc(`FU_${phoneString}`)
+            .doc(userDocId)
             .collection("vouchers")
             .doc(voucher.id);
           
@@ -4973,15 +5710,15 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async addOrderWithLoyaltyPoints(phoneString, orderModel, storeModel) {
-    if (!orderModel || !storeModel || phoneString === "0") {
-      console.log("Cannot add loyalty points - missing order, store model, or phone number, phoneString " + phoneString);
+  async addOrderWithLoyaltyPoints(userDocId, orderModel, storeModel) {
+    if (!orderModel || !storeModel || !userDocId) {
+      console.log("Cannot add loyalty points - missing order, store model, or user doc id, userDocId " + userDocId);
       
       return 0;
     }
 
     try {
-      console.log("Adding loyalty points for user:", `FU_${phoneString}`, "order:", orderModel.orderid || orderModel.id);
+      console.log("Adding loyalty points for user:", userDocId, "order:", orderModel.orderid || orderModel.id);
 
       // Calculate order total
       let orderTotal = 0;
@@ -5045,7 +5782,7 @@ console.log("set payment status :", orderModel.paymentstatus);
         console.log(`Loaded ${storeIdsAndCompanyIds.length} store/company pairs from ${loyaltyCardIds.length} loyalty cards`);
       }
 
-      const userRef = fireStore.collection("user").doc(`FU_${phoneString}`);
+      const userRef = fireStore.collection("user").doc(userDocId);
 
       await fireStore.runTransaction(async (transaction) => {
         const userDoc = await transaction.get(userRef);
@@ -5544,12 +6281,10 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async awardStampForOrder(phoneString, orderId, orderTotal, storeId, companyId = '') {
+  async awardStampForOrder(userDocId, orderId, orderTotal, storeId, companyId = '') {
     try {
-      const userId = `FU_${phoneString}`;
       console.log('🟩 [STAMP] awardStampForOrder: start', {
-        userId,
-        phoneString,
+        userDocId,
         orderId,
         orderTotal: Number(orderTotal || 0),
         storeId,
@@ -5563,7 +6298,7 @@ console.log("set payment status :", orderModel.paymentstatus);
         console.log('🟩 [STAMP] Phase 1: Querying by companyId:', companyId);
         const companyCardsQuery = await fireStore
           .collection('user')
-          .doc(userId)
+          .doc(userDocId)
           .collection('stampcard')
           .where('status', '==', 'in_progress')
           .where('companyId', '==', companyId)
@@ -5573,7 +6308,7 @@ console.log("set payment status :", orderModel.paymentstatus);
           console.log('🟩 [STAMP] Phase 1: Found', companyCardsQuery.size, 'company stamp cards');
           awardedCompanyCardId = await this._tryAwardStamp(
             companyCardsQuery.docs,
-            userId,
+            userDocId,
             orderId,
             orderTotal,
             null,
@@ -5590,7 +6325,7 @@ console.log("set payment status :", orderModel.paymentstatus);
       console.log('🟩 [STAMP] Phase 2: Querying by storeId:', storeId);
       const storeCardsQuery = await fireStore
         .collection('user')
-        .doc(userId)
+        .doc(userDocId)
         .collection('stampcard')
         .where('status', '==', 'in_progress')
         .where('storeId', '==', storeId)
@@ -5600,7 +6335,7 @@ console.log("set payment status :", orderModel.paymentstatus);
         console.log('🟩 [STAMP] Phase 2: Found', storeCardsQuery.size, 'store stamp cards');
         await this._tryAwardStamp(
           storeCardsQuery.docs,
-          userId,
+          userDocId,
           orderId,
           orderTotal,
           awardedCompanyCardId,
@@ -5610,7 +6345,7 @@ console.log("set payment status :", orderModel.paymentstatus);
         console.log(`🟨 [STAMP] Phase 2: No in-progress stamp cards for storeId: ${storeId}`);
       }
 
-      console.log('🟩 [STAMP] awardStampForOrder: done for user:', userId);
+      console.log('🟩 [STAMP] awardStampForOrder: done for user:', userDocId);
     } catch (e) {
       console.error('💥 [STAMP] Error while awarding stamp:', e);
     }
@@ -5751,18 +6486,17 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async triggerVendingPaymentCallback(orderModel, storeModel) {
+  async triggerVendingPaymentCallback(orderModel, storeModel, usePlus = false) {
     console.log("🤖 [VENDING] ========== TRIGGERING PAYMENT CALLBACK ==========");
     console.log("🤖 [VENDING] Order ID:", orderModel.id);
-   
-    
+    console.log("🤖 [VENDING] usePlus:", usePlus);
+
     try {
-      // Check if this is a vending order
       if (!orderModel.devicenumber || !orderModel.merchantid) {
         console.log("⚠️ [VENDING] Not a vending order - devicenumber:", orderModel.devicenumber, "merchantid:", orderModel.merchantid);
         return { success: false, message: "Not a vending order" };
       }
-      
+
       console.log("🤖 [VENDING] Device Number:", orderModel.devicenumber);
       console.log("🤖 [VENDING] Merchant ID:", orderModel.merchantid);
       console.log("🤖 [VENDING] Payment Type:", orderModel.paymenttype);
@@ -5770,17 +6504,15 @@ console.log("set payment status :", orderModel.paymentstatus);
       console.log("🤖 [VENDING] Total Amount:", orderModel.total);
       console.log("🤖 [VENDING] Total Paid:", orderModel.totalpaid);
       console.log("🤖 [VENDING] E-Pay Amount:", orderModel.epayamount);
-
       console.log("🤖 [VENDING] OrderModel:", orderModel);
 
-      // Prepare payment callback data matching Dart VendingPaymentCallback logic exactly
       const amount = parseFloat(orderModel.totalPrice || orderModel.totalprice || 0);
       const currency = storeModel?.currency || 'MYR';
-      const orderId = orderModel.vendingid  || '';
-      const payedTime = Date.now(); // Current timestamp in milliseconds (not seconds)
-      const paymentChannel = 'ewallet'; // Default to ewallet as per Dart logic
+      const orderId = orderModel.vendingid || '';
+      const payedTime = Date.now();
+      const paymentChannel = 'ewallet';
       const remark = 'Payment via vending machine';
-      const status = 'completed'; // Since we're in success page, payment is completed
+      const status = 'completed';
       const transactionId = orderModel.id || `TX_${Date.now()}`;
       const transactionType = 'sale';
 
@@ -5800,29 +6532,29 @@ console.log("set payment status :", orderModel.paymentstatus);
         remark: remark,
         status: status,
         transaction_id: transactionId,
-        transaction_type: transactionType
+        transaction_type: transactionType,
+        // VendingPlus extra fields (ignored by legacy handler)
+        mid: orderModel.devicenumber,
+        merchant_id: orderModel.merchantid,
+        list: this.convertToVendingOrderItems(orderModel.orderitems || []),
       };
 
       console.log("🤖 [VENDING] Payment callback data:", JSON.stringify(paymentCallbackData, null, 2));
 
-      // Send payment callback to vending API
-      const callbackResult = await this.sendVendingPaymentCallback(paymentCallbackData);
-      
+      const callbackResult = await this.sendVendingPaymentCallback(paymentCallbackData, usePlus);
+
       if (callbackResult.success) {
         console.log("✅ [VENDING] Payment callback sent successfully");
-        
-        // Optionally trigger pickup creation if callback was successful
         if (orderModel.pickupcode) {
           console.log("📦 [VENDING] Creating pickup order...");
-          await this.createVendingPickupOrder(orderModel, storeModel);
+          await this.createVendingPickupOrder(orderModel, storeModel, usePlus);
         }
-        
         return callbackResult;
       } else {
         console.error("❌ [VENDING] Payment callback failed:", callbackResult.message);
         return callbackResult;
       }
-      
+
     } catch (ex) {
       console.error("💥 [VENDING] Error triggering vending payment callback:", ex);
       return {
@@ -5837,8 +6569,9 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async sendVendingPaymentCallback(paymentCallbackData) {
+  async sendVendingPaymentCallback(paymentCallbackData, usePlus = false) {
     console.log("📞 [VENDING] ========== SENDING PAYMENT CALLBACK ==========");
+    console.log("📞 [VENDING] usePlus:", usePlus);
     console.log("📞 [VENDING] Callback Data:", JSON.stringify(paymentCallbackData, null, 2));
     console.log("📞 [VENDING] Amount:", paymentCallbackData.amount);
     console.log("📞 [VENDING] Currency:", paymentCallbackData.currency);
@@ -5848,19 +6581,16 @@ console.log("set payment status :", orderModel.paymentstatus);
     console.log("📞 [VENDING] Transaction ID:", paymentCallbackData.transactionId);
     console.log("📞 [VENDING] Payed Time:", paymentCallbackData.payedTime);
     console.log("📞 [VENDING] Transaction Type:", paymentCallbackData.transactionType);
-    
+
     try {
-      // Create a mock request and response object for internal method call
-      const mockReq = {
-        body: paymentCallbackData
-      };
-      
+      const mockReq = { body: paymentCallbackData };
+
       console.log("📞 [VENDING] Mock Request Body:", JSON.stringify(mockReq.body, null, 2));
-      
+
       let responseData = null;
       let statusCode = 200;
       let success = true;
-      
+
       const mockRes = {
         status: (code) => {
           statusCode = code;
@@ -5876,10 +6606,15 @@ console.log("set payment status :", orderModel.paymentstatus);
         }
       };
 
-      // Call the internal vending payment callback method
-      await this.vendingRouter.handlePaymentCallback(mockReq, mockRes);
-
-      console.log("📞 [VENDING] Internal method response:", statusCode, responseData);
+      if (usePlus) {
+        // VendingPlus (Fudbox) path
+        await this.vendingPlusRouter.handlePaymentCallback(mockReq, mockRes);
+        console.log("📞 [VENDINGPLUS] handlePaymentCallback response:", statusCode, responseData);
+      } else {
+        // Legacy vending path
+        await this.vendingRouter.handlePaymentCallback(mockReq, mockRes);
+        console.log("📞 [VENDING] Internal method response:", statusCode, responseData);
+      }
 
       if (success) {
         return {
@@ -5897,7 +6632,6 @@ console.log("set payment status :", orderModel.paymentstatus);
 
     } catch (error) {
       console.error("❌ [VENDING] Error calling internal payment callback:", error.message);
-      
       return {
         success: false,
         message: "Payment callback failed",
@@ -5910,51 +6644,49 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async createVendingPickupOrder(orderModel, storeModel) {
+  async createVendingPickupOrder(orderModel, storeModel, usePlus = false) {
     console.log("📦 [VENDING] ========== CREATING PICKUP ORDER ==========");
     console.log("📦 [VENDING] Order ID:", orderModel.id);
     console.log("📦 [VENDING] Device Number:", orderModel.devicenumber);
     console.log("📦 [VENDING] Merchant ID:", orderModel.merchantid);
     console.log("📦 [VENDING] Order Items Count:", (orderModel.orderitems || []).length);
-    
+    console.log("📦 [VENDING] usePlus:", usePlus);
+
     try {
-      // Prepare order details similar to Dart VendingOrderDetails
       const orderItems = this.convertToVendingOrderItems(orderModel.orderitems || []);
       console.log("📦 [VENDING] Converted Order Items:", JSON.stringify(orderItems, null, 2));
-      
+
       const orderDetails = {
         amount: parseFloat(orderModel.totalpaid || orderModel.epayamount || 0),
-        currency: orderModel.currency || "MYR",
+        currency: orderModel.currency || storeModel?.currency || 'MYR',
         device_number: orderModel.devicenumber,
-        list: orderItems,
+        mid: orderModel.devicenumber,
         merchant_id: orderModel.merchantid,
-        remark: orderModel.remark || `Pickup order ${orderModel.orderid}`
+        order_id: orderModel.vendingid || orderModel.id || '',
+        list: orderItems,
+        remark: orderModel.remark || `Pickup order ${orderModel.orderid || orderModel.id}`,
       };
-      
       console.log("📦 [VENDING] Order Details:", JSON.stringify(orderDetails, null, 2));
 
-      // You would need a token for this - this might come from a login process
-      // For now, we'll use a placeholder or get it from the order model
-      const token = orderModel.vendingtoken || await this.getVendingAuthToken(orderModel);
-      
-      if (!token) {
+      // Legacy path needs a token; VendingPlus (Fudbox) does not use one
+      const token = usePlus ? null : (orderModel.vendingtoken || await this.getVendingAuthToken(orderModel));
+
+      if (!usePlus && !token) {
         console.log("⚠️ [VENDING] No auth token available - skipping pickup order creation");
         return { success: false, message: "No auth token" };
       }
 
-      const pickupResult = await this.sendVendingCreateOrder(token, orderDetails);
-      
+      const pickupResult = await this.sendVendingCreateOrder(token, orderDetails, usePlus);
+
       if (pickupResult.success) {
         console.log("✅ [VENDING] Pickup order created successfully");
-        
-        // Optionally save the pickup order ID back to the order model
         if (pickupResult.data && pickupResult.data.order_id) {
           orderModel.vendingpickuporderid = pickupResult.data.order_id;
         }
       }
-      
+
       return pickupResult;
-      
+
     } catch (ex) {
       console.error("💥 [VENDING] Error creating pickup order:", ex);
       return {
@@ -5969,24 +6701,20 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async sendVendingCreateOrder(token, orderDetails) {
+  async sendVendingCreateOrder(token, orderDetails, usePlus = false) {
     console.log("📦 [VENDING] Sending create order request to internal vending handler...");
-    
+    console.log("📦 [VENDING] usePlus:", usePlus);
+
     try {
-      const requestData = {
-        token: token,
-        order_details: orderDetails
+      // Legacy path wraps token + order_details; VendingPlus sends orderDetails directly
+      const mockReq = {
+        body: usePlus ? orderDetails : { token: token, order_details: orderDetails }
       };
 
-      // Create mock request and response objects
-      const mockReq = {
-        body: requestData
-      };
-      
       let responseData = null;
       let statusCode = 200;
       let success = true;
-      
+
       const mockRes = {
         status: (code) => {
           statusCode = code;
@@ -6002,10 +6730,13 @@ console.log("set payment status :", orderModel.paymentstatus);
         }
       };
 
-      // Call the internal vending create order method
-      await this.vendingRouter.handleCreateOrder(mockReq, mockRes);
-
-      console.log("📦 [VENDING] Internal method response:", statusCode, responseData);
+      if (usePlus) {
+        await this.vendingPlusRouter.handleCreateOrder(mockReq, mockRes);
+        console.log("📦 [VENDINGPLUS] handleCreateOrder response:", statusCode, responseData);
+      } else {
+        await this.vendingRouter.handleCreateOrder(mockReq, mockRes);
+        console.log("📦 [VENDING] Internal method response:", statusCode, responseData);
+      }
 
       if (success) {
         return {
@@ -6023,7 +6754,6 @@ console.log("set payment status :", orderModel.paymentstatus);
 
     } catch (error) {
       console.error("❌ [VENDING] Error calling internal create order:", error.message);
-      
       return {
         success: false,
         message: "Failed to create order",
@@ -6317,21 +7047,21 @@ console.log("set payment status :", orderModel.paymentstatus);
      }
    }
 
-   async vendingCheckOrder(token, orderId) {
+   async vendingCheckOrder(token, orderId, usePlus = false, mid = null) {
      console.log("🔍 [VENDING] Checking order status using internal handler...");
-     
+     console.log("🔍 [VENDING] usePlus:", usePlus);
+
      try {
-       // Create mock request and response objects
+       // VendingPlus uses mid + pickup_code; legacy uses token + orderId
        const mockReq = {
-         body: {
-           token: token,
-           orderId: orderId
-         }
+         body: usePlus
+           ? { mid: mid, pickup_code: orderId }
+           : { token: token, orderId: orderId }
        };
-       
+
        let responseData = null;
        let statusCode = 200;
-       
+
        const mockRes = {
          status: (code) => {
            statusCode = code;
@@ -6346,10 +7076,14 @@ console.log("set payment status :", orderModel.paymentstatus);
          }
        };
 
-       // Call the internal vending check order method
-       await this.vendingRouter.handleCheckOrder(mockReq, mockRes);
+       if (usePlus) {
+         await this.vendingPlusRouter.handleCheckOrder(mockReq, mockRes);
+         console.log("🔍 [VENDINGPLUS] handleCheckOrder response:", statusCode, responseData);
+       } else {
+         await this.vendingRouter.handleCheckOrder(mockReq, mockRes);
+         console.log("🔍 [VENDING] Internal check order response:", statusCode, responseData);
+       }
 
-       console.log("🔍 [VENDING] Internal check order response:", statusCode, responseData);
        return responseData;
 
      } catch (error) {
@@ -6544,9 +7278,14 @@ console.log("set payment status :", orderModel.paymentstatus);
     
     try {
       // Load user model to check credit balance
-      const userModel = await this.loadUserModel(phoneString);
+      const userModel = await this.loadUserModel(phoneString, orderModel);
       if (!userModel) {
         throw new Error('User not found for credit payment');
+      }
+
+      const userDocId = this.getUserFirestoreDocId(orderModel, phoneString, userModel);
+      if (!userDocId) {
+        throw new Error('Could not resolve user document id for credit payment');
       }
       
       const totalAmount = parseFloat(orderModel.totalprice || 0);
@@ -6562,9 +7301,8 @@ console.log("set payment status :", orderModel.paymentstatus);
       // Deduct credits from user account using UserModel methods
       userModel.subtractCredits(storeId, totalAmount);
       console.log('💰 [DEBUG] deducting amount:', totalAmount, 'from ', storeId);
-      const userDocId = `FU_${phoneString}`;
       
-      console.log('💳 [DEBUG] Updating user document:', phoneString);
+      console.log('💳 [DEBUG] Updating user document:', userDocId);
       await fireStore.collection('user').doc(userDocId).update(userModel.toMap());
       
       console.log('✅ [DEBUG] Credit payment processed. New balance:', userModel.getCredits(storeId));
@@ -6799,7 +7537,9 @@ console.log("set payment status :", orderModel.paymentstatus);
       if (isTakeAway && feieLabelPrinters.length > 0) {
         const { orderId, orderItems, name, phone } = this._convertOrderToFeieLabelPayload(orderModel);
         const tableId = orderModel?.mobileassignedtable ?? orderModel?.mobileAssignedTable ?? '-';
-        const totalItems = orderItems?.length ?? 0;
+        const labelExtra = this._getFeieLabelExtraFields(orderModel);
+        const labelJobs = expandOrderItemsForLabels(orderItems);
+        const totalItems = labelJobs.length;
         for (const printer of feieLabelPrinters) {
           const sn = printer?.title ?? printer?.sn ?? '';
           if (!sn) continue;
@@ -6811,8 +7551,19 @@ console.log("set payment status :", orderModel.paymentstatus);
                 sn,
                 orderId,
                 tableId,
-                orderItems: orderItems.map(it => ({ title: it?.title ?? '', remark: it?.remark ?? '' })),
-                remark: '',
+                orderItems: orderItems.map(it => ({
+                  title: it?.title ?? '',
+                  remark: it?.remark ?? '',
+                  qty: it?.qty,
+                  quantity: it?.quantity,
+                  isTakeAway: it?.isTakeAway,
+                  isOwnContainer: it?.isOwnContainer,
+                  orderMode: it?.orderMode
+                })),
+                remark: labelExtra.remark,
+                enableBuzzer: labelExtra.enableBuzzer,
+                orderMode: labelExtra.orderMode,
+                dateTime: labelExtra.dateTime,
                 name: name || '',
                 phone: phone || ''
               };
@@ -6831,14 +7582,23 @@ console.log("set payment status :", orderModel.paymentstatus);
               );
               if (totalItems > 0) console.log('🖨️ [FEIE] Labels sent OK to SN:', sn, '(via API)', labelRes?.status);
             } else {
-              for (let i = 0; i < totalItems; i++) {
-                const item = orderItems[i];
-                const content = this._buildFeieLabelContent({ orderId, tableId, item, totalItems, name, phone, i });
+              for (const job of labelJobs) {
+                const { item, i, totalItems: totalLabels } = job;
+                const content = this._buildFeieLabelContent({
+                  orderId,
+                  tableId,
+                  item,
+                  totalItems: totalLabels,
+                  name,
+                  phone,
+                  i,
+                  ...labelExtra
+                });
                 console.log(
                   '🔍 [FEIE DEBUG] Label (Feie Yun Open_printLabelMsg) item',
                   i + 1,
                   '/',
-                  totalItems,
+                  totalLabels,
                   'content length:',
                   content?.length ?? 0,
                   'preview:',
@@ -6897,7 +7657,8 @@ console.log("set payment status :", orderModel.paymentstatus);
         title: item?.title ?? '',
         qty,
         modInfo: modArr,
-        remark: lineRemark
+        remark: lineRemark,
+        isTakeAway: UtilFeie.orderItemIsTakeAway(item)
       };
     });
     const rawOrderMode = orderModel?.ordertype ?? orderModel?.orderType ?? 'Dine In';
@@ -6928,7 +7689,15 @@ console.log("set payment status :", orderModel.paymentstatus);
       }
       const lineNote = this._trimOrderLineRemark(item);
       const remark = [modText, lineNote].filter(Boolean).join(' | ');
-      return { title: item?.title ?? '', remark };
+      const qty = item?.qty ?? item?.quantity ?? 1;
+      return {
+        title: item?.title ?? '',
+        remark,
+        qty,
+        isTakeAway: UtilFeie.orderItemIsTakeAway(item),
+        isOwnContainer: !!(item?.isowncontainer ?? item?.isOwnContainer ?? item?.is_own_container),
+        orderMode: item?.ordermode ?? item?.orderMode ?? ''
+      };
     });
     return {
       orderId: orderModel?.orderid ?? orderModel?.orderId ?? orderModel?.id ?? '',
@@ -6938,19 +7707,40 @@ console.log("set payment status :", orderModel.paymentstatus);
     };
   }
 
-  _buildFeieLabelContent(payload) {
-    const { orderId, tableId, item, totalItems, name, phone } = payload;
-    if (!item) {
-      return `<TEXT x="9" y="10" font="12" w="1" h="2" r="0">#${orderId}</TEXT>`;
+  _getFeieLabelExtraFields(orderModel) {
+    const rawDt =
+      orderModel?.orderdatetime ??
+      orderModel?.orderDateTime ??
+      orderModel?.createdat ??
+      orderModel?.createdAt;
+    let dateTime = '';
+    if (rawDt != null && rawDt !== '') {
+      dateTime = typeof rawDt === 'string' ? rawDt : new Date(rawDt).toISOString();
     }
-    const table = tableId ?? payload.table ?? '-';
-    const itemPosition = `${(payload.i ?? 0) + 1}/${totalItems ?? 1}`;
-    let content = `<TEXT x="9" y="10" font="12" w="1" h="2" r="0">#${orderId}       ${table}      ${itemPosition}</TEXT>`;
-    content += `<TEXT x="9" y="80" font="12" w="1" h="2" r="0">${item?.title ?? ''}</TEXT>`;
-    const remark = Array.isArray(item?.remark) ? item.remark.map(r => (r?.remark ?? r)).join(', ') : (item?.remark ?? '');
-    if (remark) content += `<TEXT x="9" y="140" font="12" w="1" h="1" r="0">*: ${remark}</TEXT>`;
-    if (name || phone) content += `<TEXT x="9" y="180" font="12" w="1" h="1" r="0">${name || ''}       ${phone || ''}</TEXT>`;
-    return content;
+    const rawOrderMode = orderModel?.ordertype ?? orderModel?.orderType ?? '';
+    const orderMode =
+      rawOrderMode === 1 || rawOrderMode === '1'
+        ? 'Take Away'
+        : typeof rawOrderMode === 'string' && rawOrderMode.trim()
+          ? rawOrderMode
+          : '';
+    const enableBuzzer = !!(orderModel?.enablebuzzer ?? orderModel?.enableBuzzer);
+    let remark = '';
+    if (enableBuzzer) {
+      const orderRemark = String(orderModel?.remark ?? '').trim();
+      if (orderRemark) {
+        remark = orderRemark;
+      } else {
+        const buzzerVal =
+          orderModel?.buzzer ?? orderModel?.tablebuzzer ?? orderModel?.tableBuzzer ?? '';
+        if (buzzerVal !== '' && buzzerVal != null) remark = `Buzzer: ${buzzerVal}`;
+      }
+    }
+    return { dateTime, orderMode, enableBuzzer, remark };
+  }
+
+  _buildFeieLabelContent(payload) {
+    return buildFeieLabelContent(payload);
   }
 
   /**
@@ -7035,59 +7825,46 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async retrievePickupCode(orderModel, phoneString) {
+  async retrievePickupCode(orderModel, phoneString, usePlus = false) {
     console.log('🔑 [VENDING] ========== RETRIEVING PICKUP CODE ==========');
     console.log('🔑 [VENDING] Order ID:', orderModel.id);
     console.log('🔑 [VENDING] Vending ID:', orderModel.vendingid);
     console.log('🔑 [VENDING] Device Number:', orderModel.devicenumber);
     console.log('🔑 [VENDING] Merchant ID:', orderModel.merchantid);
     console.log('🔑 [VENDING] Phone String:', phoneString);
-    
+    console.log('🔑 [VENDING] usePlus:', usePlus);
+
     try {
-      // Get vending auth token
-      console.log('🔑 [VENDING] Getting vending auth token...');
-      const token = await this.getVendingAuthToken(orderModel);
-      if (!token) {
+      // Legacy path needs a token; VendingPlus (Fudbox) does not use one
+      const token = usePlus ? null : await this.getVendingAuthToken(orderModel);
+      if (!usePlus && !token) {
         throw new Error('[VENDING] Failed to get vending auth token');
       }
-      console.log('🔑 [VENDING] Auth token retrieved successfully');
+      if (token) console.log('🔑 [VENDING] Auth token retrieved successfully');
 
       const maxAttempts = 1;
       const delayMs = 1500;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         console.log(`🔑 [VENDING] Checking order for pickup code (attempt ${attempt}/${maxAttempts})...`);
-        const orderResult = await this.vendingCheckOrder(token, orderModel.vendingid);
+        const orderResult = await this.vendingCheckOrder(token, orderModel.vendingid, usePlus, orderModel.devicenumber);
         console.log('🔑 [VENDING] Order check result:', JSON.stringify(orderResult, null, 2));
 
-        // The internal handler returns { success, message, error } where message holds external API body
-
-//        console.log("orderResult.message " + orderResult?.message?? " " );
-//        console.log("orderResult.data " + orderResult?.data ?? " ");
-//        console.log("orderResult.pickup_code " + orderResult.pickup_code ?? " ");
-//        const payload = orderResult?.message ?? orderResult?.data ?? orderResult;
-//        console.log("payload.pickup_code " + payload?.pickup_code ?? " ");
-//        console.log("orderResult.message.pickup_code " + orderResult?.message?.pickup_code ?? " ");
-//        const pickupCode = payload?.pickup_code;
-
         // Try multiple paths to find pickup_code
-          const payload = orderResult?.message ?? orderResult?.data ?? orderResult;
-          console.log("[VENDING] payload:", payload);
-          console.log("[VENDING] payload.pickup_code:", payload?.pickup_code ?? "undefined");
-          console.log("[VENDING] orderResult.message.pickup_code:", orderResult?.message?.pickup_code ?? "undefined");
+        const payload = orderResult?.message ?? orderResult?.data ?? orderResult;
+        console.log("[VENDING] payload:", payload);
+        console.log("[VENDING] payload.pickup_code:", payload?.pickup_code ?? "undefined");
+        console.log("[VENDING] orderResult.message.pickup_code:", orderResult?.message?.pickup_code ?? "undefined");
 
-          // Extract pickup_code - try all possible locations
-          const pickupCode = payload?.pickup_code
-             || payload?.data?.pickup_code
-            || orderResult?.message?.pickup_code
-            || orderResult?.data?.pickup_code
-            || orderResult?.pickup_code;
+        const pickupCode = payload?.pickup_code
+          || payload?.data?.pickup_code
+          || orderResult?.message?.pickup_code
+          || orderResult?.data?.pickup_code
+          || orderResult?.pickup_code;
 
-          console.log("✅[VENDING]  Final extracted pickupCode:", pickupCode ?? "NOT FOUND");
-
+        console.log("✅[VENDING] Final extracted pickupCode:", pickupCode ?? "NOT FOUND");
 
         if (pickupCode) {
           orderModel.pickupcode = pickupCode;
-          // Keep legacy field for backward compatibility
           orderModel.pickupCode = pickupCode;
           console.log('✅ [VENDING] Pickup code retrieved successfully:', pickupCode);
           break;
@@ -7102,6 +7879,74 @@ console.log("set payment status :", orderModel.paymentstatus);
       }
     } catch (error) {
       console.error('❌ [VENDING] Error retrieving pickup code:', error);
+      throw error;
+    }
+  }
+
+  normalizeMasukServerId(serverId) {
+    const raw = String(serverId ?? '').trim();
+    if (!raw) return null;
+    return raw.includes('FU_') ? raw : `FU_${raw}`;
+  }
+
+  async finalizeMasukioOrder(orderId, orderModel) {
+    const rawServerId = orderModel.serverid ?? orderModel.serverId;
+    const serverId = this.normalizeMasukServerId(rawServerId);
+    if (!serverId) {
+      console.log('[MASUK] skip masukio finalize: no serverid on order');
+      return;
+    }
+
+    console.log('[MASUK] masukio finalize serverId:', serverId, 'orderId:', orderId);
+
+    const tempRef = fireStore.collection('masukio')
+      .doc(serverId)
+      .collection('order_temp')
+      .doc(orderId);
+    const doneRef = fireStore.collection('masukio')
+      .doc(serverId)
+      .collection('order_done')
+      .doc(orderId);
+
+    try {
+      const tempSnap = await tempRef.get();
+      if (!tempSnap.exists) {
+        console.log('[MASUK] masukio order_temp not found:', `masukio/${serverId}/order_temp/${orderId}`);
+        return;
+      }
+
+      // Take the full masukio order_temp document as the base,
+      // then stamp only the payment fields that were set by updateTransactionDetails.
+      const mergedModel = {
+        ...tempSnap.data(),
+        id: orderId,
+        serverid: serverId,
+        paymentstatus: orderModel.paymentstatus,
+        totalpaid: orderModel.totalpaid,
+        epayamount: orderModel.epayamount,
+        epaymenttype: orderModel.epaymenttype,
+        paymenttype: orderModel.paymenttype,
+        epaymentdetail: orderModel.epaymentdetail,
+        transactiondetail: orderModel.transactiondetail,
+        orderdatetime: orderModel.orderdatetime,
+        messageid: orderModel.messageid,
+      };
+
+      const reportStoreId = String(orderModel.storeid ?? orderModel.storeId ?? '').trim();
+      if (reportStoreId) {
+        await this.updateOrderTempMyReport(reportStoreId, orderId, mergedModel);
+      } else {
+        console.log('[MASUK] skip myreport update: no storeid on order');
+      }
+
+      const batch = fireStore.batch();
+      batch.set(doneRef, mergedModel);
+      batch.delete(tempRef);
+      await batch.commit();
+
+      console.log('[MASUK] masukio order moved to order_done:', `masukio/${serverId}/order_done/${orderId}`);
+    } catch (error) {
+      console.error('[MASUK] masukio finalize error:', error);
       throw error;
     }
   }
@@ -7138,10 +7983,16 @@ console.log("set payment status :", orderModel.paymentstatus);
       const phoneString = this.getPhoneString(orderModel);
       console.log("📞 [DEBUG] Phone string for user update:", phoneString);
       
-      if (phoneString !== "0") {
+      if (phoneString !== "0" || this.isCorporateOrder(orderModel)) {
+        const userModel = await this.loadUserModel(phoneString, orderModel);
+        const userDocId = this.getUserFirestoreDocId(orderModel, phoneString, userModel);
+        if (!userDocId) {
+          console.log('⚠️ [DEBUG] No user document id resolved, skipping user collection update');
+          return;
+        }
         // Update the order in user's collection
         const userOrderRef = fireStore.collection('user')
-          .doc(`FU_${phoneString}`)
+          .doc(userDocId)
           .collection('order')
           .doc(orderModel.id);
           
@@ -7177,10 +8028,16 @@ console.log("set payment status :", orderModel.paymentstatus);
       const phoneString = this.getPhoneString(orderModel);
       console.log("📞 [DEBUG] Phone string for user update:", phoneString);
       
-      if (phoneString !== "0") {
+      if (phoneString !== "0" || this.isCorporateOrder(orderModel)) {
+        const userModel = await this.loadUserModel(phoneString, orderModel);
+        const userDocId = this.getUserFirestoreDocId(orderModel, phoneString, userModel);
+        if (!userDocId) {
+          console.log('⚠️ [DEBUG] No user document id resolved, skipping user collection update');
+          return;
+        }
         // Update the order in user's collection
         const userOrderRef = fireStore.collection('user')
-          .doc(`FU_${phoneString}`)
+          .doc(userDocId)
           .collection('cart_order')
           .doc("order");
           
@@ -7203,10 +8060,10 @@ console.log("set payment status :", orderModel.paymentstatus);
     }
   }
 
-  async processBlindboxVoucher(orderModel, phoneString) {
+  async processBlindboxVoucher(orderModel, userDocId) {
     console.log("🎁 [DEBUG] Processing blindbox voucher information");
     console.log("🎁 [DEBUG] Order ID:", orderModel.id);
-    console.log("🎁 [DEBUG] Phone String:", phoneString);
+    console.log("🎁 [DEBUG] User doc id:", userDocId);
     
     try {
       // Check if blindbox voucher ID exists in the order model
@@ -7239,15 +8096,15 @@ console.log("set payment status :", orderModel.paymentstatus);
         
         console.log("🎁 [DEBUG] Blindbox voucher data:", JSON.stringify(blindboxVoucherData, null, 2));
         
-        if (phoneString !== "0") {
-          // Save to bbitem collection
+        if (userDocId) {
+          // Save to bbitem collection (same document id scheme as `user` for consistency)
           const bbitemRef = fireStore.collection('bbitem')
-            .doc(`FU_${phoneString}`);
+            .doc(userDocId);
             
           await bbitemRef.set(blindboxVoucherData);
-          console.log('✅ [DEBUG] Blindbox voucher saved to bbitem collection for user:', phoneString);
+          console.log('✅ [DEBUG] Blindbox voucher saved to bbitem collection for user:', userDocId);
         } else {
-          console.log('⚠️ [DEBUG] No valid phone number found, skipping blindbox voucher save');
+          console.log('⚠️ [DEBUG] No valid user document id, skipping blindbox voucher save');
         }
       } else {
         console.log('⏭️ [DEBUG] No blindbox voucher ID found, skipping blindbox voucher processing');
@@ -7313,8 +8170,7 @@ console.log("set payment status :", orderModel.paymentstatus);
       
       console.log("📋 [DEBUG] === END OF ORDER DATA ===");
       
-      // Run both operations in parallel without waiting
-      Promise.all([
+      await Promise.all([
         fireStore.collection("store")
           .doc(storeId)
           .collection("order_temp")
@@ -7325,16 +8181,10 @@ console.log("set payment status :", orderModel.paymentstatus);
           .collection("order")
           .doc(orderId)
           .set(orderModel)
-      ])
-      .then(() => {
-        console.log("✅ [DEBUG] Successfully updated order_temp and myreport with processed order data");
-        console.log("✅ [DEBUG] Order_temp document path: store/" + storeId + "/order_temp/" + orderId);
-        console.log("✅ [DEBUG] Myreport document path: myreport/" + storeId + "/order/" + orderId);
-      })
-      .catch((error) => {
-        console.error("❌ [DEBUG] Error updating order_temp/myreport:", error);
-        console.error("❌ [DEBUG] Error details:", error.message);
-      });
+      ]);
+      console.log("✅ [DEBUG] Successfully updated order_temp and myreport with processed order data");
+      console.log("✅ [DEBUG] Order_temp document path: store/" + storeId + "/order_temp/" + orderId);
+      console.log("✅ [DEBUG] Myreport document path: myreport/" + storeId + "/order/" + orderId);
     } catch (ex) {
       console.error("❌ [DEBUG] Error updating order_temp:", ex);
       console.error("❌ [DEBUG] Error details:", ex.message);
@@ -7453,61 +8303,18 @@ console.log("set payment status :", orderModel.paymentstatus);
    * @returns {{ receipt: any[], orderSlip: any[], label: any[] }}
    */
   _getFeiePrintersFromFeiesArray(feiesArray) {
-    const receipt = [];
-    const orderSlip = [];
-    const label = [];
-    if (!Array.isArray(feiesArray)) return { receipt, orderSlip, label };
-    for (const feie of feiesArray) {
-      const type = String(feie?.type ?? feie?.Type ?? '').toUpperCase();
-      if (type.includes('R')) receipt.push(feie);
-      if (type.includes('O')) orderSlip.push(feie);
-      if (type.includes('L')) label.push(feie);
-    }
-    return { receipt, orderSlip, label };
+    return getFeiePrintersFromFeiesArray(feiesArray);
   }
 
   convertToStoreModel(docSnapshot) {
-    if (!docSnapshot.exists) {
-      return null; // or throw an error, depending on your needs
-    }
+    return convertStoreDocToModel(docSnapshot);
+  }
 
-    const data = docSnapshot.data();
-
-    // Create and return a StoreModel object
-    return {
-      id: docSnapshot.id,
-      storecounter: data.storecounter || 0, // Provide a default value
-      title: data.title,
-      currency: data.currency,
-      initial: data.initial,
-      companyid: data.companyid || data.companyId || '',
-      loyaltycardids: Array.isArray(data.loyaltycardids) ? data.loyaltycardids : [],
-      feies: data.feies || {},
-      feieIsJP: !!(data.feieIsJP ?? data.feies?.isJP ?? true),
-      feieTriggerViaApi: !!(data.feieTriggerViaApi ?? data.feies?.triggerViaApi),
-      feieApiBaseUrl: data.feieApiBaseUrl || data.feies?.apiBaseUrl || process.env.FEIE_API_BASE_URL || 'https://api.foodio.online',
-      // Feie printers: Flutter uses single "feies" array and filters by type (R=receipt, O=order slip, L=label)
-      ...(Array.isArray(data.feies)
-        ? (() => {
-            const { receipt, orderSlip, label } = this._getFeiePrintersFromFeiesArray(data.feies);
-            return {
-              feiereceiptprinter: receipt,
-              feieorderslipprinter: orderSlip,
-              feielabelprinter: label
-            };
-          })()
-        : {
-            feiereceiptprinter: Array.isArray(data.feiereceiptprinter) ? data.feiereceiptprinter : (data.feies?.feiereceiptprinter || []),
-            feieorderslipprinter: Array.isArray(data.feieorderslipprinter) ? data.feieorderslipprinter : (data.feies?.feieorderslipprinter || []),
-            feielabelprinter: Array.isArray(data.feielabelprinter) ? data.feielabelprinter : (data.feies?.feielabelprinter || [])
-          }),
-
-      // ... other fields ...
-      getTicket() {
-        const paddedCounter = String(this.storecounter).padStart(4, '0');
-        return "e" + (this.initial || "") + paddedCounter;
-      }
-    };
+  /**
+   * Kitchen (O-type) slips only — used by KDS preparation monitor.
+   */
+  async handleFeieKitchenSlipsOnly(orderModel, storeModel, options = {}) {
+    return printKitchenSlipsOnly(orderModel, storeModel, options);
   }
 
   async  processOrderWithLoyaltyPoints(
@@ -7652,6 +8459,7 @@ console.log("set payment status :", orderModel.paymentstatus);
     let vSignature = req.body['signature'] ?? "";
     let vDescription = req.body['description'] ?? "";
     let vPaymentType = req.body['PaymentType'] ?? "";
+    let vVersion = version ?? queryParams.version ?? "";
 
     console.log('vCID:', vCID);
     console.log('vPOID:', vPOID);
@@ -7681,7 +8489,7 @@ console.log("set payment status :", orderModel.paymentstatus);
       );
 
 
-      const baseUrl = getBaseUrlFromRequest(req, isBeta);
+      const baseUrl = getBaseUrlFromRequest(req, isBeta, vVersion);
       var urlSuccessHeader = baseUrl + "/#/success/" + storeId + "/" + vCartID + "/" ;
       var urlFailHeader = baseUrl + "/#/failed/" + storeId + "/" + vCartID + "/" ;
 
@@ -7854,49 +8662,55 @@ console.log("set payment status :", orderModel.paymentstatus);
   }
 
   async handleProcessOrder(req, res) {
-    console.log('🚀 [API] ========== DIRECT ORDER PROCESSING (NO GKASH PAYMENT) ==========');
-    
+    return this._handleProcessOrderDirect(req, res, false);
+  }
+
+  async handleProcessOrderPlus(req, res) {
+    return this._handleProcessOrderDirect(req, res, true);
+  }
+
+  async _handleProcessOrderDirect(req, res, usePlus) {
+    const logTag = usePlus ? '[API-PLUS]' : '[API]';
+    console.log(`🚀 ${logTag} ========== DIRECT ORDER PROCESSING (NO GKASH PAYMENT) ==========`);
+
     try {
-      // Extract parameters from request body
       const { storeId, orderId, gkashResult = null, options = {} } = req.body;
-      
-      console.log('🚀 [API] Request parameters:');
-      console.log('🚀 [API] - Store ID:', storeId);
-      console.log('🚀 [API] - Order ID:', orderId);
-      console.log('🚀 [API] - GKash Result:', gkashResult ? JSON.stringify(gkashResult, null, 2) : 'NULL (No GKash payment needed)');
-      console.log('🚀 [API] - Options:', JSON.stringify(options, null, 2));
-      
-      // Validate required parameters
+
+      console.log(`🚀 ${logTag} Request parameters:`);
+      console.log(`🚀 ${logTag} - Store ID:`, storeId);
+      console.log(`🚀 ${logTag} - Order ID:`, orderId);
+      console.log(`🚀 ${logTag} - usePlus:`, usePlus);
+      console.log(`🚀 ${logTag} - GKash Result:`, gkashResult ? JSON.stringify(gkashResult, null, 2) : 'NULL (No GKash payment needed)');
+      console.log(`🚀 ${logTag} - Options:`, JSON.stringify(options, null, 2));
+
       if (!storeId) {
-        console.log('❌ [API] Missing required parameter: storeId');
+        console.log(`❌ ${logTag} Missing required parameter: storeId`);
         return res.status(400).json({
           success: false,
           error: 'Missing required parameter: storeId'
         });
       }
-      
+
       if (!orderId) {
-        console.log('❌ [API] Missing required parameter: orderId');
+        console.log(`❌ ${logTag} Missing required parameter: orderId`);
         return res.status(400).json({
           success: false,
           error: 'Missing required parameter: orderId'
         });
       }
-      
-      // gkashResult is optional - can be null for FREE/COD/CREDIT orders
-      console.log('ℹ️ [API] GKash Result is optional for non-payment orders (FREE/COD/CREDIT)');
-      
-      // Set default options for direct API call
+
+      console.log(`ℹ️ ${logTag} GKash Result is optional for non-payment orders (FREE/COD/CREDIT)`);
+
       const processOptions = {
         enablePrinting: false,
         enablePickingList: false,
         enableFullProcessing: true,
         deleteOrderTemp: false,
+        usePlus,
       };
-      
-      console.log('🚀 [API] Final processing options:', JSON.stringify(processOptions, null, 2));
-      
-      // Create empty gkashResult if none provided (for FREE/COD/CREDIT orders)
+
+      console.log(`🚀 ${logTag} Final processing options:`, JSON.stringify(processOptions, null, 2));
+
       const finalGkashResult = gkashResult || {
         CID: null,
         POID: null,
@@ -7908,14 +8722,13 @@ console.log("set payment status :", orderModel.paymentstatus);
         DESC: 'Direct order processing - no GKash payment',
         PAYMENT_TYPE: 'COD'
       };
-      
-      console.log('🚀 [API] Final GKash Result:', JSON.stringify(finalGkashResult, null, 2));
-      
-      // Call the processOrderTransaction method
+
+      console.log(`🚀 ${logTag} Final GKash Result:`, JSON.stringify(finalGkashResult, null, 2));
+
       const result = await this.processOrderTransaction(storeId, orderId, finalGkashResult, processOptions);
-      
+
       if (result.status === 'success') {
-        console.log('✅ [API] Order processing completed successfully');
+        console.log(`✅ ${logTag} Order processing completed successfully`);
         res.status(200).json({
           success: true,
           message: 'Order processed successfully',
@@ -7924,7 +8737,7 @@ console.log("set payment status :", orderModel.paymentstatus);
           result: result
         });
       } else {
-        console.log('❌ [API] Order processing failed:', result.error);
+        console.log(`❌ ${logTag} Order processing failed:`, result.error);
         res.status(400).json({
           success: false,
           error: result.error,
@@ -7932,9 +8745,9 @@ console.log("set payment status :", orderModel.paymentstatus);
           storeId: storeId
         });
       }
-      
+
     } catch (error) {
-      console.error('💥 [API] Error in direct order processing:', error);
+      console.error(`💥 ${logTag} Error in direct order processing:`, error);
       res.status(500).json({
         success: false,
         error: 'Internal server error during order processing',

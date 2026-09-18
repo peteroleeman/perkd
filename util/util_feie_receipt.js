@@ -4,6 +4,8 @@
  * Matches the format used by the foodioonline Flutter app when calling api.foodio.online
  * (e.g. /odoo/kdsorderslipfrominfoap, /pos/printlabelap)
  *
+ * Order slip (kitchen) printing: use util_feie_orderslip.js (/pos/kdsorderslipexap layout).
+ *
  * Flutter _handleFeieReceipt sample logic (reference):
  * 1. Guard: if (getFeieCount() <= 0 || paymentStatus != paid) return;
  * 2. Receipt printers: for each device in getFeieReceiptPrinter(),
@@ -55,6 +57,87 @@ function formatOrderTypeLabel(raw) {
   return s;
 }
 
+function hasReceiptField(value) {
+  if (value == null) return false;
+  const s = String(value).trim();
+  return s !== '' && s !== '-';
+}
+
+function formatReceiptTotal(orderModel) {
+  const raw = orderModel?.totalpaid ?? orderModel?.totalPaid
+    ?? orderModel?.totalprice ?? orderModel?.totalPrice
+    ?? orderModel?.getTotalAmount?.() ?? '';
+  if (raw == null || raw === '') return '0.00';
+  const str = String(raw).trim();
+  const direct = parseFloat(str);
+  if (!Number.isNaN(direct) && /^-?\d/.test(str)) return direct.toFixed(2);
+  const match = str.match(/[\d,]+\.?\d*/);
+  if (match) {
+    const num = parseFloat(match[0].replace(/,/g, ''));
+    if (!Number.isNaN(num)) return num.toFixed(2);
+  }
+  return str;
+}
+
+function resolveReceiptDateTime(orderModel) {
+  const raw = orderModel?.dateTime ?? orderModel?.orderDateTime ?? '';
+  let d = new Date();
+  if (raw) {
+    const parsed = new Date(String(raw).trim());
+    if (!Number.isNaN(parsed.getTime())) d = parsed;
+  }
+  const dateFormatter = new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+  });
+  const timeFormatter = new Intl.DateTimeFormat('en-GB', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
+  });
+  return `${dateFormatter.format(d)}  ${timeFormatter.format(d)}`;
+}
+
+function resolveOrderTypeRaw(orderModel) {
+  const raw = orderModel?.ordertype ?? orderModel?.orderType
+    ?? (typeof orderModel?.getOrderType === 'function' ? orderModel.getOrderType() : undefined);
+  if (raw == null || raw === '') return '';
+  return raw;
+}
+
+function flushLine(line, receipt) {
+  for (const l of line.getReceipt()) {
+    receipt.push(l);
+  }
+}
+
+function flushDualTable(dualTable, receipt) {
+  for (const l of dualTable.getReceipt()) {
+    receipt.push(l);
+  }
+}
+
+function addCenteredDivider(line, receipt, char = '-', width = 32) {
+  line.refresh();
+  line.init(width);
+  line.addMarkupLine(ReceiptFormat.setCenter(char.repeat(width)));
+  flushLine(line, receipt);
+}
+
+function appendIndentedLine(line, receipt, width, text) {
+  line.refresh();
+  line.init(width);
+  line.addMarkupLine(text);
+  flushLine(line, receipt);
+}
+
+/** Feie renders extra gap if <BR> follows </C>; keep breaks inside one <C> block. */
+function appendCenteredBlock(line, receipt, width, lines) {
+  const content = lines.filter((l) => l != null && String(l).trim() !== '');
+  if (content.length === 0) return;
+  line.refresh();
+  line.init(width);
+  line.addMarkupLine(`<C>${content.join('<BR>')}</C>`);
+  flushLine(line, receipt);
+}
+
 class UtilFeieReceipt {
   /**
    * @returns {string[]}
@@ -73,111 +156,126 @@ class UtilFeieReceipt {
   static printOrderReceiptFromOrder(storeModel, orderModel, opts = {}) {
     const { bReprint = false, type = 0 } = opts;
     const receipt = [];
+    const receiptWidth = type === 1 ? 48 : 32;
+    const keyLen = 10;
+    const valueLen = type === 1 ? 38 : 22;
 
     const now = new Date();
-    const dateFormatter = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' });
-    const timeFormatter = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-    const currentDate = dateFormatter.format(now);
-    const currentTime = timeFormatter.format(now);
-
-    let dateLen = 16;
-    let timeLen = 16;
-    if (type === 1) {
-      dateLen = 24;
-      timeLen = 24;
-    }
-
     const dualTable = new ReceiptDualTable();
     const line = new ReceiptLine();
-    line.init(dateLen + timeLen);
-    dualTable.init(dateLen, timeLen);
+    line.init(receiptWidth);
 
     if (bReprint === true) {
+      line.refresh();
+      line.init(receiptWidth);
       line.addMarkupLine(ReceiptFormat.setCenterBIG('*DUPLICATE*'));
-      line.addMarkupLine('<BR>');
+      flushLine(line, receipt);
     }
 
     const storeTitle = orderModel?.storetitle ?? orderModel?.storeTitle ?? storeModel?.title ?? '';
     if (storeTitle !== '') {
-      line.addMarkupLine(ReceiptFormat.setCenter(storeTitle));
-      line.addMarkupLine('<BR>');
+      line.refresh();
+      line.init(receiptWidth);
+      line.addMarkupLine(`<C>${ReceiptFormat.setBold(storeTitle)}</C>`);
+      flushLine(line, receipt);
     }
 
-    line.addMarkupLine(ReceiptFormat.setCenter(`${currentDate} ${currentTime}`));
-    line.addMarkupLine('<BR>');
-    line.addMarkupLine(ReceiptFormat.setCenterBIG(orderModel?.orderid ?? orderModel?.orderId ?? '-'));
-    line.addMarkupLine('<BR>');
+    addCenteredDivider(line, receipt, '=', receiptWidth);
+
+    const headerLines = [];
+    const remark = String(orderModel?.remark ?? '').trim();
+    if (hasReceiptField(remark)) {
+      headerLines.push(remark);
+    }
+    headerLines.push(resolveReceiptDateTime(orderModel));
+    let hasOrderTypeInHeader = false;
+    const orderTypeRaw = resolveOrderTypeRaw(orderModel);
+    if (hasReceiptField(orderTypeRaw)) {
+      const orderTypeLabel = formatOrderTypeLabel(orderTypeRaw);
+      if (hasReceiptField(orderTypeLabel) && orderTypeLabel !== '-') {
+        headerLines.push(orderTypeLabel);
+        hasOrderTypeInHeader = true;
+      }
+    }
+    appendCenteredBlock(line, receipt, receiptWidth, headerLines);
+
+    if (hasOrderTypeInHeader) {
+      addCenteredDivider(line, receipt, '-', receiptWidth);
+    }
+
+    dualTable.init(keyLen, valueLen);
+    dualTable.addKey('Order No.');
+    dualTable.addValue(orderModel?.orderid ?? orderModel?.orderId ?? '-');
+    flushDualTable(dualTable, receipt);
 
     const onlineOrderId = orderModel?.onlineorderid ?? orderModel?.onlineOrderId ?? '';
     const orderId = orderModel?.orderid ?? orderModel?.orderId ?? '';
-    if (onlineOrderId !== orderId) {
-      line.addMarkupLine(ReceiptFormat.setCenter(
-        ReceiptFormat.setBold(orderModel?.onlineorderid ?? orderModel?.onlineOrderId ?? '-')
-      ));
-      line.addMarkupLine('<BR>');
+    if (onlineOrderId !== '' && onlineOrderId !== orderId) {
+      dualTable.refresh();
+      dualTable.init(keyLen, valueLen);
+      dualTable.addKey('Online No.');
+      dualTable.addValue(onlineOrderId);
+      flushDualTable(dualTable, receipt);
     }
+
+    addCenteredDivider(line, receipt, '-', receiptWidth);
 
     const orderItems = orderModel?.orderitems ?? orderModel?.orderItems ?? orderModel?.getOrderItems?.() ?? [];
     for (const element of orderItems) {
       const title = element?.title ?? '';
       const qty = element?.qty ?? element?.quantity ?? 1;
-      // Normal width (setBIG/<B> prints too large on narrow paper and wraps mid-title)
-      line.addText(String(title) + '<BR>');
-      line.addText(ReceiptFormat.setRightAlign(`x <B>${qty}</B>`));
+      const qtyLabel = `${qty}x`.padStart(5, ' ');
+
+      appendIndentedLine(line, receipt, receiptWidth, `${qtyLabel}  ${title}<BR>`);
+
+      if (UtilFeie.orderItemIsTakeAway(element)) {
+        appendIndentedLine(line, receipt, receiptWidth, '     + Take Away<BR>');
+      }
 
       const modInfo = element?.modinfo ?? element?.modInfo;
       if (modInfo !== undefined && modInfo !== '' && modInfo !== 'null') {
-        let modText = '';
         if (Array.isArray(modInfo)) {
-          modText = modInfo.map(m => (typeof m === 'object' && m?.title) ? `${m.title}${(m?.qty > 1 ? ` x${m.qty}` : '')}` : String(m)).join(', ');
-        } else if (modInfo && typeof modInfo === 'object') {
-          modText = modInfo.title ? `${modInfo.title}${(modInfo.qty > 1 ? ` x${modInfo.qty}` : '')}` : '';
+          for (const m of modInfo) {
+            const modTitle = (typeof m === 'object' && m?.title) ? m.title : String(m);
+            const modQty = (typeof m === 'object' && m?.qty > 1) ? ` x${m.qty}` : '';
+            if (modTitle) {
+              appendIndentedLine(line, receipt, receiptWidth, `     + ${modTitle}${modQty}<BR>`);
+            }
+          }
+        } else if (modInfo && typeof modInfo === 'object' && modInfo.title) {
+          appendIndentedLine(line, receipt, receiptWidth, `     + ${modInfo.title}<BR>`);
         } else {
-          modText = String(modInfo);
+          appendIndentedLine(line, receipt, receiptWidth, `     + ${String(modInfo)}<BR>`);
         }
-        if (modText) line.addText('S:' + modText + '<BR>');
       }
 
-      // Handle submenu items - subMenus1 to subMenus5
       for (let s = 1; s <= 5; s++) {
-        const key = `submenus${s}`;
-        const subMenus = element?.[key] ?? element?.[`subMenus${s}`] ?? [];
+        const subMenus = element?.[`submenus${s}`] ?? element?.[`subMenus${s}`] ?? [];
         if (Array.isArray(subMenus) && subMenus.length > 0) {
-          for (let i = 0; i < subMenus.length; i++) {
-            const menuItem = subMenus[i];
-            const itemTitle = (typeof menuItem === 'object' && menuItem !== null) ? (menuItem.title ?? menuItem) : String(menuItem);
-            const label = subMenus.length === 1 ? `S${s}:` : `S${s}-${i + 1}:`;
-            line.addText(label + itemTitle + '<BR>');
+          for (const menuItem of subMenus) {
+            const itemTitle = (typeof menuItem === 'object' && menuItem !== null)
+              ? (menuItem.title ?? menuItem) : String(menuItem);
+            appendIndentedLine(line, receipt, receiptWidth, `     + ${itemTitle}<BR>`);
           }
         }
       }
 
       const lineRemark = trimOrderItemRemark(element);
       if (lineRemark) {
-        line.addText('R: ' + lineRemark + '<BR>');
+        appendIndentedLine(line, receipt, receiptWidth, `     Note: ${lineRemark}<BR>`);
       }
-
-      line.addText(ReceiptFormat.setCenter('* * *'));
     }
 
-    for (const lineItem of line.getReceipt()) {
-      receipt.push(lineItem);
-    }
+    addCenteredDivider(line, receipt, '-', receiptWidth);
 
-    // Summary section
-    let keyLen = 10;
-    let valueLen = 22;
-    if (type === 1) {
-      keyLen = 10;
-      valueLen = 38;
-    }
+    dualTable.refresh();
     dualTable.init(keyLen, valueLen);
-    dualTable.addKey('');
-    dualTable.addValue(orderModel?.currency ?? 'MYR');
 
-    dualTable.addKey('Paid with');
-    const paymentType = orderModel?.paymenttype ?? orderModel?.paymentType ?? orderModel?.getPaymentType?.() ?? '-';
-    dualTable.addValue(paymentType);
+    const paymentType = orderModel?.paymenttype ?? orderModel?.paymentType ?? orderModel?.getPaymentType?.() ?? '';
+    if (hasReceiptField(paymentType)) {
+      dualTable.addKey('Paid with');
+      dualTable.addValue(paymentType);
+    }
 
     const cashAmount = orderModel?.cashamount ?? orderModel?.cashAmount ?? orderModel?.getCashAmount?.() ?? 0;
     if (parseFloat(cashAmount) > 0) {
@@ -192,60 +290,62 @@ class UtilFeieReceipt {
       dualTable.addValue(parseFloat(epayAmount).toFixed(2));
     }
 
-    for (const l of dualTable.getReceipt()) {
-      receipt.push(l);
-    }
+    dualTable.addKey('Total');
+    dualTable.addValue(formatReceiptTotal(orderModel));
+    flushDualTable(dualTable, receipt);
 
-    line.refresh();
-    const totalAmount = orderModel?.totalpaid ?? orderModel?.totalPaid ?? orderModel?.totalprice ?? orderModel?.totalPrice ?? orderModel?.getTotalAmount?.() ?? 0;
-    line.addText(
-      '<RIGHT>Total ' + ReceiptFormat.setBIG(parseFloat(totalAmount || 0).toFixed(2)) + '</RIGHT>'
-    );
-    line.addText(ReceiptFormat.setCenter('* * *'));
+    addCenteredDivider(line, receipt, '-', receiptWidth);
 
-    for (const lineItem of line.getReceipt()) {
-      receipt.push(lineItem);
-    }
-
-    let tableAssigned = orderModel?.mobileassignedtable ?? orderModel?.mobileAssignedTable ?? '-';
-    if (tableAssigned === '') tableAssigned = '-';
-
-    const orderTypeRaw = orderModel?.ordertype ?? orderModel?.orderType ?? orderModel?.getOrderType?.() ?? '';
     dualTable.refresh();
-    dualTable.addKey('Type');
-    dualTable.addValue(formatOrderTypeLabel(orderTypeRaw));
-    dualTable.addKey('Table');
-    dualTable.addValue(tableAssigned);
-    dualTable.addKey('Name');
-    dualTable.addValue(orderModel?.name ?? '-');
-    dualTable.addKey('Contact');
-    dualTable.addValue(orderModel?.userphonenumber ?? orderModel?.userPhoneNumber ?? '-');
+    dualTable.init(keyLen, valueLen);
 
-    for (const l of dualTable.getReceipt()) {
-      receipt.push(l);
+    const orderTypeLabel = formatOrderTypeLabel(resolveOrderTypeRaw(orderModel));
+    if (hasReceiptField(orderTypeLabel) && orderTypeLabel !== '-') {
+      dualTable.addKey('Type');
+      dualTable.addValue(orderTypeLabel);
     }
 
-    line.refresh();
-    line.addText(ReceiptFormat.setCenter('* * *'));
-    line.addText(ReceiptFormat.setCenter('Scan QR for receipt'));
-    line.addText(ReceiptFormat.setCenter('or to submit einvoice'));
+    const tableAssigned = orderModel?.table ?? orderModel?.buzzer
+      ?? orderModel?.mobileassignedtable ?? orderModel?.mobileAssignedTable ?? '';
+    if (hasReceiptField(tableAssigned)) {
+      dualTable.addKey('Table');
+      dualTable.addValue(tableAssigned);
+    }
+
+    const name = orderModel?.name ?? '';
+    if (hasReceiptField(name)) {
+      dualTable.addKey('Name');
+      dualTable.addValue(name);
+    }
+
+    const contact = orderModel?.userphonenumber ?? orderModel?.userPhoneNumber ?? '';
+    if (hasReceiptField(contact)) {
+      dualTable.addKey('Contact');
+      dualTable.addValue(contact);
+    }
+
+    if (dualTable.keyList.length > 0) {
+      flushDualTable(dualTable, receipt);
+      addCenteredDivider(line, receipt, '-', receiptWidth);
+    }
 
     const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    const lastDayStr = lastDay.toISOString().slice(0, 10);
-    line.addText(ReceiptFormat.setCenter(`Valid till ${lastDayStr}`));
-    for (const l of line.getReceipt()) {
-      receipt.push(l);
-    }
+    const lastDayStr = `${String(lastDay.getDate()).padStart(2, '0')}/${String(lastDay.getMonth() + 1).padStart(2, '0')}/${lastDay.getFullYear()}`;
+    appendCenteredBlock(line, receipt, receiptWidth, [
+      'Scan QR for receipt',
+      'or to submit einvoice',
+      `Valid till ${lastDayStr}`,
+    ]);
 
-    const storeId = storeModel?.id ?? orderModel?.storeid ?? orderModel?.storeId ?? '';
+    const storeId = storeModel?.id ?? orderModel?.storeid ?? orderModel?.storeId ?? orderModel?.store_id ?? '';
     const orderIdVal = orderModel?.id ?? orderModel?.orderid ?? orderModel?.orderId ?? '';
-    const sQR = `<QR>https://myeinvois.com.my/#/${storeId}/${orderIdVal}</QR>`;
-    receipt.push(sQR);
+    receipt.push(`<BR><QR>https://myeinvois.com.my/#/${storeId}/${orderIdVal}</QR>`);
 
     return receipt;
   }
 
   /**
+   * @deprecated Use UtilFeieOrderSlip via /pos/kdsorderslipexap layout (util_feie_orderslip.js).
    * Generate order slip (kitchen slip)
    * @param {Object} orderModel - Order with orderItems
    * @param {Object} opts - { type: 0|1 }
@@ -335,6 +435,7 @@ class UtilFeieReceipt {
   }
 
   /**
+   * @deprecated Use UtilFeieOrderSlip via /pos/kdsorderslipexap layout (util_feie_orderslip.js).
    * Generate single order item slip
    * @param {Object} orderModel - Order
    * @param {Object} element - Order item

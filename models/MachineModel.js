@@ -26,6 +26,7 @@ const kMachineModelPricePerToken = 'pricepertoken';
 const kMachineModelTokensNeededPerGame = 'tokensneededpergame';
 const kMachineModelGamingMachineDisplayUrl = 'gamingmachinedisplayurl';
 const kMachineModelGamingMachineColor = 'gamingmachinecolor';
+const kMachineModelUsePlus = 'useplus';
 
 class MachineModel {
   constructor({
@@ -50,7 +51,8 @@ class MachineModel {
     pricePerToken = 1.0,
     tokensNeededPerGame = 0,
     gamingMachineDisplayUrl = '',
-    gamingMachineColor = 0xFF2196F3 // Default blue color
+    gamingMachineColor = 0xFF2196F3, // Default blue color
+    usePlus = false
   } = {}) {
     this.id = id;
     this.title = title;
@@ -74,6 +76,7 @@ class MachineModel {
     this.tokensNeededPerGame = parseInt(tokensNeededPerGame) || 0;
     this.gamingMachineDisplayUrl = gamingMachineDisplayUrl;
     this.gamingMachineColor = this._parseColorValue(gamingMachineColor);
+    this.usePlus = Boolean(usePlus);
   }
 
   /**
@@ -134,7 +137,8 @@ class MachineModel {
       pricePerToken: hasField(kMachineModelPricePerToken) ? data[kMachineModelPricePerToken] : 1.0,
       tokensNeededPerGame: hasField(kMachineModelTokensNeededPerGame) ? data[kMachineModelTokensNeededPerGame] : 0,
       gamingMachineDisplayUrl: hasField(kMachineModelGamingMachineDisplayUrl) ? data[kMachineModelGamingMachineDisplayUrl] : '',
-      gamingMachineColor: hasField(kMachineModelGamingMachineColor) ? data[kMachineModelGamingMachineColor] : 0xFF2196F3
+      gamingMachineColor: hasField(kMachineModelGamingMachineColor) ? data[kMachineModelGamingMachineColor] : 0xFF2196F3,
+      usePlus: hasField(kMachineModelUsePlus) ? Boolean(data[kMachineModelUsePlus]) : false
     });
   }
 
@@ -164,7 +168,8 @@ class MachineModel {
       [kMachineModelPricePerToken]: this.pricePerToken,
       [kMachineModelTokensNeededPerGame]: this.tokensNeededPerGame,
       [kMachineModelGamingMachineDisplayUrl]: this.gamingMachineDisplayUrl,
-      [kMachineModelGamingMachineColor]: this.gamingMachineColor
+      [kMachineModelGamingMachineColor]: this.gamingMachineColor,
+      [kMachineModelUsePlus]: this.usePlus
     };
   }
 
@@ -231,6 +236,7 @@ module.exports = {
   kMachineModelPricePerToken,
   kMachineModelTokensNeededPerGame,
   kMachineModelGamingMachineDisplayUrl,
-  kMachineModelGamingMachineColor
+  kMachineModelGamingMachineColor,
+  kMachineModelUsePlus
 };
 

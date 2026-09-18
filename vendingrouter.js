@@ -12,6 +12,366 @@ const kSecurePhase = "foodio_foodio";
 const fireStore = firebase.firestore();
 const kBaseUrl = "http://43.128.71.13:8001/api";
 
+const VOUCHER_ID_PREFIX_RE = /^(EV_|VC_)/;
+
+/** Alternate user doc ids (with/without leading +) when primary lookup misses. */
+function alternateUserIds(userId) {
+  if (!userId || !userId.startsWith('FU_')) return [];
+  const phone = userId.slice(3);
+  if (phone.startsWith('+')) return [`FU_${phone.slice(1)}`];
+  return [`FU_+${phone}`];
+}
+
+/**
+ * Parse voucher QR: {qrCodePrefix}_{FU_phone}_{voucherId}
+ * e.g. FAD10_FU_+60124508261_VC_e3bf1f94-afdf-4b41-8fe9-27be707cd8d3
+ * @param {string} qrString
+ * @returns {{ userId: string, voucherId: string }}
+ */
+function decodeQrIgnorePrefix(qrString) {
+  const s = String(qrString || '').trim().replace(/\.+$/g, '');
+  if (!s) {
+    const e = new Error('EMPTY_QR');
+    e.code = 'EMPTY_QR';
+    throw e;
+  }
+
+  const match = s.match(/^(.*)_(FU_\+?\d{8,15})_(.+)$/);
+  if (!match) {
+    const e = new Error('INVALID_QR_FORMAT');
+    e.code = 'INVALID_QR_FORMAT';
+    throw e;
+  }
+
+  const userId = match[2];
+  const voucherId = match[3].trim();
+  if (!voucherId) {
+    const e = new Error('MISSING_VOUCHER_TAIL');
+    e.code = 'MISSING_VOUCHER_TAIL';
+    throw e;
+  }
+  if (!VOUCHER_ID_PREFIX_RE.test(voucherId)) {
+    const e = new Error('INVALID_VOUCHER_ID');
+    e.code = 'INVALID_VOUCHER_ID';
+    throw e;
+  }
+  return { userId, voucherId };
+}
+
+/** Format redeemedAt for API response: "May 16, 2026 at 8:54:44 AM UTC+8" */
+function formatRedeemedAt(date) {
+  const months = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+  const offsetMs = 8 * 60 * 60 * 1000;
+  const local = new Date(date.getTime() + offsetMs);
+  const month = months[local.getUTCMonth()];
+  const day = local.getUTCDate();
+  const year = local.getUTCFullYear();
+  let hours = local.getUTCHours();
+  const minutes = String(local.getUTCMinutes()).padStart(2, '0');
+  const seconds = String(local.getUTCSeconds()).padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return `${month} ${day}, ${year} at ${hours}:${minutes}:${seconds} ${ampm} UTC+8`;
+}
+
+function toFirestoreDate(value) {
+  if (!value) return null;
+  if (value.toDate) return value.toDate();
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+const VOUCHER_QR_CLIENT_ERROR_CODES = new Set([
+  'EMPTY_QR',
+  'INVALID_QR_FORMAT',
+  'MISSING_VOUCHER_TAIL',
+  'INVALID_VOUCHER_ID',
+]);
+
+function mapVoucherQrResultToHttpStatus(result) {
+  if (result.success) return 200;
+  if (result.code === 'NOT_FOUND' || result.status === 'NOT_FOUND') return 404;
+  if (VOUCHER_QR_CLIENT_ERROR_CODES.has(result.code)) return 400;
+  return 500;
+}
+
+/**
+ * Evaluate voucher doc status without modifying it.
+ * @param {object} voucherData
+ * @returns {{ status: string, valid: boolean, message: string }}
+ */
+function resolveVoucherStatus(voucherData) {
+  if (voucherData.isRedeemed === true) {
+    return { status: 'REDEEMED', valid: false, message: 'Voucher already redeemed' };
+  }
+
+  const redeemedCount = voucherData.redeemedCount || 0;
+  const quantity = voucherData.quantity || 1;
+  if (redeemedCount >= quantity) {
+    return { status: 'REDEEMED', valid: false, message: 'Voucher already redeemed' };
+  }
+
+  if (voucherData.isEnabled === false) {
+    return { status: 'DISABLED', valid: false, message: 'Voucher is disabled' };
+  }
+
+  const expiresAtRaw = voucherData.expiresAt || voucherData.expires_at;
+  if (expiresAtRaw) {
+    const expiryDate = toFirestoreDate(expiresAtRaw);
+    if (expiryDate && new Date() > expiryDate) {
+      return { status: 'EXPIRED', valid: false, message: 'Voucher has expired' };
+    }
+  }
+
+  return { status: 'VALID', valid: true, message: 'Voucher is valid' };
+}
+
+/**
+ * Disable voucher doc from QR: isEnabled false, isRedeemed true, redeemedAt set
+ * @param {string} qrString
+ * @returns {Promise<{ success: boolean, userId?: string, voucherId?: string, isRedeemed?: boolean, redeemedAt?: string, code?: string, message?: string }>}
+ */
+async function disableVoucherFromQr(qrString) {
+  try {
+    const { userId, voucherId } = decodeQrIgnorePrefix(qrString);
+    const userIdsToTry = [userId, ...alternateUserIds(userId)];
+    const seen = new Set();
+    for (const uid of userIdsToTry) {
+      if (seen.has(uid)) continue;
+      seen.add(uid);
+      const ref = fireStore.collection('user').doc(uid).collection('vouchers').doc(voucherId);
+      const snap = await ref.get();
+      if (!snap.exists) continue;
+      const now = new Date();
+      await ref.update({
+        isEnabled: false,
+        isRedeemed: true,
+        redeemedAt: now,
+      });
+      return {
+        success: true,
+        userId: uid,
+        voucherId,
+        isRedeemed: true,
+        redeemedAt: formatRedeemedAt(now),
+      };
+    }
+    return {
+      success: false,
+      code: 'NOT_FOUND',
+      message: 'Document not found',
+      userId,
+      voucherId,
+    };
+  } catch (e) {
+    return {
+      success: false,
+      code: e.code || 'ERROR',
+      message: e.message || String(e),
+    };
+  }
+}
+
+/**
+ * Check voucher status from QR without modifying the document.
+ * @param {string} qrString
+ */
+async function checkVoucherFromQr(qrString) {
+  try {
+    const { userId, voucherId } = decodeQrIgnorePrefix(qrString);
+    const userIdsToTry = [userId, ...alternateUserIds(userId)];
+    const seen = new Set();
+    for (const uid of userIdsToTry) {
+      if (seen.has(uid)) continue;
+      seen.add(uid);
+      const ref = fireStore.collection('user').doc(uid).collection('vouchers').doc(voucherId);
+      const snap = await ref.get();
+      if (!snap.exists) continue;
+      const data = snap.data() || {};
+      const statusResult = resolveVoucherStatus(data);
+      const expiresAtDate = toFirestoreDate(data.expiresAt || data.expires_at);
+      const redeemedAtDate = toFirestoreDate(data.redeemedAt);
+      return {
+        success: true,
+        ...statusResult,
+        userId: uid,
+        voucherId,
+        title: data.title || '',
+        expiresAt: expiresAtDate ? expiresAtDate.toISOString() : null,
+        isRedeemed: Boolean(data.isRedeemed),
+        isEnabled: data.isEnabled !== false,
+        redeemedAt: redeemedAtDate ? formatRedeemedAt(redeemedAtDate) : null,
+      };
+    }
+    return {
+      success: false,
+      valid: false,
+      status: 'NOT_FOUND',
+      code: 'NOT_FOUND',
+      message: 'Document not found',
+      userId,
+      voucherId,
+    };
+  } catch (e) {
+    return {
+      success: false,
+      valid: false,
+      code: e.code || 'ERROR',
+      message: e.message || String(e),
+    };
+  }
+}
+
+function parseIsoDate(value, fieldName) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    const e = new Error(`${fieldName} must be a valid ISO-8601 date`);
+    e.code = 'INVALID_DATE';
+    throw e;
+  }
+  return d;
+}
+
+/**
+ * Load loyalty card from `loyal_card` by id (doc id or `id` field).
+ * @param {string} loyaltyCardId
+ */
+async function loadLoyaltyCardById(loyaltyCardId) {
+  const cardId = String(loyaltyCardId || '').trim();
+  if (!cardId) {
+    const e = new Error('loyaltyCardId is required');
+    e.code = 'MISSING_LOYALTY_CARD_ID';
+    throw e;
+  }
+
+  let cardDoc = await fireStore.collection('loyal_card').doc(cardId).get();
+  if (!cardDoc.exists) {
+    const snap = await fireStore
+      .collection('loyal_card')
+      .where('id', '==', cardId)
+      .limit(1)
+      .get();
+    if (!snap.empty) {
+      cardDoc = snap.docs[0];
+    }
+  }
+
+  if (!cardDoc.exists) {
+    const e = new Error(`Loyalty card not found: ${cardId}`);
+    e.code = 'LOYALTY_CARD_NOT_FOUND';
+    throw e;
+  }
+
+  const data = cardDoc.data() || {};
+  return {
+    loyaltyCardId: cardId,
+    storeId: String(data.storeId || data.storeid || '').trim(),
+    companyId: String(data.companyId || data.companyid || '').trim(),
+    storeTitle: String(data.storeTitle || data.storetitle || data.title || '').trim(),
+  };
+}
+
+/**
+ * Grant a VM voucher to an existing user.
+ * @param {{ phoneNumber: string, title: string, prefix: string, loyaltyCardId: string, promotionBanner?: string, sideLogo?: string, createdAt: string, expiresAt: string }} params
+ */
+async function grantVmVoucher({
+  phoneNumber,
+  title,
+  prefix,
+  loyaltyCardId,
+  promotionBanner,
+  sideLogo,
+  createdAt,
+  expiresAt,
+}) {
+  const phone = String(phoneNumber || '').trim();
+  if (!phone.startsWith('+')) {
+    const e = new Error('phoneNumber must start with + and country code');
+    e.code = 'INVALID_PHONE';
+    throw e;
+  }
+
+  const cleanTitle = String(title || '').trim();
+  const cleanPrefix = String(prefix || '').trim();
+  if (!cleanTitle) {
+    const e = new Error('title is required');
+    e.code = 'MISSING_TITLE';
+    throw e;
+  }
+  if (!cleanPrefix) {
+    const e = new Error('prefix is required');
+    e.code = 'MISSING_PREFIX';
+    throw e;
+  }
+
+  const created = parseIsoDate(createdAt, 'createdAt');
+  const expires = parseIsoDate(expiresAt, 'expiresAt');
+  if (expires <= created) {
+    const e = new Error('expiresAt must be after createdAt');
+    e.code = 'INVALID_EXPIRY';
+    throw e;
+  }
+
+  const userId = `FU_${phone}`;
+  const userRef = fireStore.collection('user').doc(userId);
+  const userSnap = await userRef.get();
+  if (!userSnap.exists) {
+    const e = new Error(`User not found: ${userId}`);
+    e.code = 'USER_NOT_FOUND';
+    throw e;
+  }
+
+  const loyaltyCard = await loadLoyaltyCardById(loyaltyCardId);
+
+  const voucherId = `VC_${crypto.randomUUID()}`;
+  const voucherDoc = {
+    id: voucherId,
+    title: cleanTitle,
+    voucherString: cleanPrefix,
+    voucherType: 'vm',
+    createdAt: created,
+    expiresAt: expires,
+    menuId: '',
+    storeId: loyaltyCard.storeId,
+    storeTitle: loyaltyCard.storeTitle,
+    companyId: loyaltyCard.companyId,
+    orderId: '',
+    quantity: 1,
+    redeemedCount: 0,
+    isRedeemed: false,
+    isEnabled: true,
+    isTest: false,
+    giveOnLogin: false,
+    giveOnSignup: false,
+    fromReferralOnly: false,
+    machineId: '',
+    loyaltyCardId: loyaltyCard.loyaltyCardId,
+    promotionBanner: String(promotionBanner || '').trim(),
+    sideLogo: String(sideLogo || '').trim(),
+    vendingGoodsSku: '',
+    vendingGoodsPhoto: '',
+    vendingGoodsName: '',
+    vendingGoodsSkuList: [],
+    vendingGoodsPhotoList: [],
+    vendingGoodsNameList: [],
+    description: '',
+    contentDetails: '',
+  };
+
+  await userRef.collection('vouchers').doc(voucherId).set(voucherDoc);
+
+  return {
+    success: true,
+    message: 'VM voucher granted',
+    userId,
+    voucherId,
+  };
+}
+
 // 🔒 HARD-CODED SECRET (CHANGE THIS BEFORE USE)
 const REFERRAL_SECRET = 'CERIA_SECRET_v1_hV9@6a!uLzF6b3nQ%#kR2Yp9qD';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no O/0/I/1/L
@@ -22,15 +382,148 @@ class VendingRouter {
     this.initializeRoutes();
   }
 
+  _shouldRedactVendingKey(key) {
+    const l = String(key).toLowerCase();
+    return (
+      l === 'password' ||
+      l === 'token' ||
+      l === 'membership' ||
+      l === 'authorization'
+    );
+  }
+
+  _redactWalk(value) {
+    if (value === null || value === undefined) return value;
+    if (typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map((item) => this._redactWalk(item));
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (this._shouldRedactVendingKey(k)) {
+        if (v == null) out[k] = v;
+        else if (typeof v === 'string')
+          out[k] = `[REDACTED len=${v.length}]`;
+        else out[k] = '[REDACTED]';
+      } else {
+        out[k] = this._redactWalk(v);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * JSON-safe, redacted, length-capped string for console / log aggregation.
+   * @param {*} value
+   * @returns {string}
+   */
+  _sanitizeVendingLog(value) {
+    const MAX = 16384;
+    if (value === undefined) return 'undefined';
+    let parsed;
+    try {
+      parsed = JSON.parse(JSON.stringify(value));
+    } catch {
+      const s = String(value);
+      return s.length > MAX ? s.slice(0, MAX) + '...[truncated]' : s;
+    }
+    const redacted = this._redactWalk(parsed);
+    let s;
+    try {
+      s = JSON.stringify(redacted);
+    } catch {
+      return '[Unserializable]';
+    }
+    return s.length > MAX ? s.slice(0, MAX) + '...[truncated]' : s;
+  }
+
+  _logVendingInbound(handlerName, req) {
+    const body =
+      req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+        ? req.body
+        : {};
+    const query =
+      req.query && typeof req.query === 'object' && !Array.isArray(req.query)
+        ? req.query
+        : {};
+    const merged = { ...query, ...body };
+    console.log(`[VENDING] ${handlerName} in`, this._sanitizeVendingLog(merged));
+  }
+
+  _patchResJsonForVendingLog(handlerName, res) {
+    if (res.__vendingJsonPatched) return;
+    res.__vendingJsonPatched = true;
+    const orig = res.json.bind(res);
+    const self = this;
+    res.json = function (body) {
+      console.log(
+        `[VENDING] ${handlerName} out status=${res.statusCode}`,
+        self._sanitizeVendingLog(body)
+      );
+      return orig(body);
+    };
+
+    if (typeof res.status === 'function') {
+      const origStatus = res.status.bind(res);
+      res.status = function (code) {
+        const out = origStatus(code);
+        if (
+          out &&
+          out !== res &&
+          typeof out.json === 'function' &&
+          !out.__vendingChainedJsonPatched
+        ) {
+          out.__vendingChainedJsonPatched = true;
+          const innerOrig = out.json.bind(out);
+          out.json = function (body) {
+            console.log(
+              `[VENDING] ${handlerName} out status=${code}`,
+              self._sanitizeVendingLog(body)
+            );
+            return innerOrig(body);
+          };
+        }
+        return out;
+      };
+    }
+  }
+
+  /**
+   * Log outbound external vending/dispenser API call and its response (sanitized).
+   * @param {string} handlerName
+   * @param {string} method
+   * @param {string} url
+   * @param {*} payload
+   * @param {number} responseStatus
+   * @param {*} responseData
+   */
+  _logVendingExternalCall(handlerName, method, url, payload, responseStatus, responseData) {
+    console.log(
+      `[VENDING] ${handlerName} -> ${method} ${url}`,
+      this._sanitizeVendingLog(payload)
+    );
+    console.log(
+      `[VENDING] ${handlerName} <- status=${responseStatus}`,
+      this._sanitizeVendingLog(responseData)
+    );
+  }
+
+  handleAbout(req, res) {
+    this._logVendingInbound('about', req);
+    this._patchResJsonForVendingLog('about', res);
+    res.json({ message: `Endpoint for Vending integration v1.0.1` });
+  }
+
   initializeRoutes() {
-    this.router.get('/about', function(req, res) {
-     res.json({ message: `Endpoint for Vending integration v1.0.1`});
-    });
+    this.router.get('/about', this.handleAbout.bind(this));
     
    
     this.router.post('/checkmembership', this.checkMembership.bind(this));
     this.router.post('/redeemvoucher', this.redeemVoucher.bind(this));
     this.router.post('/checkvoucher', this.checkVoucher.bind(this));
+    this.router.post('/disableeventvoucherfromqr', this.handleDisableVoucherFromQr.bind(this));
+    this.router.post('/disablevmvoucherfromqr', this.handleDisableVoucherFromQr.bind(this));
+    this.router.post('/checkeventvoucherfromqr', this.handleCheckVoucherFromQr.bind(this));
+    this.router.post('/checkvmvoucherfromqr', this.handleCheckVoucherFromQr.bind(this));
+    this.router.post('/grantvmvoucher', this.handleGrantVmVoucher.bind(this));
     this.router.post('/getstock', this.handleGetStock.bind(this));
     this.router.post('/datasetcollected', this.dataSetCollected.bind(this));
     this.router.post('/datasetuncollected', this.dataSetUnCollected.bind(this));
@@ -51,6 +544,8 @@ class VendingRouter {
 
   async dataSetUnCollected(req, res) {
     try {
+      this._logVendingInbound('dataSetUnCollected', req);
+      this._patchResJsonForVendingLog('dataSetUnCollected', res);
       // Extract required parameters from request
       const { userid, orderid } = req.body;
   
@@ -134,6 +629,8 @@ class VendingRouter {
 
   async dataSetCollected(req, res) {
   try {
+    this._logVendingInbound('dataSetCollected', req);
+    this._patchResJsonForVendingLog('dataSetCollected', res);
     // Extract required parameters from request
     const { userid, orderid } = req.body;
 
@@ -222,6 +719,8 @@ class VendingRouter {
 
   async dataGetOrder(req, res) {
   try {
+    this._logVendingInbound('dataGetOrder', req);
+    this._patchResJsonForVendingLog('dataGetOrder', res);
     // Extract parameters from request
     const orderid = req.query.orderId || req.body.orderid;
     
@@ -279,6 +778,8 @@ class VendingRouter {
 
   async checkMembership(req, res) {
     try {
+      this._logVendingInbound('checkMembership', req);
+      this._patchResJsonForVendingLog('checkMembership', res);
       // Validate the request body
       if (!req.body) {
         return res.status(400).json({ error: 'Request body is missing or empty' });
@@ -337,6 +838,8 @@ class VendingRouter {
 
   async redeemVoucher(req, res) {
     try {
+        this._logVendingInbound('redeemVoucher', req);
+        this._patchResJsonForVendingLog('redeemVoucher', res);
         // Validate the request body
         if (!req.body) {
             return res.status(400).json({ error: 'Request body is missing or empty' });
@@ -405,6 +908,8 @@ class VendingRouter {
 
   async checkVoucher(req, res) {
     try {
+        this._logVendingInbound('checkVoucher', req);
+        this._patchResJsonForVendingLog('checkVoucher', res);
         // Validate the request body
         if (!req.body) {
             return res.status(400).json({ error: 'Request body is missing or empty' });
@@ -460,6 +965,93 @@ class VendingRouter {
   }
 
   /**
+   * POST body: { qrString } | { qr } | { qrcode }
+   * Format: {prefix}_{FU_phone}_{voucherId} (EV_ or VC_)
+   */
+  async handleDisableVoucherFromQr(req, res) {
+    try {
+      this._logVendingInbound('handleDisableVoucherFromQr', req);
+      this._patchResJsonForVendingLog('handleDisableVoucherFromQr', res);
+      const qrString =
+        req.body?.qrString ?? req.body?.qr ?? req.body?.qrcode;
+      if (qrString === undefined || qrString === null || String(qrString).trim() === '') {
+        return res.status(400).json({
+          success: false,
+          code: 'EMPTY_QR',
+          message: 'qrString, qr, or qrcode is required',
+        });
+      }
+      const result = await disableVoucherFromQr(qrString);
+      return res.status(mapVoucherQrResultToHttpStatus(result)).json(result);
+    } catch (error) {
+      console.error('Error disable voucher from QR:', error);
+      return res.status(500).json({
+        success: false,
+        code: 'ERROR',
+        message: error.message || String(error),
+      });
+    }
+  }
+
+  /**
+   * POST body: { qrString } | { qr } | { qrcode }
+   * Format: {prefix}_{FU_phone}_{voucherId} (EV_ or VC_)
+   */
+  async handleCheckVoucherFromQr(req, res) {
+    try {
+      this._logVendingInbound('handleCheckVoucherFromQr', req);
+      this._patchResJsonForVendingLog('handleCheckVoucherFromQr', res);
+      const qrString =
+        req.body?.qrString ?? req.body?.qr ?? req.body?.qrcode;
+      if (qrString === undefined || qrString === null || String(qrString).trim() === '') {
+        return res.status(400).json({
+          success: false,
+          code: 'EMPTY_QR',
+          message: 'qrString, qr, or qrcode is required',
+        });
+      }
+      const result = await checkVoucherFromQr(qrString);
+      return res.status(mapVoucherQrResultToHttpStatus(result)).json(result);
+    } catch (error) {
+      console.error('Error checking voucher from QR:', error);
+      return res.status(500).json({
+        success: false,
+        code: 'ERROR',
+        message: error.message || String(error),
+      });
+    }
+  }
+
+  /**
+   * POST body: { phoneNumber, title, prefix, loyaltyCardId, promotionBanner, sideLogo, createdAt, expiresAt }
+   */
+  async handleGrantVmVoucher(req, res) {
+    try {
+      this._logVendingInbound('handleGrantVmVoucher', req);
+      this._patchResJsonForVendingLog('handleGrantVmVoucher', res);
+      const result = await grantVmVoucher(req.body || {});
+      return res.status(200).json(result);
+    } catch (error) {
+      console.error('Error granting VM voucher:', error);
+      const clientErr = new Set([
+        'INVALID_PHONE',
+        'MISSING_TITLE',
+        'MISSING_PREFIX',
+        'MISSING_LOYALTY_CARD_ID',
+        'LOYALTY_CARD_NOT_FOUND',
+        'INVALID_DATE',
+        'INVALID_EXPIRY',
+        'USER_NOT_FOUND',
+      ]);
+      const status = clientErr.has(error.code) ? 400 : 500;
+      return res.status(status).json({
+        success: false,
+        message: error.message || 'Grant failed',
+      });
+    }
+  }
+
+  /**
    * Fetches stock details from the dispenser API
    * @param {string} mid - The machine ID to get stock for
    * @returns {Promise<Object>} - Returns a promise that resolves to the stock data or an error object
@@ -481,10 +1073,11 @@ class VendingRouter {
       data.append('mid', mid);
 
       // Configure the request
+      const stockUrl = 'http://dispenser.sayhi.asia/index.php/api/GetStock/detail';
       const config = {
         method: 'post',
         maxBodyLength: Infinity,
-        url: 'http://dispenser.sayhi.asia/index.php/api/GetStock/detail',
+        url: stockUrl,
         headers: { 
           ...data.getHeaders()
         },
@@ -493,6 +1086,8 @@ class VendingRouter {
 
       // Make the request
       const response = await axios.request(config);
+
+      this._logVendingExternalCall('getStock', 'POST', stockUrl, { mid }, response.status, response.data);
       
       // Log success (optional)
       console.log(`Successfully fetched stock data for machine ${mid}`);
@@ -509,6 +1104,8 @@ class VendingRouter {
       
       // Provide detailed error information if available
       if (error.response) {
+        const stockUrl = 'http://dispenser.sayhi.asia/index.php/api/GetStock/detail';
+        this._logVendingExternalCall('getStock', 'POST', stockUrl, { mid }, error.response.status, error.response.data);
         console.error("Response status:", error.response.status);
         console.error("Response data:", error.response.data);
       }
@@ -527,6 +1124,8 @@ class VendingRouter {
    */
   async handleGetStock(req, res) {
     try {
+      this._logVendingInbound('handleGetStock', req);
+      this._patchResJsonForVendingLog('handleGetStock', res);
       // Validate the request body
       if (!req.body) {
         return res.status(400).json({ 
@@ -562,6 +1161,8 @@ class VendingRouter {
 
   async handleLogin(req, res) {
     try {
+      this._logVendingInbound('handleLogin', req);
+      this._patchResJsonForVendingLog('handleLogin', res);
       // Validate request body
       const { device_number, merchant_id, mobile, mobile_area_code, password } = req.body;
 
@@ -583,14 +1184,17 @@ class VendingRouter {
       };
 
       // Make request to external API
+      const loginUrl = `${kBaseUrl}/vending/members/login`;
       const response = await axios({
         method: 'POST',
-        url: `${kBaseUrl}/vending/members/login`,
+        url: loginUrl,
         headers: {
           'Content-Type': 'application/json'
         },
         data: loginData
       });
+
+      this._logVendingExternalCall('handleLogin', 'POST', loginUrl, loginData, response.status, response.data);
 
       // Return the response from the external API
       //return res.status(200).json(response.data);
@@ -606,6 +1210,16 @@ class VendingRouter {
       
       // If the error is from the external API, forward its response
       if (error.response) {
+        const loginUrl = `${kBaseUrl}/vending/members/login`;
+        const { device_number, merchant_id, mobile, mobile_area_code, password } = req.body || {};
+        const loginData = {
+          device_number,
+          merchant_id,
+          mobile,
+          mobile_area_code,
+          password
+        };
+        this._logVendingExternalCall('handleLogin', 'POST', loginUrl, loginData, error.response.status, error.response.data);
         return res.status(error.response.status).json({
           success: false,
           message: error.response.data.message || 'Login failed',
@@ -624,6 +1238,8 @@ class VendingRouter {
 
   async handleRegister(req, res) {
     try {
+      this._logVendingInbound('handleRegister', req);
+      this._patchResJsonForVendingLog('handleRegister', res);
       // Validate request body
       const { 
         avatar,
@@ -674,14 +1290,17 @@ class VendingRouter {
       };
 
       // Make request to external API
+      const registerUrl = `${kBaseUrl}/vending/members/register`;
       const response = await axios({
         method: 'POST',
-        url: `${kBaseUrl}/vending/members/register`,
+        url: registerUrl,
         headers: {
           'Content-Type': 'application/json'
         },
         data: registerData
       });
+
+      this._logVendingExternalCall('handleRegister', 'POST', registerUrl, registerData, response.status, response.data);
 
       // Return the response from the external API
       return res.status(200).json(response.data);
@@ -691,6 +1310,20 @@ class VendingRouter {
       
       // If the error is from the external API, forward its response
       if (error.response) {
+        const registerUrl = `${kBaseUrl}/vending/members/register`;
+        const b = req.body || {};
+        const registerData = {
+          avatar: b.avatar || '',
+          birthday: b.birthday,
+          device_number: b.device_number,
+          email: b.email,
+          merchant_id: b.merchant_id,
+          mobile: b.mobile,
+          mobile_area_code: b.mobile_area_code,
+          nickname: b.nickname,
+          password: b.password
+        };
+        this._logVendingExternalCall('handleRegister', 'POST', registerUrl, registerData, error.response.status, error.response.data);
         return res.status(error.response.status).json({
           success: false,
           message: error.response.data.message || 'Registration failed',
@@ -709,6 +1342,8 @@ class VendingRouter {
 
   async handleMemberInfo(req, res) {
     try {
+      this._logVendingInbound('handleMemberInfo', req);
+      this._patchResJsonForVendingLog('handleMemberInfo', res);
       // Get token from request body
       const { token } = req.body;
 
@@ -721,14 +1356,17 @@ class VendingRouter {
       }
 
       // Make request to external API
+      const memberInfoUrl = `${kBaseUrl}/vending/members/info`;
       const response = await axios({
         method: 'GET',
-        url: `${kBaseUrl}/vending/members/info`,
+        url: memberInfoUrl,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         }
       });
+
+      this._logVendingExternalCall('handleMemberInfo', 'GET', memberInfoUrl, { method: 'GET', token }, response.status, response.data);
 
       // Return the response from the external API
       return res.status(200).json(response.data);
@@ -738,6 +1376,9 @@ class VendingRouter {
       
       // If the error is from the external API, forward its response
       if (error.response) {
+        const memberInfoUrl = `${kBaseUrl}/vending/members/info`;
+        const t = (req.body && req.body.token) || undefined;
+        this._logVendingExternalCall('handleMemberInfo', 'GET', memberInfoUrl, { method: 'GET', token: t }, error.response.status, error.response.data);
         // Special handling for 401 unauthorized errors
         if (error.response.status === 401) {
           return res.status(401).json({
@@ -765,6 +1406,8 @@ class VendingRouter {
 
   async handleGoodsList(req, res) {
     try {
+      this._logVendingInbound('handleGoodsList', req);
+      this._patchResJsonForVendingLog('handleGoodsList', res);
       // Get query parameters
       const { device_number, merchant_id } = req.body;
 
@@ -777,17 +1420,18 @@ class VendingRouter {
       }
 
       // Make request to external API
+      const goodsListUrl = `${kBaseUrl}/vending/devices/goods_list`;
+      const goodsListParams = { device_number, merchant_id };
       const response = await axios({
         method: 'GET',
-        url: `${kBaseUrl}/vending/devices/goods_list`,
-        params: {
-          device_number,
-          merchant_id
-        },
+        url: goodsListUrl,
+        params: goodsListParams,
         headers: {
           'Content-Type': 'application/json'
         }
       });
+
+      this._logVendingExternalCall('handleGoodsList', 'GET', goodsListUrl, goodsListParams, response.status, response.data);
 
       // Return the response from the external API
       return res.status(200).json(response.data);
@@ -797,6 +1441,10 @@ class VendingRouter {
       
       // If the error is from the external API, forward its response
       if (error.response) {
+        const goodsListUrl = `${kBaseUrl}/vending/devices/goods_list`;
+        const b = req.body || {};
+        const goodsListParams = { device_number: b.device_number, merchant_id: b.merchant_id };
+        this._logVendingExternalCall('handleGoodsList', 'GET', goodsListUrl, goodsListParams, error.response.status, error.response.data);
         return res.status(error.response.status).json({
           success: false,
           message: error.response.data.message || 'Failed to fetch goods list',
@@ -815,6 +1463,8 @@ class VendingRouter {
 
   async handleCreateOrder(req, res) {
     try {
+      this._logVendingInbound('handleCreateOrder', req);
+      this._patchResJsonForVendingLog('handleCreateOrder', res);
       // Get token and order details from request body
       const { 
         token,
@@ -877,22 +1527,26 @@ class VendingRouter {
 //      }
 
       // Make request to external API
+      const createOrderUrl = `${kBaseUrl}/vending/orders/purchase`;
+      const purchasePayload = {
+        amount,
+        currency,
+        device_number,
+        list,
+        merchant_id,
+        remark
+      };
       const response = await axios({
         method: 'POST',
-        url: `${kBaseUrl}/vending/orders/purchase`,
+        url: createOrderUrl,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        data: {
-          amount,
-          currency,
-          device_number,
-          list,
-          merchant_id,
-          remark
-        }
+        data: purchasePayload
       });
+
+      this._logVendingExternalCall('handleCreateOrder', 'POST', createOrderUrl, { token, order_details: purchasePayload }, response.status, response.data);
 
       // Return the response from the external API
       return res.status(200).json(response.data);
@@ -902,6 +1556,18 @@ class VendingRouter {
       
       // If the error is from the external API, forward its response
       if (error.response) {
+        const createOrderUrl = `${kBaseUrl}/vending/orders/purchase`;
+        const b = req.body || {};
+        const od = b.order_details || {};
+        const purchasePayload = {
+          amount: od.amount,
+          currency: od.currency,
+          device_number: od.device_number,
+          list: od.list,
+          merchant_id: od.merchant_id,
+          remark: od.remark
+        };
+        this._logVendingExternalCall('handleCreateOrder', 'POST', createOrderUrl, { token: b.token, order_details: purchasePayload }, error.response.status, error.response.data);
         // Special handling for 401 unauthorized errors
         if (error.response.status === 401) {
           return res.status(401).json({
@@ -929,6 +1595,8 @@ class VendingRouter {
 
   async handleCheckOrder(req, res) {
     try {
+      this._logVendingInbound('handleCheckOrder', req);
+      this._patchResJsonForVendingLog('handleCheckOrder', res);
       // Get token and orderId from request body
       const { token, orderId } = req.body;
 
@@ -949,14 +1617,17 @@ class VendingRouter {
       }
 
       // Make request to external API
+      const checkOrderUrl = `${kBaseUrl}/vending/orders/${orderId}`;
       const response = await axios({
         method: 'GET',
-        url: `${kBaseUrl}/vending/orders/${orderId}`,
+        url: checkOrderUrl,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         }
       });
+
+      this._logVendingExternalCall('handleCheckOrder', 'GET', checkOrderUrl, { method: 'GET', orderId, token }, response.status, response.data);
 
       // Return the response from the external API
       //return res.status(200).json(response.data);
@@ -971,6 +1642,9 @@ class VendingRouter {
       
       // If the error is from the external API, forward its response
       if (error.response) {
+        const b = req.body || {};
+        const checkOrderUrl = `${kBaseUrl}/vending/orders/${b.orderId || ''}`;
+        this._logVendingExternalCall('handleCheckOrder', 'GET', checkOrderUrl, { method: 'GET', orderId: b.orderId, token: b.token }, error.response.status, error.response.data);
         // Special handling for 401 unauthorized errors
         if (error.response.status === 401) {
           return res.status(401).json({
@@ -1007,6 +1681,8 @@ class VendingRouter {
 
   async handlePaymentCallback(req, res) {
     try {
+      this._logVendingInbound('handlePaymentCallback', req);
+      this._patchResJsonForVendingLog('handlePaymentCallback', res);
       // Get payment details from request body
       const { 
         amount,
@@ -1052,24 +1728,28 @@ class VendingRouter {
       }
 
       // Make request to external API
+      const paymentCallbackUrl = `${kBaseUrl}/open/vending/app/payment/callback`;
+      const callbackPayload = {
+        amount,
+        currency,
+        order_id,
+        payed_time,
+        payment_channel,
+        remark: remark || '',  // Make remark optional
+        status,
+        transaction_id,
+        transaction_type
+      };
       const response = await axios({
         method: 'POST',
-        url: `${kBaseUrl}/open/vending/app/payment/callback`,
+        url: paymentCallbackUrl,
         headers: {
           'Content-Type': 'application/json'
         },
-        data: {
-          amount,
-          currency,
-          order_id,
-          payed_time,
-          payment_channel,
-          remark: remark || '',  // Make remark optional
-          status,
-          transaction_id,
-          transaction_type
-        }
+        data: callbackPayload
       });
+
+      this._logVendingExternalCall('handlePaymentCallback', 'POST', paymentCallbackUrl, callbackPayload, response.status, response.data);
 
       // Return the response from the external API
       return res.status(200).json(response.data);
@@ -1079,6 +1759,20 @@ class VendingRouter {
       
       // If the error is from the external API, forward its response
       if (error.response) {
+        const paymentCallbackUrl = `${kBaseUrl}/open/vending/app/payment/callback`;
+        const b = req.body || {};
+        const callbackPayload = {
+          amount: b.amount,
+          currency: b.currency,
+          order_id: b.order_id,
+          payed_time: b.payed_time,
+          payment_channel: b.payment_channel,
+          remark: b.remark || '',
+          status: b.status,
+          transaction_id: b.transaction_id,
+          transaction_type: b.transaction_type
+        };
+        this._logVendingExternalCall('handlePaymentCallback', 'POST', paymentCallbackUrl, callbackPayload, error.response.status, error.response.data);
         return res.status(error.response.status).json({
           success: false,
           message: error.response.data.message || 'Failed to process payment callback',
@@ -1097,6 +1791,8 @@ class VendingRouter {
 
   async handlePickup(req, res) {
     try {
+      this._logVendingInbound('handlePickup', req);
+      this._patchResJsonForVendingLog('handlePickup', res);
       // Get token and orderId from request body
       const { token, orderId } = req.body;
 
@@ -1117,14 +1813,17 @@ class VendingRouter {
       }
 
       // Make request to external API with Bearer token authorization
+      const pickupUrl = `${kBaseUrl}/vending/orders/${orderId}/pickup`;
       const response = await axios({
         method: 'POST',
-        url: `${kBaseUrl}/vending/orders/${orderId}/pickup`,
+        url: pickupUrl,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         }
       });
+
+      this._logVendingExternalCall('handlePickup', 'POST', pickupUrl, { method: 'POST', orderId, token }, response.status, response.data);
 
       // Return the response from the external API
       return res.status(200).json({
@@ -1138,6 +1837,9 @@ class VendingRouter {
       
       // If the error is from the external API, forward its response
       if (error.response) {
+        const b = req.body || {};
+        const pickupUrl = `${kBaseUrl}/vending/orders/${b.orderId || ''}/pickup`;
+        this._logVendingExternalCall('handlePickup', 'POST', pickupUrl, { method: 'POST', orderId: b.orderId, token: b.token }, error.response.status, error.response.data);
         // Special handling for 401 unauthorized errors
         if (error.response.status === 401) {
           return res.status(401).json({
@@ -1174,6 +1876,8 @@ class VendingRouter {
 
   async handlePickupSuccess(req, res) {
     try {
+      this._logVendingInbound('handlePickupSuccess', req);
+      this._patchResJsonForVendingLog('handlePickupSuccess', res);
       // DEBUG: Log function entry with timestamp and request details
       console.log('=== handlePickupSuccess TRIGGERED ===');
       console.log('=====================================');
@@ -1341,6 +2045,8 @@ class VendingRouter {
 
   async handleGetReferralCode(req, res) {
     try {
+      this._logVendingInbound('handleGetReferralCode', req);
+      this._patchResJsonForVendingLog('handleGetReferralCode', res);
       // Extract phone number from request body
       const { phoneNumber } = req.body;
 
@@ -1381,3 +2087,8 @@ class VendingRouter {
 }
 
 module.exports = VendingRouter;
+module.exports.decodeQrIgnorePrefix = decodeQrIgnorePrefix;
+module.exports.disableVoucherFromQr = disableVoucherFromQr;
+module.exports.disableEventVoucherFromQr = disableVoucherFromQr;
+module.exports.checkVoucherFromQr = checkVoucherFromQr;
+module.exports.grantVmVoucher = grantVmVoucher;

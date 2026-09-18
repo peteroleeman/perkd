@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const { CloudSchedulerClient } = require('@google-cloud/scheduler');
+const CeriaRouter = require('./ceriarouter');
 
 /**
  * Cron router: Google Cloud Scheduler helpers for SQL Account stock → Firestore sync jobs.
@@ -21,6 +22,22 @@ class CronRouter {
     this.stockSyncHttpUri =
       process.env.SQL_STOCK_SYNC_HTTP_URI ||
       'https://sql-app-261774603679.asia-east1.run.app/sqlaccount/stockitem/sync-firestore';
+
+    this.ceriaTopupHttpUri =
+      process.env.CERIA_TOPUP_HTTP_URI ||
+      'https://crm--app-261774603679.asia-east1.run.app/ceria/execute-corporate-carry-forward-topup';
+
+    this.ceriaResetSpendHttpUri =
+      process.env.CERIA_RESET_SPEND_HTTP_URI ||
+      'https://crm--app-261774603679.asia-east1.run.app/ceria/reset-corporate-spend-today';
+
+    this.ceriaStandingInstructionsHttpUri =
+      process.env.CERIA_STANDING_INSTRUCTIONS_HTTP_URI ||
+      'https://crm--app-261774603679.asia-east1.run.app/ceria/apply-standing-instructions';
+
+    this.prepMonitorHttpUri =
+      process.env.KDS_PREP_MONITOR_HTTP_URI ||
+      'https://sql-app-261774603679.asia-east1.run.app/kds/preparation-monitor';
 
     this._client = null;
     this.initializeRoutes();
@@ -123,6 +140,22 @@ class CronRouter {
 
   initializeRoutes() {
     this.router.post('/scheduler/create', this.createStockSyncJob.bind(this));
+    this.router.post(
+      '/scheduler/ceria-topup',
+      this.createCeriaTopupSyncJob.bind(this),
+    );
+    this.router.post(
+      '/scheduler/ceria-reset-spend-today',
+      this.createCeriaResetSpendTodayJob.bind(this),
+    );
+    this.router.post(
+      '/scheduler/ceria-standing-instructions',
+      this.createCeriaStandingInstructionsJob.bind(this),
+    );
+    this.router.post(
+      '/scheduler/prep-monitor',
+      this.createPrepMonitorJob.bind(this),
+    );
     this.router.get('/scheduler/jobs', this.listJobs.bind(this));
     this.router.delete('/scheduler/jobs/:jobId', this.deleteJob.bind(this));
   }
@@ -193,6 +226,507 @@ class CronRouter {
       console.error('[CronRouter] createJob:', error);
       return res.status(500).json({
         success: false,
+        error: error.message || String(error),
+      });
+    }
+  }
+
+  /**
+   * Creates a Cloud Scheduler job that POSTs only `{ companyId }` to
+   * `/ceria/execute-corporate-carry-forward-topup` (carry-forward math + dual-write live there).
+   *
+   * POST /cron/scheduler/ceria-topup
+   * Body: { companyId, cronSchedule | time, name?, description?, dryRun?, timeZone? }
+   * Optional `timeZone` is stored on the scheduler job only; HTTP body remains `{ companyId }`.
+   */
+  async createCeriaTopupSyncJob(req, res) {
+    const runId = `ceria-topup-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    try {
+      const body = req.body || {};
+      const companyId = (body.companyId ?? '').toString().trim();
+      const dryRun =
+        String(body.dryRun || '').toLowerCase() === 'true' || body.dryRun === true;
+
+      if (!companyId) {
+        console.warn(
+          '[CronRouter][CeriaTopup] rejected',
+          JSON.stringify({ runId, reason: 'missing_companyId', dryRun }),
+        );
+        return res.status(400).json({
+          success: false,
+          error: 'companyId is required',
+        });
+      }
+
+      const cronSchedule = this.resolveCronSchedule(body);
+      if (!cronSchedule) {
+        console.warn(
+          '[CronRouter][CeriaTopup] rejected',
+          JSON.stringify({ runId, companyId, dryRun, reason: 'missing_cronSchedule' }),
+        );
+        return res.status(400).json({
+          success: false,
+          error:
+            'Provide cronSchedule (cron string) or time (HH:mm) for a daily run in ' +
+            this.timeZone,
+        });
+      }
+
+      const schedulerTz =
+        (body.timeZone && String(body.timeZone).trim()) || this.timeZone;
+
+      console.log(
+        '[CronRouter][CeriaTopup] start',
+        JSON.stringify({
+          runId,
+          companyId,
+          dryRun,
+          cronSchedule,
+          schedulerTz,
+          ceriaTopupHttpUri: this.ceriaTopupHttpUri,
+          path: req.originalUrl || req.url,
+          ip: req.ip,
+        }),
+      );
+
+      if (dryRun) {
+        const preview = await CeriaRouter.executeCorporateCarryForwardTopupCore({
+          companyId,
+          dryRun: true,
+          timeZone: schedulerTz,
+          logRunId: runId,
+        });
+        if (!preview.success) {
+          console.warn(
+            '[CronRouter][CeriaTopup] preview_failed',
+            JSON.stringify({ runId, companyId, ...preview }),
+          );
+          return res.status(400).json({
+            success: false,
+            runId,
+            error: preview.message || 'Carry-forward preview failed',
+            code: preview.code,
+          });
+        }
+        console.log(
+          '[CronRouter][CeriaTopup] dry_run_complete',
+          JSON.stringify({
+            runId,
+            companyId,
+            employeesRead: preview.employeesProcessed,
+            ceriaTopupHttpUri: this.ceriaTopupHttpUri,
+          }),
+        );
+        return res.json({
+          success: true,
+          dryRun: true,
+          runId,
+          cronSchedule,
+          timeZone: schedulerTz,
+          ceriaTopupHttpUri: this.ceriaTopupHttpUri,
+          schedulerHttpBody: { companyId },
+          carryForwardPreview: preview,
+        });
+      }
+
+      const nameInput = body.name;
+      const jobId = this.sanitizeJobId(
+        nameInput || `ceria-topup-${companyId}`,
+      );
+
+      const parent = this.parentPath();
+      const jobName = `${parent}/jobs/${jobId}`;
+
+      const httpBody = { companyId };
+
+      const job = {
+        name: jobName,
+        description:
+          body.description ||
+          `Ceria corporate carry-forward top-up for company ${companyId} (POST body: companyId only)`,
+        schedule: cronSchedule,
+        timeZone: schedulerTz,
+        httpTarget: {
+          uri: this.ceriaTopupHttpUri,
+          httpMethod: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: Buffer.from(JSON.stringify(httpBody)).toString('base64'),
+        },
+      };
+
+      const client = this.getClient();
+      const [response] = await client.createJob({ parent, job });
+      console.log(
+        '[CronRouter][CeriaTopup] scheduler_job_created',
+        JSON.stringify({
+          runId,
+          companyId,
+          jobName: response && response.name,
+          jobId,
+          ceriaTopupHttpUri: this.ceriaTopupHttpUri,
+          schedulerHttpBody: httpBody,
+        }),
+      );
+      return res.json({
+        success: true,
+        runId,
+        job: response,
+        companyId,
+        ceriaTopupHttpUri: this.ceriaTopupHttpUri,
+        schedulerHttpBody: httpBody,
+      });
+    } catch (error) {
+      console.error(
+        '[CronRouter][CeriaTopup] error',
+        JSON.stringify({
+          runId,
+          message: error.message || String(error),
+          stack: error.stack,
+        }),
+      );
+      return res.status(500).json({
+        success: false,
+        runId,
+        error: error.message || String(error),
+      });
+    }
+  }
+
+  /**
+   * Creates a Cloud Scheduler job that POSTs `{ storeId }` to `/kds/preparation-monitor`
+   * every minute (default) to promote Start → Preparing and trigger Feie kitchen printing.
+   *
+   * POST /cron/scheduler/prep-monitor
+   * Body: { storeId, cronSchedule | time, name?, description? }
+   */
+  async createPrepMonitorJob(req, res) {
+    try {
+      const body = req.body || {};
+      const storeId = (body.storeId ?? body.storeid ?? '').toString().trim();
+      if (!storeId) {
+        return res.status(400).json({
+          success: false,
+          error: 'storeId is required',
+        });
+      }
+
+      const cronSchedule = this.resolveCronSchedule(body) || '*/1 * * * *';
+
+      const nameInput = body.name;
+      const jobId = this.sanitizeJobId(
+        nameInput || `prep-monitor-${storeId}`,
+      );
+
+      const parent = this.parentPath();
+      const jobName = `${parent}/jobs/${jobId}`;
+      const httpBody = { storeId };
+
+      const job = {
+        name: jobName,
+        description:
+          body.description ||
+          `KDS preparation monitor for store ${storeId} (POST body: storeId only)`,
+        schedule: cronSchedule,
+        timeZone: this.timeZone,
+        httpTarget: {
+          uri: this.prepMonitorHttpUri,
+          httpMethod: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: Buffer.from(JSON.stringify(httpBody)).toString('base64'),
+        },
+      };
+
+      const client = this.getClient();
+      const [response] = await client.createJob({ parent, job });
+      return res.json({
+        success: true,
+        job: response,
+        storeId,
+        prepMonitorHttpUri: this.prepMonitorHttpUri,
+        schedulerHttpBody: httpBody,
+      });
+    } catch (error) {
+      console.error('[CronRouter] createPrepMonitorJob:', error);
+      return res.status(500).json({
+        success: false,
+        error: error.message || String(error),
+      });
+    }
+  }
+
+  /**
+   * Creates a Cloud Scheduler job that POSTs `{ companyId, timeZone }` to
+   * `/ceria/reset-corporate-spend-today` (zeros corporate_spent_today for each employee; dual-write).
+   *
+   * POST /cron/scheduler/ceria-reset-spend-today
+   * Body: { companyId, cronSchedule | time, name?, description?, dryRun?, timeZone? }
+   * `timeZone` is the IANA zone for `todayDayKey` on the Ceria service and is included in the HTTP body
+   * so it matches the scheduler job's `timeZone`.
+   */
+  async createCeriaResetSpendTodayJob(req, res) {
+    const runId = `ceria-reset-spend-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    try {
+      const body = req.body || {};
+      const companyId = (body.companyId ?? '').toString().trim();
+      const dryRun =
+        String(body.dryRun || '').toLowerCase() === 'true' || body.dryRun === true;
+
+      if (!companyId) {
+        console.warn(
+          '[CronRouter][CeriaResetSpend] rejected',
+          JSON.stringify({ runId, reason: 'missing_companyId', dryRun }),
+        );
+        return res.status(400).json({
+          success: false,
+          error: 'companyId is required',
+        });
+      }
+
+      const cronSchedule = this.resolveCronSchedule(body);
+      if (!cronSchedule) {
+        console.warn(
+          '[CronRouter][CeriaResetSpend] rejected',
+          JSON.stringify({ runId, companyId, dryRun, reason: 'missing_cronSchedule' }),
+        );
+        return res.status(400).json({
+          success: false,
+          error:
+            'Provide cronSchedule (cron string) or time (HH:mm) for a daily run in ' +
+            this.timeZone,
+        });
+      }
+
+      const schedulerTz =
+        (body.timeZone && String(body.timeZone).trim()) || this.timeZone;
+
+      console.log(
+        '[CronRouter][CeriaResetSpend] start',
+        JSON.stringify({
+          runId,
+          companyId,
+          dryRun,
+          cronSchedule,
+          schedulerTz,
+          ceriaResetSpendHttpUri: this.ceriaResetSpendHttpUri,
+          path: req.originalUrl || req.url,
+          ip: req.ip,
+        }),
+      );
+
+      if (dryRun) {
+        const preview = await CeriaRouter.resetCorporateSpendTodayCore({
+          companyId,
+          dryRun: true,
+          timeZone: schedulerTz,
+          logRunId: runId,
+        });
+        if (!preview.success) {
+          console.warn(
+            '[CronRouter][CeriaResetSpend] preview_failed',
+            JSON.stringify({ runId, companyId, ...preview }),
+          );
+          return res.status(400).json({
+            success: false,
+            runId,
+            error: preview.message || 'Reset spend preview failed',
+            code: preview.code,
+          });
+        }
+        console.log(
+          '[CronRouter][CeriaResetSpend] dry_run_complete',
+          JSON.stringify({
+            runId,
+            companyId,
+            employeesRead: preview.employeesProcessed,
+            ceriaResetSpendHttpUri: this.ceriaResetSpendHttpUri,
+          }),
+        );
+        const httpBody = { companyId, timeZone: schedulerTz };
+        return res.json({
+          success: true,
+          dryRun: true,
+          runId,
+          cronSchedule,
+          timeZone: schedulerTz,
+          ceriaResetSpendHttpUri: this.ceriaResetSpendHttpUri,
+          schedulerHttpBody: httpBody,
+          resetSpendPreview: preview,
+        });
+      }
+
+      const nameInput = body.name;
+      const jobId = this.sanitizeJobId(
+        nameInput || `ceria-reset-spend-${companyId}`,
+      );
+
+      const parent = this.parentPath();
+      const jobName = `${parent}/jobs/${jobId}`;
+
+      const httpBody = { companyId, timeZone: schedulerTz };
+
+      const job = {
+        name: jobName,
+        description:
+          body.description ||
+          `Ceria reset corporate spend today for company ${companyId} (POST body: companyId, timeZone)`,
+        schedule: cronSchedule,
+        timeZone: schedulerTz,
+        httpTarget: {
+          uri: this.ceriaResetSpendHttpUri,
+          httpMethod: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: Buffer.from(JSON.stringify(httpBody)).toString('base64'),
+        },
+      };
+
+      const client = this.getClient();
+      const [response] = await client.createJob({ parent, job });
+      console.log(
+        '[CronRouter][CeriaResetSpend] scheduler_job_created',
+        JSON.stringify({
+          runId,
+          companyId,
+          jobName: response && response.name,
+          jobId,
+          ceriaResetSpendHttpUri: this.ceriaResetSpendHttpUri,
+          schedulerHttpBody: httpBody,
+        }),
+      );
+      return res.json({
+        success: true,
+        runId,
+        job: response,
+        companyId,
+        ceriaResetSpendHttpUri: this.ceriaResetSpendHttpUri,
+        schedulerHttpBody: httpBody,
+      });
+    } catch (error) {
+      console.error(
+        '[CronRouter][CeriaResetSpend] error',
+        JSON.stringify({
+          runId,
+          message: error.message || String(error),
+          stack: error.stack,
+        }),
+      );
+      return res.status(500).json({
+        success: false,
+        runId,
+        error: error.message || String(error),
+      });
+    }
+  }
+
+  /**
+   * Creates a Cloud Scheduler job that POSTs `{ companyId, timeZone }` to
+   * `/ceria/apply-standing-instructions` (join / resign / limit-change worker).
+   *
+   * POST /cron/scheduler/ceria-standing-instructions
+   * Body: { companyId, cronSchedule | time, name?, description?, dryRun?, timeZone? }
+   */
+  async createCeriaStandingInstructionsJob(req, res) {
+    const runId = `ceria-standing-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    try {
+      const body = req.body || {};
+      const companyId = (body.companyId ?? '').toString().trim();
+      const dryRun =
+        String(body.dryRun || '').toLowerCase() === 'true' || body.dryRun === true;
+
+      if (!companyId) {
+        return res.status(400).json({
+          success: false,
+          error: 'companyId is required',
+        });
+      }
+
+      const cronSchedule = this.resolveCronSchedule(body);
+      if (!cronSchedule) {
+        return res.status(400).json({
+          success: false,
+          error:
+            'Provide cronSchedule (cron string) or time (HH:mm) for a daily run in ' +
+            this.timeZone,
+        });
+      }
+
+      const schedulerTz =
+        (body.timeZone && String(body.timeZone).trim()) || this.timeZone;
+
+      if (dryRun) {
+        const preview = await CeriaRouter.applyStandingInstructionsCore({
+          companyId,
+          dryRun: true,
+          timeZone: schedulerTz,
+          logRunId: runId,
+        });
+        if (!preview.success) {
+          return res.status(400).json({
+            success: false,
+            runId,
+            error: preview.message || 'Standing instructions preview failed',
+            code: preview.code,
+          });
+        }
+        const httpBody = { companyId, timeZone: schedulerTz };
+        return res.json({
+          success: true,
+          dryRun: true,
+          runId,
+          cronSchedule,
+          timeZone: schedulerTz,
+          ceriaStandingInstructionsHttpUri: this.ceriaStandingInstructionsHttpUri,
+          schedulerHttpBody: httpBody,
+          standingInstructionsPreview: preview,
+        });
+      }
+
+      const nameInput = body.name;
+      const jobId = this.sanitizeJobId(
+        nameInput || `ceria-standing-instructions-${companyId}`,
+      );
+
+      const parent = this.parentPath();
+      const jobName = `${parent}/jobs/${jobId}`;
+      const httpBody = { companyId, timeZone: schedulerTz };
+
+      const job = {
+        name: jobName,
+        description:
+          body.description ||
+          `Ceria apply standing instructions for company ${companyId} (POST body: companyId, timeZone)`,
+        schedule: cronSchedule,
+        timeZone: schedulerTz,
+        httpTarget: {
+          uri: this.ceriaStandingInstructionsHttpUri,
+          httpMethod: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: Buffer.from(JSON.stringify(httpBody)).toString('base64'),
+        },
+      };
+
+      const client = this.getClient();
+      const [response] = await client.createJob({ parent, job });
+      return res.json({
+        success: true,
+        runId,
+        job: response,
+        companyId,
+        ceriaStandingInstructionsHttpUri: this.ceriaStandingInstructionsHttpUri,
+        schedulerHttpBody: httpBody,
+      });
+    } catch (error) {
+      console.error('[CronRouter][CeriaStandingInstructions] error', error);
+      return res.status(500).json({
+        success: false,
+        runId,
         error: error.message || String(error),
       });
     }

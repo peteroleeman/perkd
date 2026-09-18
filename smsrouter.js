@@ -42,6 +42,9 @@ class SmsRouter {
 
     // Optional: endpoint to generate verification token (same logic as frontend)
     this.router.post('/generate-verification-token', this.handleGenerateVerificationToken.bind(this));
+
+    this.router.post('/gatewaycallback', this.handleGatewayCallback.bind(this));
+    this.router.get('/gatewaycallback', this.handleGatewayCallback.bind(this));
   }
 
   /**
@@ -365,6 +368,25 @@ class SmsRouter {
       raw: raw,
       message: `Status code "${raw}" not in known list. Please refer to One Way SMS API documentation for meaning.`,
     };
+  }
+
+  /**
+   * POST|GET /gatewaycallback
+   * Logs incoming gateway callback payload and responds with success.
+   */
+  handleGatewayCallback(req, res) {
+    console.log('=== SMS Gateway Callback Received ===');
+    console.log('Method:', req.method);
+    console.log('Query:', JSON.stringify(req.query, null, 2));
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+    console.log('=====================================');
+
+    const response = { success: true, message: 'Gateway callback received' };
+    console.log('=== SMS Gateway Callback Response ===');
+    console.log(JSON.stringify(response, null, 2));
+    console.log('======================================');
+
+    return res.status(200).json(response);
   }
 
   getRouter() {

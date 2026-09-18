@@ -19,6 +19,7 @@ const kUserModelCreatedAt = "created_at";
 const kUserModelStoreCards = "storecards";
 const kUserModelLoyaltyPoints = "loyaltypoints";
 const kUserModelCredits = "credits";
+const kUserModelEmployeeId = "employee_id";
 
 // Store Mode Constants
 const kStoreModeNormal = "0";
@@ -43,7 +44,8 @@ class UserModel {
     storeCards = [],
     loyaltyPoints = {},
     credits = {},
-    vouchers = []
+    vouchers = [],
+    employeeId = ""
   } = {}) {
     this.id = id;
     this.username = username;
@@ -63,6 +65,7 @@ class UserModel {
     this.loyaltyPoints = loyaltyPoints;
     this.credits = credits;
     this.vouchers = vouchers;
+    this.employeeId = employeeId;
   }
 
   // Factory method to create UserModel from Firestore document
@@ -99,7 +102,8 @@ class UserModel {
       storeCards: hasField(kUserModelStoreCards) ? Array.from(data[kUserModelStoreCards] || []) : [],
       loyaltyPoints: hasField(kUserModelLoyaltyPoints) ? Object.assign({}, data[kUserModelLoyaltyPoints] || {}) : {},
       credits: hasField(kUserModelCredits) ? Object.assign({}, data[kUserModelCredits] || {}) : {},
-      vouchers: []
+      vouchers: [],
+      employeeId: hasField(kUserModelEmployeeId) ? data[kUserModelEmployeeId] : ""
     });
   }
 
@@ -150,6 +154,7 @@ class UserModel {
       [kUserModelStoreCards]: this.storeCards,
       [kUserModelLoyaltyPoints]: this.loyaltyPoints,
       [kUserModelCredits]: this.credits,
+      [kUserModelEmployeeId]: this.employeeId || "",
     };
   }
 
@@ -395,27 +400,24 @@ class UserModel {
     }
   }
 
-  static async addCreditsAndPoints(userCollectionRef, phoneNumber, storeId, creditsToAdd, pointsToAdd) {
-    const userDocRef = userCollectionRef.doc(`FU_${phoneNumber}`);
+  static async addCreditsAndPoints(userCollectionRef, userDocId, storeId, creditsToAdd, pointsToAdd) {
+    const userDocRef = userCollectionRef.doc(userDocId);
     const result = await userDocRef.get();
 
     if (result.exists) {
       try {
-        // Create UserModel from document
         const userModel = UserModel.fromDocument(result);
 
-        // Add credits and points
         if (creditsToAdd > 0) {
           userModel.addCredits(storeId, creditsToAdd);
-          console.log(`Added ${creditsToAdd} credits to user ${phoneNumber} for store ${storeId}`);
+          console.log(`Added ${creditsToAdd} credits to user ${userDocId} for store ${storeId}`);
         }
 
         if (pointsToAdd > 0) {
           userModel.addLoyaltyPoints(storeId, pointsToAdd);
-          console.log(`Added ${pointsToAdd} loyalty points to user ${phoneNumber} for store ${storeId}`);
+          console.log(`Added ${pointsToAdd} loyalty points to user ${userDocId} for store ${storeId}`);
         }
 
-        // Update user document with new credits and points
         await userDocRef.update(userModel.toMap());
 
         console.log("Successfully updated user credits and points");
@@ -424,7 +426,7 @@ class UserModel {
         throw error;
       }
     } else {
-      console.log(`User not found: FU_${phoneNumber}`);
+      console.log(`User not found: ${userDocId}`);
       throw new Error("User not found");
     }
   }
@@ -449,6 +451,7 @@ module.exports = {
   kUserModelStoreCards,
   kUserModelLoyaltyPoints,
   kUserModelCredits,
+  kUserModelEmployeeId,
   kStoreModeNormal,
   kStoreModePrintServer
 }; 
