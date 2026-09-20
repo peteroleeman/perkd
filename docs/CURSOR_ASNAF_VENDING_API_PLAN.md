@@ -31,37 +31,37 @@ Source: **Corporate Card - Foodio API.docx**, supplied snapshot, headed “Ceria
 
 The same scan → balance → deduct → result concept is appropriate for Asnaf. Corporate company credit is replaced by the member's eligible **benefit-plan allowance**, with personal money kept separate. Do not copy corporate balances, encryption keys or employee records into Asnaf.
 
-## Source review and missing source
+## Source review — corporate source uploaded and reviewed
 
 Reviewed repository heads:
 
 | Repository | Revision |
 | --- | --- |
-| PERKD | `d04e0e92d3a48b8caa14053e2b58fb1ce01a6653` |
-| FOODIO KITCHEN | `3da486e9c1b05861f1d0d06761d837b55d3bd874` |
-| FOODIO ONLINE | `edf5e5825c8639544db31e7497ce524ea02526c9` |
+| PERKD | `b82ccc5b865735008126e511f842ec0faa4e5e94` |
+| FOODIO KITCHEN | `9ef095bd5a0cf74e8f41746b01fabfb1733ba805` |
+| FOODIO ONLINE | `d4e1ce1d963e58482933d84d7e687a8a1427ca56` |
 
 Verified source:
-- PERKD `server.js` requires `./ceriarouter` and mounts it at `/ceria`. **`ceriarouter.js` is absent from this GitHub revision (404)**; no Ceria implementation appeared in its complete tree. Root `ceria_employee_crypto.js` is also absent. Therefore the corporate deduction implementation and its dependencies remain unverified.
+- PERKD `ceriarouter.js`, `util/ceria_employee_crypto.js`, `util/build_einvoice_order.js`, `models/ceria/CeriaCompanySettingsModel.js` and `models/ceria/CeriaSubsidyPolicy.js` are now present and source-reviewed. `server.js` mounts the router at `/ceria`. Its direct local imports and the settings model’s policy dependency are present; this is not a full application boot or deployment test.
 - PERKD `vendingrouter.js` implements voucher routes and proxies vending purchase calls to an upstream service with a token. That outbound token is not evidence that callers of a new Asnaf route are authenticated or bound to a store.
 - Kitchen `services/smart_kotak/src/member_qr.mjs` issues signed, 90-second `ASNAF:1:` codes. Its resolver requires a manager and returns `paymentAuthorized:false`: **identification only**.
 - Kitchen `member_payments.mjs` has atomic selected-plan/personal payment and original-source refunds. `member_payment_routes.mjs` exposes member-confirmed payments and manager-created requests, not machine payment endpoints.
 - Kitchen `merchant_stores.mjs` derives stores from the linked company using `store.companyid`, then enforces explicit manager-group approval.
 - Online `lib/asnaf/asnaf_qr_dialog.dart` accepts only `ASNAF:1:` and explicitly says showing the code does not confirm payment.
 
-Before implementation, upload the existing **PERKD** `ceriarouter.js` and its actual local dependencies from the working API source. Do not invent replacements or add credential files. For example, from the PERKD repository root, after verifying that this is the correct existing file:
+### Verified corporate implementation and Asnaf implications
 
-```powershell
-git status --short
-git add -- ceriarouter.js
-# Add only its missing local source dependencies by their actual paths.
-git diff --cached --stat
-git diff --cached
-git commit -m "Add corporate wallet API source for Asnaf vending integration review"
-git push origin main
-```
+- **Identity:** the helper decrypts `CERIA:{employeeId}` with company ID, then resolves `ceria_hub/{companyId}/employee/CORP_{id}` (with an employee-ID query fallback). Asnaf retains its own identity/QR.
+- **Availability:** corporate credit respects usage-day policy and daily remaining allowance; the personal wallet supplies the remainder. Settings come from `ceria_hub/{companyId}/company_data/settings`.
+- **Deduction:** `ceriaDeductBalanceCore` checks active employee status and updates both the employee and `user/{userDocId}` wallet projections in a Firestore transaction. Asnaf instead uses its existing canonical plan/personal ledger and group scope.
+- **Receipt/retry gap:** the reviewed deduction path does not claim or look up `receipt_id` before charging. The builder creates a fresh random `O_...` ID for every call; receipt is just the stored `orderid`. Repeating a receipt can therefore charge again if funds remain. Asnaf must add the atomic receipt claim/fingerprint described below.
+- **Order-save gap:** the wallet transaction commits before a separate batch writes `myinvois/{storeId}/order` and `user/{userDocId}/order`. `myreport/{storeId}/order` is then best-effort. `ORDER_SAVE_FAILED` can mean money was deducted without those order records. The HTTP handler also drops the core failure's order ID/deducted detail. Asnaf must commit its authoritative order with the debit and use a durable outbox for any required external projections.
+- **Store mapping:** `vending_merchant/{merchant_id}.storeid` supplies the Foodio store. The builder optionally queries `merchant_device` by `fridgemid == device_number` and reads `vendingdevicenumber` / `vendingmerchantid`. It uses a hard-coded fallback store for an unknown merchant and tolerates missing device mapping. Asnaf must reject unknown/ambiguous/mismatched mappings and enforce company membership plus group-approved stores.
+- **Validation:** the builder checks required field presence but does not enforce item-total equality, positive integral counts or the RM currency contract. It uses `amount` when supplied, otherwise the calculated subtotal. Asnaf needs strict sen-based validation.
+- **HTTP contract:** success is 200; employee-not-found is 404; inactive/insufficient funds are 409; order-save failure is 500; other business validation errors are 400. Do not copy the voucher API's HTTP-200 error convention.
+- **Authentication/recovery:** no machine-auth middleware, payment-status route or purchase-refund route appears in the uploaded Ceria router. The public company-ID AES convention is not proof of machine identity. Deployment/upstream controls and firmware recovery still require verification.
 
-Re-read that source before finalising compatibility and receipt/store mappings. Planning and isolated Smart Kotak tests can proceed meanwhile. Full PERKD boot/integration verification needs the missing runtime modules.
+The missing corporate-source blocker is resolved. Remaining inputs are the actual machine authentication/firmware behaviour and the proposed member payment-authorisation UX. No live deduction, refund or production-data test was performed for this review.
 
 ## Proposed external functions — PERKD
 
@@ -89,7 +89,7 @@ Example proposed deduction body (placeholders, not live credentials):
   "amount": 3.50,
   "currency": "RM",
   "list": [
-    {"goods_id": "ITEM-01", "goods_sku": "SKU-01", "goods_name": "Drink", "goods_count": 1, "goods_price": 3.50}
+    {"goods_id": "ITEM-01", "goods_sku": "SKU-01", "goods_name": "Drink", "goods_description": "", "goods_photo": "", "goods_count": 1, "goods_price": 3.50}
   ]
 }
 ```
@@ -130,7 +130,7 @@ Distinguish:
 - Vendor `merchant_id` and `device_number` used by the machine protocol.
 - Default/only company store used to resolve **GKash top-up** settings.
 
-These identifiers are not assumed equal. Inspect the existing corporate/vendor mapping before adding a new mapping. If absent, add a small Lighthouse machine setup: select a company-derived store, register the supplier merchant/device identifiers, enable/disable it and show readiness. The default top-up store does not authorise spending at every machine.
+Reuse the verified `vending_merchant/{merchant_id}.storeid` relationship and inspect `merchant_device` records for the machine binding. Require a unique, consistent device/merchant/store mapping; the legacy builder’s optional lookup is not sufficient authorisation. Do not create a parallel registry unless required fields are genuinely absent. In Lighthouse, select a company-derived store and existing machine, show readiness and enable/disable Asnaf use. Any necessary registration fields are supplier device/merchant identifiers, not manually entered Foodio store IDs. Reject missing mappings; never use the corporate builder’s default-store fallback. The default top-up store does not authorise spending at every machine.
 
 At every new charge, the server verifies the registered device mapping, current linked company and group-approved store. Add a vending-enabled control/readiness indicator; turning on “Show member payment QR” alone must not claim the machine is integrated. Keep integration disabled until its credentials/mapping and acceptance are ready.
 
@@ -167,7 +167,7 @@ Persist failure evidence before refund. On retry after a refund commit but lost 
 
 ## Cursor implementation sequence and acceptance gate
 
-1. **PERKD:** obtain missing corporate source/dependencies; map the exact machine protocol, receipt recovery, merchant/device identity and firmware constraints. Document verified findings, not inferred compatibility.
+1. **PERKD:** corporate source/dependency review is complete at the revision above. Confirm the actual machine protocol, receipt recovery, authenticated merchant/device identity and firmware constraints; reuse the verified Firestore mappings with strict scope checks. Do not copy the existing duplicate-charge/order-save/default-store gaps.
 2. **KITCHEN:** implement/test narrow machine identity, authorisation, atomic debit, idempotent status/refund and machine/store setup behind a disabled vending gate.
 3. **PERKD:** implement the new Asnaf router/service client, contract validation and error mapping. Add Postman examples with placeholders and a simulated-machine runner.
 4. **ONLINE:** add the payment QR authorisation/result flow. Preserve corporate and v1 identity-only paths.
