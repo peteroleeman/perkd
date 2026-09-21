@@ -1,9 +1,9 @@
 name: Lighthouse verification
 on:
   push:
-    paths: ['userrouter.js', 'test/lighthouse_verification.test.js', 'asnafrouter.js', 'util/asnaf_service_client.js', 'test/asnaf.test.js', '.github/workflows/lighthouse-verification.yml']
+    paths: ['userrouter.js', 'test/lighthouse_verification.test.js', 'asnafrouter.js', 'util/asnaf_service_client.js', 'test/asnaf.test.js', 'docs/asnaf_vending.postman_collection.json', '.github/workflows/lighthouse-verification.yml']
   pull_request:
-    paths: ['userrouter.js', 'test/lighthouse_verification.test.js', 'asnafrouter.js', 'util/asnaf_service_client.js', 'test/asnaf.test.js', '.github/workflows/lighthouse-verification.yml']
+    paths: ['userrouter.js', 'test/lighthouse_verification.test.js', 'asnafrouter.js', 'util/asnaf_service_client.js', 'test/asnaf.test.js', 'docs/asnaf_vending.postman_collection.json', '.github/workflows/lighthouse-verification.yml']
 permissions:
   contents: read
 jobs:
@@ -22,9 +22,10 @@ jobs:
           node --check userrouter.js
           # The repository tracks an incomplete node_modules snapshot. Stage the
           # actual source/tests beside fresh dependencies without changing it.
-          mkdir -p "$RUNNER_TEMP/perkd-route-tests/test" "$RUNNER_TEMP/perkd-route-tests/util"
+          mkdir -p "$RUNNER_TEMP/perkd-route-tests/test" "$RUNNER_TEMP/perkd-route-tests/util" "$RUNNER_TEMP/perkd-route-tests/docs"
           cp userrouter.js asnafrouter.js server.js "$RUNNER_TEMP/perkd-route-tests/"
           cp util/asnaf_service_client.js "$RUNNER_TEMP/perkd-route-tests/util/"
           cp test/lighthouse_verification.test.js test/asnaf.test.js "$RUNNER_TEMP/perkd-route-tests/test/"
+          cp docs/asnaf_vending.postman_collection.json "$RUNNER_TEMP/perkd-route-tests/docs/"
           cd "$RUNNER_TEMP/perkd-route-tests"
           node --test test/lighthouse_verification.test.js test/asnaf.test.js
