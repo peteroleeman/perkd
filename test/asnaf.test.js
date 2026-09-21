@@ -70,3 +70,24 @@ test('isolated router maps thrown clients and invalid bodies to unknown or inval
 test('live integration stays skipped unless an explicit test origin is confirmed',()=>{
  if(process.env.ASNAF_TEST_CONFIRMED==='true'&&process.env.ASNAF_TEST_API_ORIGIN)assert.fail('Live Asnaf requests are not executed from this suite; use scripts/asnaf_simulator.js against the disposable test scope');
 });
+
+test('all Asnaf routes forward company-only requests without merchant or device identifiers',async()=>{
+ const input={company_id:'company',receipt_id:'company-wide-001',qr_payload:'ASNAF:2:fixture'};
+ const client=createAsnafClient({env,request:async options=>{
+  assert.deepEqual(options.data,input);
+  assert.equal(Object.hasOwn(options.data,'merchant_id'),false);
+  assert.equal(Object.hasOwn(options.data,'device_number'),false);
+  return {status:200,data:{ok:true,success:true,receipt_id:input.receipt_id}};
+ }});
+ await withIsolatedApp(client,async origin=>{
+  for(const action of vendingActions){
+   const response=await fetch(`${origin}/asnaf/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});
+   assert.equal(response.status,200);assert.equal((await response.json()).receipt_id,input.receipt_id);
+  }
+ });
+ const collection=JSON.parse(fs.readFileSync(path.join(__dirname,'../docs/asnaf_vending.postman_collection.json'),'utf8'));
+ for(const item of collection.item){
+  const body=JSON.parse(item.request.body.raw);assert.ok(body.company_id);
+  assert.equal(Object.hasOwn(body,'merchant_id'),false);assert.equal(Object.hasOwn(body,'device_number'),false);
+ }
+});

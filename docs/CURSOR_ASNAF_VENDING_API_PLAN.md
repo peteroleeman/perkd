@@ -1,3 +1,5 @@
+> **Superseded business identity requirements (21 September 2026):** New Asnaf requests require only `company_id`; merchant/device registration is no longer required. Use [ASNAF_COMPANY_API.md](ASNAF_COMPANY_API.md) for the current contract. The older mapping instructions below are historical; existing pre-upgrade receipts retain their original recovery identifiers.
+
 # Cursor — Phase 5: Asnaf vending payment API before POS
 
 ## Updated execution order — refunds after POS
@@ -210,4 +212,3 @@ Required cases:
 - Real scanner reads the new QR on a phone, firmware routes it to `/asnaf/*`, pays, dispenses once and handles failure recovery. A displayed QR or Postman success alone is not machine acceptance.
 
 **Phase 5 exit evidence:** exact API/frontend/firmware revisions, synthetic test receipts, payment IDs, observed dispense outcomes and reconciled payment balances. Refund IDs and reconciled refund evidence are Phase 7 deliverables. No credentials or full ICs in committed evidence. This plan does not itself implement, deploy or certify any new payment endpoint.
-

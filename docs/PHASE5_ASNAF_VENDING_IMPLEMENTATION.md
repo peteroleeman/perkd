@@ -1,3 +1,5 @@
+> **Superseded business identity requirements (21 September 2026):** New Asnaf requests require only `company_id`; merchant/device registration is no longer required. Use [ASNAF_COMPANY_API.md](ASNAF_COMPANY_API.md) for the current contract. The older mapping instructions below are historical; existing pre-upgrade receipts retain their original recovery identifiers.
+
 # PERKD — Phase 5 implementation handoff
 
 ## Updated execution order — refunds after POS
