@@ -1,10 +1,17 @@
 # Cursor — Phase 5: Asnaf vending payment API before POS
 
-Updated: 21 September 2026. **Planning only: the endpoints and new functions below are proposed, not implemented or deployed.**
+## Updated execution order — refunds after POS
+
+User revision: complete Phase 5 vending payment/recovery work, then Phase 6 POS integration, then Phase 7 refunds across portal, vending and POS. Phase 8 covers BM localization and final pilot readiness. This order supersedes earlier instructions that put refund completion before POS or include BM/pilot in Phase 6.
+
+Preserve the refund code, API contracts, history and regression tests already implemented. Defer new refund work, workflow review and hosted/machine/POS refund acceptance to Phase 7; these are not prerequisites for starting or completing POS integration. Continue recording payment IDs, funding attribution and dispense failure evidence now so later refunds remain traceable. This is a planning change, not a runtime enable/disable change or a deployment authorization. Final pilot acceptance follows Phase 7.
+
+
+Updated: 21 September 2026. **Implementation update:** the review branches now contain the Phase 5 backend, adapter and frontend source. See [current handoff and verification](PHASE5_ASNAF_VENDING_IMPLEMENTATION.md). Vending remains disabled by default; frontend validation, deployment and real machine acceptance are pending. The original design and acceptance requirements below remain the reference, with their planning-only status superseded by this update.
 
 ## Order and repository ownership
 
-Complete the outstanding hosted Phase 3/4 acceptance, then implement **Phase 5 — Asnaf vending integration**. **Phase 6 — POS integration, BM and pilot readiness** follows vending acceptance. Vending and POS are separate integrations.
+Complete the outstanding hosted Phase 3/4 acceptance, then implement **Phase 5 — Asnaf vending integration**. **Phase 6 — POS integration** follows payment-focused vending acceptance; **Phase 7 — refunds** follows POS, then **Phase 8 — BM and pilot readiness**. Vending and POS are separate integrations.
 
 | Repository | Responsibility in this phase |
 | --- | --- |
@@ -61,7 +68,7 @@ Verified source:
 - **HTTP contract:** success is 200; employee-not-found is 404; inactive/insufficient funds are 409; order-save failure is 500; other business validation errors are 400. Do not copy the voucher API's HTTP-200 error convention.
 - **Authentication/recovery:** no machine-auth middleware, payment-status route or purchase-refund route appears in the uploaded Ceria router. The public company-ID AES convention is not proof of machine identity. Deployment/upstream controls and firmware recovery still require verification.
 
-The missing corporate-source blocker is resolved. Remaining inputs are the actual machine authentication/firmware behaviour and the proposed member payment-authorisation UX. No live deduction, refund or production-data test was performed for this review.
+The missing corporate-source blocker is resolved. Remaining inputs are the actual machine identifier/firmware behaviour and the proposed member payment-authorisation UX. No live deduction, refund or production-data test was performed for this review.
 
 ## Confirmed rule — one active plan per Asnaf
 
@@ -113,7 +120,7 @@ Successful deduction returns `success:true`, `ok:true`, receipt, stable Smart Ko
 
 Amounts are integer sen internally. Validate decimal RM exactly (at most two decimals), positive counts/prices, bounded item lists, sum = amount, supported currency and safe-integer limits. Do not trust an item description to prove catalogue price; verify against the trusted machine catalogue where available. Set and test explicit field/size limits.
 
-Use one documented error body: `{"success":false,"ok":false,"code":"...","message":"..."}`. Specify HTTP 400 malformed, 401 missing/invalid machine credentials, 403 wrong scope, 404 unknown receipt, 409 business conflict/expired credential/insufficient credit, and 503 temporarily unavailable. Success is HTTP 200. If actual firmware requires HTTP 200 for business errors, agree and test that adapter change explicitly; never infer payment success from HTTP status alone.
+Use one documented error body: `{"success":false,"ok":false,"code":"...","message":"..."}`. Specify HTTP 400 malformed, 401 invalid payment authorisation, 403 wrong scope, 404 unknown receipt, 409 business conflict/expired credential/insufficient credit, and 503 temporarily unavailable. Success is HTTP 200. If actual firmware requires HTTP 200 for business errors, agree and test that adapter change explicitly; never infer payment success from HTTP status alone.
 
 Status/refund/dispense requests use the original company/merchant/device/receipt context; refunds add a unique `refund_request_id`, original payment reference, failed item quantities, amount and reason. They must not require a still-valid member QR after payment.
 
@@ -130,9 +137,7 @@ Proposed initial product behaviour:
 - If allowance changes, never exceed the personal-use consent or cap. Reject and refresh when no permitted split can pay the order.
 - An exact already-committed receipt retry/status lookup returns the original result even if the QR has since expired. A new payment requires a valid authorisation; revoked machine access still blocks callers.
 
-Existing document headers do not establish machine authentication. Before enabling debit, identify the supplier's supported authenticated connection and bind it server-side to permitted devices/stores. Reuse an existing verified mechanism if present; otherwise configure a scoped machine/provider credential (or signed requests) outside source control. Public `company_id`/`merchant_id`/`device_number` values alone are not credentials. Do not use Lighthouse passwords or manager portal sessions on machines.
-
-PERKD → Smart Kotak needs a narrow service identity for vending operations, validated on the Smart Kotak service. Keep credentials server-side; no fake member/manager session. Do not disable portal authentication or copy the session/QR signing secret into PERKD. Avoid logging raw QR payloads, credentials or full ICs.
+**21 September user revision — simple CERIA-style API:** use JSON requests with the existing company, merchant and device identifiers. Do not require additional service/device keys, custom authentication headers or provisioning. This supersedes the earlier machine/service credential requirement. Identifiers select the configured machine and approved store/group; they do not authenticate callers. New debits still require member-issued payment authorisation. Recovery and dispense/refund reporting retain receipt/payment checks but do not independently authenticate the reporting machine. Keep portal login authentication unchanged and do not fabricate portal actors or log raw QR payloads/full ICs.
 
 ## Company, store and machine setup — FOODIO KITCHEN
 
@@ -145,11 +150,11 @@ Distinguish:
 
 Reuse the verified `vending_merchant/{merchant_id}.storeid` relationship and inspect `merchant_device` records for the machine binding. Require a unique, consistent device/merchant/store mapping; the legacy builder’s optional lookup is not sufficient authorisation. Do not create a parallel registry unless required fields are genuinely absent. In Lighthouse, select a company-derived store and existing machine, show readiness and enable/disable Asnaf use. Any necessary registration fields are supplier device/merchant identifiers, not manually entered Foodio store IDs. Reject missing mappings; never use the corporate builder’s default-store fallback. The default top-up store does not authorise spending at every machine.
 
-At every new charge, the server verifies the registered device mapping, current linked company and group-approved store. Add a vending-enabled control/readiness indicator; turning on “Show member payment QR” alone must not claim the machine is integrated. Keep integration disabled until its credentials/mapping and acceptance are ready.
+At every new charge, the server verifies the registered device mapping, current linked company and group-approved store. Add a vending-enabled control/readiness indicator; turning on “Show member payment QR” alone must not claim the machine is integrated. Keep integration disabled until its mapping and acceptance are ready.
 
 ## Authoritative execution — FOODIO KITCHEN service
 
-Add a narrowly authenticated machine route/service layer, reusing/refactoring the existing payment and refund domain functions. Do not call manager routes using a fabricated actor or build a second ledger.
+Add a dedicated CERIA-style machine route/service layer, reusing/refactoring the existing payment and refund domain functions. Do not call manager routes using a fabricated actor or build a second ledger.
 
 Atomic deduction must include receipt claim, authorisation consumption, order/payment record, assigned plan/sponsor funding, personal wallet, daily usage and balanced ledger entries. Preserve existing portal confirmation checks. Validate expiry at transaction execution/retry, not only at the start of a request.
 
@@ -159,7 +164,7 @@ Keep payment and dispense status separate. Use `channel:"vending"` for new recor
 
 No merchant payout/cash-out is introduced by this phase. A ledger merchant payable is not proof of external settlement. If the supplier requires a secondary order, write a durable retryable task in the same canonical transaction; do not debit first and make an unrecoverable independent order call.
 
-## Dispensing, uncertain outcomes and refunds
+## Dispensing and uncertain outcomes (refund completion in Phase 7)
 
 1. Machine persists its receipt before deduction.
 2. On confirmed paid result, machine dispenses at most once for that receipt and persists the outcome locally; retries/restarts cannot trigger another motor action.
@@ -180,13 +185,17 @@ Persist failure evidence before refund. On retry after a refund commit but lost 
 
 ## Cursor implementation sequence and acceptance gate
 
-1. **PERKD:** corporate source/dependency review is complete at the revision above. Confirm the actual machine protocol, receipt recovery, authenticated merchant/device identity and firmware constraints; reuse the verified Firestore mappings with strict scope checks. Do not copy the existing duplicate-charge/order-save/default-store gaps.
-2. **KITCHEN:** implement/test narrow machine identity, authorisation, atomic debit, idempotent status/refund and machine/store setup behind a disabled vending gate.
+Apply these steps to payment, dispense reporting and recovery now. Existing refund contracts/code/tests are retained for compatibility; new refund implementation, UX review and hosted/machine/POS acceptance below are Phase 7 work and do not block POS integration.
+
+1. **PERKD:** corporate source/dependency review is complete at the revision above. Confirm the actual machine protocol, receipt recovery, configured merchant/device mapping and firmware constraints; reuse the verified Firestore mappings with strict scope checks. Do not copy the existing duplicate-charge/order-save/default-store gaps.
+2. **KITCHEN:** verify machine mapping, member authorisation, atomic debit and idempotent status recovery and machine/store setup behind a disabled vending gate.
 3. **PERKD:** implement the new Asnaf router/service client, contract validation and error mapping. Add Postman examples with placeholders and a simulated-machine runner.
 4. **ONLINE:** add the payment QR authorisation/result flow. Preserve corporate and v1 identity-only paths.
 5. **All three:** update API docs and run focused tests. Record commits, test evidence and any required targeted indexes/rules changes.
 6. **Cursor/operator deployment:** deploy Kitchen API first with vending disabled, then PERKD, then Online/admin frontends. Configure one test device/store/group; enable only that test scope and verify real machine acceptance.
-7. Only after hosted Phase 3/4 and vending acceptance proceed to **Phase 6 POS**, reusing the tested financial contracts. BM/pilot remain in the final phase.
+7. After payment-focused hosted Phase 3/4 and vending acceptance, proceed to **Phase 6 POS** using the shared payment contracts. Refund-specific acceptance is not a prerequisite.
+8. After POS integration, complete **Phase 7 refunds** across Kitchen, PERKD, Online and the actual POS source, including hosted and machine acceptance.
+9. Complete **Phase 8 BM/localization and pilot readiness**, including end-to-end refund evidence.
 
 Required cases:
 - Sponsored-only, personal-only and mixed purchase; the server uses only the single assigned plan. A second overlapping assignment is rejected, including concurrent requests.
@@ -194,9 +203,11 @@ Required cases:
 - Duplicate balance check, duplicate scan, concurrent identical deduction, different receipt with consumed QR and same receipt with altered items/amount.
 - Concurrent purchases/plan expiry; no negative balances, over-budget spending or daily-limit bypass.
 - Timeout before/after commit, service restart and lost machine response; recover the same receipt with no extra charge or dispense.
-- Full/partial failed dispensing, repeated/conflicting events, partial/full refund, refund after plan expiry and Malaysia midnight; exact original-source totals.
+- Phase 5: full/partial/unknown dispense reporting and repeated/conflicting events.
+- Phase 7 after POS: partial/full refunds, retry/concurrency, plan expiry/reassignment and Malaysia midnight; exact original-source totals.
 - Admin reconciliation and member history agree, with no cross-group exposure.
 - Existing corporate `/ceria/*`, voucher `/vending/*`, personal top-up and member-confirmed payment regression checks.
 - Real scanner reads the new QR on a phone, firmware routes it to `/asnaf/*`, pays, dispenses once and handles failure recovery. A displayed QR or Postman success alone is not machine acceptance.
 
-**Exit evidence:** exact API/frontend/firmware revisions, synthetic test receipts, payment/refund IDs, observed dispense outcomes and reconciled balances. No credentials or full ICs in committed evidence. This plan does not itself implement, deploy or certify any new payment endpoint.
+**Phase 5 exit evidence:** exact API/frontend/firmware revisions, synthetic test receipts, payment IDs, observed dispense outcomes and reconciled payment balances. Refund IDs and reconciled refund evidence are Phase 7 deliverables. No credentials or full ICs in committed evidence. This plan does not itself implement, deploy or certify any new payment endpoint.
+

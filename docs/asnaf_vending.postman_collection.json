@@ -1,0 +1,170 @@
+{
+  "info": {
+    "name": "Asnaf vending \u2014 synthetic test scope",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "api_origin",
+      "value": ""
+    },
+    {
+      "key": "company_id",
+      "value": ""
+    },
+    {
+      "key": "merchant_id",
+      "value": ""
+    },
+    {
+      "key": "device_number",
+      "value": ""
+    },
+    {
+      "key": "receipt_id",
+      "value": ""
+    },
+    {
+      "key": "qr_payload",
+      "value": ""
+    },
+    {
+      "key": "payment_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "get-balance",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_origin}}/asnaf/get-balance",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company_id\": \"{{company_id}}\",\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"device_number\": \"{{device_number}}\",\n  \"qr_payload\": \"{{qr_payload}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "deduct-balance",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_origin}}/asnaf/deduct-balance",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company_id\": \"{{company_id}}\",\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"device_number\": \"{{device_number}}\",\n  \"receipt_id\": \"{{receipt_id}}\",\n  \"qr_payload\": \"{{qr_payload}}\",\n  \"amount\": \"3.50\",\n  \"currency\": \"RM\",\n  \"list\": [\n    {\n      \"goods_id\": \"meal\",\n      \"goods_sku\": \"meal\",\n      \"goods_name\": \"Test meal\",\n      \"goods_count\": 1,\n      \"goods_price\": \"3.50\"\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "payment-status",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_origin}}/asnaf/payment-status",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company_id\": \"{{company_id}}\",\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"device_number\": \"{{device_number}}\",\n  \"receipt_id\": \"{{receipt_id}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "dispense-result",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_origin}}/asnaf/dispense-result",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company_id\": \"{{company_id}}\",\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"device_number\": \"{{device_number}}\",\n  \"receipt_id\": \"{{receipt_id}}\",\n  \"payment_id\": \"{{payment_id}}\",\n  \"event_id\": \"TEST-EVENT-1\",\n  \"dispensed\": [\n    {\n      \"goods_id\": \"meal\",\n      \"count\": 0\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "dispense-result-unknown",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_origin}}/asnaf/dispense-result",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company_id\": \"{{company_id}}\",\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"device_number\": \"{{device_number}}\",\n  \"receipt_id\": \"{{receipt_id}}\",\n  \"payment_id\": \"{{payment_id}}\",\n  \"event_id\": \"TEST-EVENT-UNKNOWN\",\n  \"outcome\": \"Unknown\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "refund-payment",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{api_origin}}/asnaf/refund-payment",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company_id\": \"{{company_id}}\",\n  \"merchant_id\": \"{{merchant_id}}\",\n  \"device_number\": \"{{device_number}}\",\n  \"receipt_id\": \"{{receipt_id}}\",\n  \"payment_id\": \"{{payment_id}}\",\n  \"refund_request_id\": \"TEST-REFUND-1\",\n  \"failed_items\": [\n    {\n      \"goods_id\": \"meal\",\n      \"count\": 1\n    }\n  ],\n  \"amount\": \"3.50\",\n  \"currency\": \"RM\",\n  \"reason\": \"Confirmed test failure\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
