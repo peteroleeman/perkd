@@ -1,6 +1,6 @@
 # Cursor — Phase 5: Asnaf vending payment API before POS
 
-Updated: 21 September 2026. **Planning only: the endpoints and new functions below are proposed, not implemented or deployed.**
+Updated: 21 September 2026. **Implementation update:** the review branches now contain the Phase 5 backend, adapter and frontend source. See [current handoff and verification](PHASE5_ASNAF_VENDING_IMPLEMENTATION.md). Vending remains disabled by default; frontend validation, deployment and real machine acceptance are pending. The original design and acceptance requirements below remain the reference, with their planning-only status superseded by this update.
 
 ## Order and repository ownership
 
@@ -200,3 +200,4 @@ Required cases:
 - Real scanner reads the new QR on a phone, firmware routes it to `/asnaf/*`, pays, dispenses once and handles failure recovery. A displayed QR or Postman success alone is not machine acceptance.
 
 **Exit evidence:** exact API/frontend/firmware revisions, synthetic test receipts, payment/refund IDs, observed dispense outcomes and reconciled balances. No credentials or full ICs in committed evidence. This plan does not itself implement, deploy or certify any new payment endpoint.
+
