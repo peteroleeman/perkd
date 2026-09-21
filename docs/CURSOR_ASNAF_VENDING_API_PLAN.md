@@ -1,10 +1,17 @@
 # Cursor — Phase 5: Asnaf vending payment API before POS
 
+## Updated execution order — refunds after POS
+
+User revision: complete Phase 5 vending payment/recovery work, then Phase 6 POS integration, then Phase 7 refunds across portal, vending and POS. Phase 8 covers BM localization and final pilot readiness. This order supersedes earlier instructions that put refund completion before POS or include BM/pilot in Phase 6.
+
+Preserve the refund code, API contracts, history and regression tests already implemented. Defer new refund work, workflow review and hosted/machine/POS refund acceptance to Phase 7; these are not prerequisites for starting or completing POS integration. Continue recording payment IDs, funding attribution and dispense failure evidence now so later refunds remain traceable. This is a planning change, not a runtime enable/disable change or a deployment authorization. Final pilot acceptance follows Phase 7.
+
+
 Updated: 21 September 2026. **Implementation update:** the review branches now contain the Phase 5 backend, adapter and frontend source. See [current handoff and verification](PHASE5_ASNAF_VENDING_IMPLEMENTATION.md). Vending remains disabled by default; frontend validation, deployment and real machine acceptance are pending. The original design and acceptance requirements below remain the reference, with their planning-only status superseded by this update.
 
 ## Order and repository ownership
 
-Complete the outstanding hosted Phase 3/4 acceptance, then implement **Phase 5 — Asnaf vending integration**. **Phase 6 — POS integration, BM and pilot readiness** follows vending acceptance. Vending and POS are separate integrations.
+Complete the outstanding hosted Phase 3/4 acceptance, then implement **Phase 5 — Asnaf vending integration**. **Phase 6 — POS integration** follows payment-focused vending acceptance; **Phase 7 — refunds** follows POS, then **Phase 8 — BM and pilot readiness**. Vending and POS are separate integrations.
 
 | Repository | Responsibility in this phase |
 | --- | --- |
@@ -157,7 +164,7 @@ Keep payment and dispense status separate. Use `channel:"vending"` for new recor
 
 No merchant payout/cash-out is introduced by this phase. A ledger merchant payable is not proof of external settlement. If the supplier requires a secondary order, write a durable retryable task in the same canonical transaction; do not debit first and make an unrecoverable independent order call.
 
-## Dispensing, uncertain outcomes and refunds
+## Dispensing and uncertain outcomes (refund completion in Phase 7)
 
 1. Machine persists its receipt before deduction.
 2. On confirmed paid result, machine dispenses at most once for that receipt and persists the outcome locally; retries/restarts cannot trigger another motor action.
@@ -178,13 +185,17 @@ Persist failure evidence before refund. On retry after a refund commit but lost 
 
 ## Cursor implementation sequence and acceptance gate
 
-1. **PERKD:** corporate source/dependency review is complete at the revision above. Confirm the actual machine protocol, receipt recovery, authenticated merchant/device identity and firmware constraints; reuse the verified Firestore mappings with strict scope checks. Do not copy the existing duplicate-charge/order-save/default-store gaps.
-2. **KITCHEN:** implement/test narrow machine identity, authorisation, atomic debit, idempotent status/refund and machine/store setup behind a disabled vending gate.
+Apply these steps to payment, dispense reporting and recovery now. Existing refund contracts/code/tests are retained for compatibility; new refund implementation, UX review and hosted/machine/POS acceptance below are Phase 7 work and do not block POS integration.
+
+1. **PERKD:** corporate source/dependency review is complete at the revision above. Confirm the actual machine protocol, receipt recovery, configured merchant/device mapping and firmware constraints; reuse the verified Firestore mappings with strict scope checks. Do not copy the existing duplicate-charge/order-save/default-store gaps.
+2. **KITCHEN:** verify machine mapping, member authorisation, atomic debit and idempotent status recovery and machine/store setup behind a disabled vending gate.
 3. **PERKD:** implement the new Asnaf router/service client, contract validation and error mapping. Add Postman examples with placeholders and a simulated-machine runner.
 4. **ONLINE:** add the payment QR authorisation/result flow. Preserve corporate and v1 identity-only paths.
 5. **All three:** update API docs and run focused tests. Record commits, test evidence and any required targeted indexes/rules changes.
 6. **Cursor/operator deployment:** deploy Kitchen API first with vending disabled, then PERKD, then Online/admin frontends. Configure one test device/store/group; enable only that test scope and verify real machine acceptance.
-7. Only after hosted Phase 3/4 and vending acceptance proceed to **Phase 6 POS**, reusing the tested financial contracts. BM/pilot remain in the final phase.
+7. After payment-focused hosted Phase 3/4 and vending acceptance, proceed to **Phase 6 POS** using the shared payment contracts. Refund-specific acceptance is not a prerequisite.
+8. After POS integration, complete **Phase 7 refunds** across Kitchen, PERKD, Online and the actual POS source, including hosted and machine acceptance.
+9. Complete **Phase 8 BM/localization and pilot readiness**, including end-to-end refund evidence.
 
 Required cases:
 - Sponsored-only, personal-only and mixed purchase; the server uses only the single assigned plan. A second overlapping assignment is rejected, including concurrent requests.
@@ -192,10 +203,11 @@ Required cases:
 - Duplicate balance check, duplicate scan, concurrent identical deduction, different receipt with consumed QR and same receipt with altered items/amount.
 - Concurrent purchases/plan expiry; no negative balances, over-budget spending or daily-limit bypass.
 - Timeout before/after commit, service restart and lost machine response; recover the same receipt with no extra charge or dispense.
-- Full/partial failed dispensing, repeated/conflicting events, partial/full refund, refund after plan expiry and Malaysia midnight; exact original-source totals.
+- Phase 5: full/partial/unknown dispense reporting and repeated/conflicting events.
+- Phase 7 after POS: partial/full refunds, retry/concurrency, plan expiry/reassignment and Malaysia midnight; exact original-source totals.
 - Admin reconciliation and member history agree, with no cross-group exposure.
 - Existing corporate `/ceria/*`, voucher `/vending/*`, personal top-up and member-confirmed payment regression checks.
 - Real scanner reads the new QR on a phone, firmware routes it to `/asnaf/*`, pays, dispenses once and handles failure recovery. A displayed QR or Postman success alone is not machine acceptance.
 
-**Exit evidence:** exact API/frontend/firmware revisions, synthetic test receipts, payment/refund IDs, observed dispense outcomes and reconciled balances. No credentials or full ICs in committed evidence. This plan does not itself implement, deploy or certify any new payment endpoint.
+**Phase 5 exit evidence:** exact API/frontend/firmware revisions, synthetic test receipts, payment IDs, observed dispense outcomes and reconciled payment balances. Refund IDs and reconciled refund evidence are Phase 7 deliverables. No credentials or full ICs in committed evidence. This plan does not itself implement, deploy or certify any new payment endpoint.
 
