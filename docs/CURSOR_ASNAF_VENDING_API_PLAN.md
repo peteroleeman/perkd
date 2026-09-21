@@ -1,6 +1,6 @@
 # Cursor — Phase 5: Asnaf vending payment API before POS
 
-Updated: 20 September 2026. **Planning only: the endpoints and new functions below are proposed, not implemented or deployed.**
+Updated: 21 September 2026. **Planning only: the endpoints and new functions below are proposed, not implemented or deployed.**
 
 ## Order and repository ownership
 
@@ -10,7 +10,7 @@ Complete the outstanding hosted Phase 3/4 acceptance, then implement **Phase 5 �
 | --- | --- |
 | **PERKD** — `peteroleeman/perkd`, branch `main` | New Asnaf machine API at `api.foodio.online`; validate machine context, adapt requests/results, call Smart Kotak |
 | **FOODIO KITCHEN** — `peteroleeman/foodio_kitchen`, branch `master` | Smart Kotak service: scan authorisation, authoritative payment/refund ledger, receipt recovery, device/store setup and reporting |
-| **FOODIO ONLINE** — `peteroleeman/foodio_online`, branch `master` | Member QR/payment authorisation UI, selected benefit plan/personal spending consent, payment result/history |
+| **FOODIO ONLINE** — `peteroleeman/foodio_online`, branch `master` | Member QR/payment authorisation UI, automatically assigned benefit plan/personal spending consent, payment result/history |
 | Vending supplier/firmware | Recognise the Asnaf QR, call the new APIs, persist receipts, dispense once, report failed/partial dispensing |
 
 Open the correct repository in Cursor for each task. Start with `git pull --ff-only`; preserve newer work. All Smart Kotak data remains in **foodio-ab3b2**. Kitchen manual self-top-up remains hidden/disabled; Online personal top-ups continue.
@@ -63,13 +63,26 @@ Verified source:
 
 The missing corporate-source blocker is resolved. Remaining inputs are the actual machine authentication/firmware behaviour and the proposed member payment-authorisation UX. No live deduction, refund or production-data test was performed for this review.
 
+## Confirmed rule — one active plan per Asnaf
+
+Each Asnaf can have **at most one active benefit-plan assignment at a time**. A manager can manage many plans, but a member cannot have overlapping assignments. Previous expired/closed assignments remain in history; later non-overlapping enrolment is allowed. This replaces the earlier member plan-selection proposal.
+
+- **FOODIO KITCHEN:** enforce the rule on assignment, activation/reactivation, date extensions and reassignment. Use a transaction with a shared per-beneficiary assignment guard so concurrent changes to different plans cannot both succeed; a UI check or two independent plan writes is insufficient. Reject overlapping effective dates using the existing Malaysia date convention. Do not silently remove a member from an existing plan.
+- **All payment paths:** the server resolves the one current assigned plan automatically for portal, vending and later POS. Clients cannot select another plan. If legacy input still includes `planId`, it must match the server assignment (or an explicitly supported personal-only payment); never trust it to choose entitlement. Recheck the assignment/version when authorising and charging. A stale QR cannot silently charge a replacement plan.
+- **FOODIO ONLINE:** show a single current Benefit plan; remove plan pickers. Keep previous plans in history. Display no active plan when appropriate. The separate personal wallet and existing personal-only eligibility remain unchanged; no plan must never create sponsored entitlement.
+- **Conflict handling:** if development data contains multiple active assignments, report an assignment conflict and block sponsored authorisation until the manager resolves it. Do not pick the first plan, sum allowances, delete history or rewrite balances.
+- **Reassignment/refunds:** do not allow a mid-day reassignment to reset spent allowance or create a second daily entitlement; reject it until a defined safe effective date. Old purchases/refunds retain their original plan and sponsor allocation, even after the member moves to another plan. Never refund an old purchase into the newly assigned plan.
+- **Acceptance:** concurrent duplicate assignments, overlapping future dates, plan date extension/reactivation, automatic expiry/new assignment, stale QR/quote after reassignment and refund of an old-plan purchase. Plans may serve many members; a member must never have two active plan assignments.
+
+This is a required implementation change, not a claim that current runtime code already enforces it.
+
 ## Proposed external functions — PERKD
 
 Add `asnafrouter.js`, mount it at `/asnaf` in `server.js`, and keep the corporate/voucher routers intact. Add a dedicated Smart Kotak service client; never directly update Asnaf balances from PERKD.
 
 | Proposed POST endpoint under https://api.foodio.online | Suggested function | Purpose |
 | --- | --- | --- |
-| `/asnaf/get-balance` | `getAsnafBalance` | Validate scanned credential and machine/store; return selected-plan allowance, personal balance and usable total |
+| `/asnaf/get-balance` | `getAsnafBalance` | Validate scanned credential and machine/store; return assigned-plan allowance, personal balance and usable total |
 | `/asnaf/deduct-balance` | `deductAsnafBalance` | Commit one receipt payment through Smart Kotak and return its funding split |
 | `/asnaf/payment-status` | `getAsnafPaymentStatus` | Recover an authoritative result by the original receipt after timeout/restart |
 | `/asnaf/refund-payment` | `refundAsnafPayment` | Reverse confirmed undispensed value once, linked to the original payment and failed items |
@@ -96,7 +109,7 @@ Example proposed deduction body (placeholders, not live credentials):
 
 Balance takes the same machine/company context and QR; it does not reserve or debit funds. If supplied, purchase amount/items allow an exact affordability quote. A balance check is not a guarantee that a later payment will succeed.
 
-Successful deduction returns `success:true`, `ok:true`, receipt, stable Smart Kotak `orderId`/`paymentId`, explicit `paymentStatus:"Paid"`, RM total, `deducted.fromSponsored`, `deducted.fromPersonal`, selected plan and remaining allowance/personal balance. Also return separate dispense state; a repeated paid response must not trigger a second dispense.
+Successful deduction returns `success:true`, `ok:true`, receipt, stable Smart Kotak `orderId`/`paymentId`, explicit `paymentStatus:"Paid"`, RM total, `deducted.fromSponsored`, `deducted.fromPersonal`, assigned plan and remaining allowance/personal balance. Also return separate dispense state; a repeated paid response must not trigger a second dispense.
 
 Amounts are integer sen internally. Validate decimal RM exactly (at most two decimals), positive counts/prices, bounded item lists, sum = amount, supported currency and safe-integer limits. Do not trust an item description to prove catalogue price; verify against the trusted machine catalogue where available. Set and test explicit field/size limits.
 
@@ -109,9 +122,9 @@ Status/refund/dispense requests use the original company/merchant/device/receipt
 **Do not silently make the existing identity QR debit-capable.** Introduce a versioned, short-lived, single-purchase authorisation (proposed `ASNAF:2:`) issued by Smart Kotak after the signed-in member enables payment in the QR dialog. Keep v1 identification semantics intact.
 
 Proposed initial product behaviour:
-- Member chooses one eligible benefit plan, or personal-only. Do not aggregate multiple plan allowances. Show the selected plan and whether personal money can cover a shortfall.
+- The server uses the member’s single active assigned plan automatically. There is no plan-selection step. Show that plan and whether personal money can cover a shortfall; personal-only use follows the existing eligibility and consent rules.
 - Member sees and confirms a spending cap and personal-use choice before showing a payment QR. This preserves scan-at-machine checkout without requiring a second phone confirmation at the machine. Finalise the cap UX with the product owner before enabling debit.
-- QR has a server-stored authorisation ID/nonce, 90-second expiry, member/card/group, selected plan, maximum total and maximum personal draw. No IC, password, company encryption key or service credential is exposed.
+- QR has a server-stored authorisation ID/nonce, 90-second expiry, member/card/group, assigned plan and assignment version, maximum total and maximum personal draw. No IC, password, company encryption key or service credential is exposed.
 - Balance lookup does not consume the authorisation. The first successful payment atomically binds it to one receipt. Another receipt cannot reuse it. Failed insufficient-funds checks create no charge.
 - Recheck active member/card, card replacement, plan membership, date, daily usage, plan reserves, policy, company/store approval and authorisation limits **inside the payment transaction**.
 - If allowance changes, never exceed the personal-use consent or cap. Reject and refresh when no permitted split can pay the order.
@@ -138,7 +151,7 @@ At every new charge, the server verifies the registered device mapping, current 
 
 Add a narrowly authenticated machine route/service layer, reusing/refactoring the existing payment and refund domain functions. Do not call manager routes using a fabricated actor or build a second ledger.
 
-Atomic deduction must include receipt claim, authorisation consumption, order/payment record, chosen plan/sponsor funding, personal wallet, daily usage and balanced ledger entries. Preserve existing portal confirmation checks. Validate expiry at transaction execution/retry, not only at the start of a request.
+Atomic deduction must include receipt claim, authorisation consumption, order/payment record, assigned plan/sponsor funding, personal wallet, daily usage and balanced ledger entries. Preserve existing portal confirmation checks. Validate expiry at transaction execution/retry, not only at the start of a request.
 
 Receipt uniqueness: scope by the verified provider/company/merchant/device tuple plus `receipt_id`. Store a canonical request fingerprint covering identity/authorisation, amount, currency, plan and item list. Identical retries return the same operation; changed input under the same receipt is `RECEIPT_CONFLICT`. Concurrent identical requests commit once. A timed-out response must never cause a fresh receipt or another charge.
 
@@ -161,7 +174,7 @@ Persist failure evidence before refund. On retry after a refund commit but lost 
 
 ## Member UI and reports — FOODIO ONLINE / FOODIO KITCHEN
 
-**FOODIO ONLINE:** update the QR dialog/API client for the separate payment-authorisation contract, plan/personal-use choice, expiry and consumed status. Refresh balances/history after purchase/refund. Show “Tap here when the machine asks for your QR code” only when vending readiness permits it. Clearly distinguish identification QR from payment QR. Corporate QR/top-up/employee screens stay unchanged.
+**FOODIO ONLINE:** update the QR dialog/API client for the separate payment-authorisation contract, automatic assigned-plan display and personal-use consent, expiry and consumed status. Refresh balances/history after purchase/refund. Show “Tap here when the machine asks for your QR code” only when vending readiness permits it. Clearly distinguish identification QR from payment QR. Corporate QR/top-up/employee screens stay unchanged.
 
 **FOODIO KITCHEN:** display machine/store, receipt, item detail, payment and dispense statuses, funding split, refund reference and unresolved outcomes in admin reports/reconciliation. Exports must include actual source records, never demo substitutes. Expose only the signed-in member's appropriate vending history to Online.
 
@@ -176,7 +189,7 @@ Persist failure evidence before refund. On retry after a refund commit but lost 
 7. Only after hosted Phase 3/4 and vending acceptance proceed to **Phase 6 POS**, reusing the tested financial contracts. BM/pilot remain in the final phase.
 
 Required cases:
-- Sponsored-only, personal-only and mixed purchase; multiple active plans use exactly the selected one.
+- Sponsored-only, personal-only and mixed purchase; the server uses only the single assigned plan. A second overlapping assignment is rejected, including concurrent requests.
 - Insufficient balance, expired plan/QR, frozen/replaced card, wrong company/device/store/group, disabled policy and rejected v1-as-payment.
 - Duplicate balance check, duplicate scan, concurrent identical deduction, different receipt with consumed QR and same receipt with altered items/amount.
 - Concurrent purchases/plan expiry; no negative balances, over-budget spending or daily-limit bypass.
