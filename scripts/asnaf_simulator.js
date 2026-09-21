@@ -8,7 +8,7 @@ async function main(){
  const url=new URL(process.env.ASNAF_TEST_API_ORIGIN||'');
  if(!(url.protocol==='https:'||url.protocol==='http:'&&['localhost','127.0.0.1'].includes(url.hostname))||url.username||url.password||url.pathname!=='/'||url.search||url.hash)throw Error('Select an HTTPS staging origin or loopback origin');
  if(process.env.ASNAF_TEST_CONFIRMED!=='true')throw Error('Set ASNAF_TEST_CONFIRMED=true only for the intended disposable test scope');
- const response=await fetch(`${url.origin}/asnaf/${action}`,{method:'POST',redirect:'error',headers:{'Content-Type':'application/json','x-asnaf-device-id':process.env.ASNAF_DEVICE_ID||'','x-asnaf-device-token':process.env.ASNAF_DEVICE_TOKEN||''},body:fs.readFileSync(file,'utf8'),signal:AbortSignal.timeout(20000)});
+ const response=await fetch(`${url.origin}/asnaf/${action}`,{method:'POST',redirect:'error',headers:{'Content-Type':'application/json'},body:fs.readFileSync(file,'utf8'),signal:AbortSignal.timeout(20000)});
  const result=await response.json();console.log(JSON.stringify({httpStatus:response.status,...result},null,2));if(!response.ok||result.ok!==true)process.exitCode=1;
 }
 main().catch(e=>{console.error(e.message);process.exitCode=1;});

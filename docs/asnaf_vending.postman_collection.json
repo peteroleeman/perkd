@@ -21,14 +21,6 @@
       "value": ""
     },
     {
-      "key": "device_id",
-      "value": ""
-    },
-    {
-      "key": "device_token",
-      "value": ""
-    },
-    {
       "key": "receipt_id",
       "value": ""
     },
@@ -50,14 +42,6 @@
           {
             "key": "Content-Type",
             "value": "application/json"
-          },
-          {
-            "key": "x-asnaf-device-id",
-            "value": "{{device_id}}"
-          },
-          {
-            "key": "x-asnaf-device-token",
-            "value": "{{device_token}}"
           }
         ],
         "url": "{{api_origin}}/asnaf/get-balance",
@@ -80,14 +64,6 @@
           {
             "key": "Content-Type",
             "value": "application/json"
-          },
-          {
-            "key": "x-asnaf-device-id",
-            "value": "{{device_id}}"
-          },
-          {
-            "key": "x-asnaf-device-token",
-            "value": "{{device_token}}"
           }
         ],
         "url": "{{api_origin}}/asnaf/deduct-balance",
@@ -110,14 +86,6 @@
           {
             "key": "Content-Type",
             "value": "application/json"
-          },
-          {
-            "key": "x-asnaf-device-id",
-            "value": "{{device_id}}"
-          },
-          {
-            "key": "x-asnaf-device-token",
-            "value": "{{device_token}}"
           }
         ],
         "url": "{{api_origin}}/asnaf/payment-status",
@@ -140,14 +108,6 @@
           {
             "key": "Content-Type",
             "value": "application/json"
-          },
-          {
-            "key": "x-asnaf-device-id",
-            "value": "{{device_id}}"
-          },
-          {
-            "key": "x-asnaf-device-token",
-            "value": "{{device_token}}"
           }
         ],
         "url": "{{api_origin}}/asnaf/dispense-result",
@@ -170,14 +130,6 @@
           {
             "key": "Content-Type",
             "value": "application/json"
-          },
-          {
-            "key": "x-asnaf-device-id",
-            "value": "{{device_id}}"
-          },
-          {
-            "key": "x-asnaf-device-token",
-            "value": "{{device_token}}"
           }
         ],
         "url": "{{api_origin}}/asnaf/refund-payment",

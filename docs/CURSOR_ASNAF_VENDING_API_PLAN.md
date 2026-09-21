@@ -61,7 +61,7 @@ Verified source:
 - **HTTP contract:** success is 200; employee-not-found is 404; inactive/insufficient funds are 409; order-save failure is 500; other business validation errors are 400. Do not copy the voucher API's HTTP-200 error convention.
 - **Authentication/recovery:** no machine-auth middleware, payment-status route or purchase-refund route appears in the uploaded Ceria router. The public company-ID AES convention is not proof of machine identity. Deployment/upstream controls and firmware recovery still require verification.
 
-The missing corporate-source blocker is resolved. Remaining inputs are the actual machine authentication/firmware behaviour and the proposed member payment-authorisation UX. No live deduction, refund or production-data test was performed for this review.
+The missing corporate-source blocker is resolved. Remaining inputs are the actual machine identifier/firmware behaviour and the proposed member payment-authorisation UX. No live deduction, refund or production-data test was performed for this review.
 
 ## Confirmed rule — one active plan per Asnaf
 
@@ -113,7 +113,7 @@ Successful deduction returns `success:true`, `ok:true`, receipt, stable Smart Ko
 
 Amounts are integer sen internally. Validate decimal RM exactly (at most two decimals), positive counts/prices, bounded item lists, sum = amount, supported currency and safe-integer limits. Do not trust an item description to prove catalogue price; verify against the trusted machine catalogue where available. Set and test explicit field/size limits.
 
-Use one documented error body: `{"success":false,"ok":false,"code":"...","message":"..."}`. Specify HTTP 400 malformed, 401 missing/invalid machine credentials, 403 wrong scope, 404 unknown receipt, 409 business conflict/expired credential/insufficient credit, and 503 temporarily unavailable. Success is HTTP 200. If actual firmware requires HTTP 200 for business errors, agree and test that adapter change explicitly; never infer payment success from HTTP status alone.
+Use one documented error body: `{"success":false,"ok":false,"code":"...","message":"..."}`. Specify HTTP 400 malformed, 401 invalid payment authorisation, 403 wrong scope, 404 unknown receipt, 409 business conflict/expired credential/insufficient credit, and 503 temporarily unavailable. Success is HTTP 200. If actual firmware requires HTTP 200 for business errors, agree and test that adapter change explicitly; never infer payment success from HTTP status alone.
 
 Status/refund/dispense requests use the original company/merchant/device/receipt context; refunds add a unique `refund_request_id`, original payment reference, failed item quantities, amount and reason. They must not require a still-valid member QR after payment.
 
@@ -130,9 +130,7 @@ Proposed initial product behaviour:
 - If allowance changes, never exceed the personal-use consent or cap. Reject and refresh when no permitted split can pay the order.
 - An exact already-committed receipt retry/status lookup returns the original result even if the QR has since expired. A new payment requires a valid authorisation; revoked machine access still blocks callers.
 
-Existing document headers do not establish machine authentication. Before enabling debit, identify the supplier's supported authenticated connection and bind it server-side to permitted devices/stores. Reuse an existing verified mechanism if present; otherwise configure a scoped machine/provider credential (or signed requests) outside source control. Public `company_id`/`merchant_id`/`device_number` values alone are not credentials. Do not use Lighthouse passwords or manager portal sessions on machines.
-
-PERKD → Smart Kotak needs a narrow service identity for vending operations, validated on the Smart Kotak service. Keep credentials server-side; no fake member/manager session. Do not disable portal authentication or copy the session/QR signing secret into PERKD. Avoid logging raw QR payloads, credentials or full ICs.
+**21 September user revision — simple CERIA-style API:** use JSON requests with the existing company, merchant and device identifiers. Do not require additional service/device keys, custom authentication headers or provisioning. This supersedes the earlier machine/service credential requirement. Identifiers select the configured machine and approved store/group; they do not authenticate callers. New debits still require member-issued payment authorisation. Recovery and dispense/refund reporting retain receipt/payment checks but do not independently authenticate the reporting machine. Keep portal login authentication unchanged and do not fabricate portal actors or log raw QR payloads/full ICs.
 
 ## Company, store and machine setup — FOODIO KITCHEN
 
@@ -145,11 +143,11 @@ Distinguish:
 
 Reuse the verified `vending_merchant/{merchant_id}.storeid` relationship and inspect `merchant_device` records for the machine binding. Require a unique, consistent device/merchant/store mapping; the legacy builder’s optional lookup is not sufficient authorisation. Do not create a parallel registry unless required fields are genuinely absent. In Lighthouse, select a company-derived store and existing machine, show readiness and enable/disable Asnaf use. Any necessary registration fields are supplier device/merchant identifiers, not manually entered Foodio store IDs. Reject missing mappings; never use the corporate builder’s default-store fallback. The default top-up store does not authorise spending at every machine.
 
-At every new charge, the server verifies the registered device mapping, current linked company and group-approved store. Add a vending-enabled control/readiness indicator; turning on “Show member payment QR” alone must not claim the machine is integrated. Keep integration disabled until its credentials/mapping and acceptance are ready.
+At every new charge, the server verifies the registered device mapping, current linked company and group-approved store. Add a vending-enabled control/readiness indicator; turning on “Show member payment QR” alone must not claim the machine is integrated. Keep integration disabled until its mapping and acceptance are ready.
 
 ## Authoritative execution — FOODIO KITCHEN service
 
-Add a narrowly authenticated machine route/service layer, reusing/refactoring the existing payment and refund domain functions. Do not call manager routes using a fabricated actor or build a second ledger.
+Add a dedicated CERIA-style machine route/service layer, reusing/refactoring the existing payment and refund domain functions. Do not call manager routes using a fabricated actor or build a second ledger.
 
 Atomic deduction must include receipt claim, authorisation consumption, order/payment record, assigned plan/sponsor funding, personal wallet, daily usage and balanced ledger entries. Preserve existing portal confirmation checks. Validate expiry at transaction execution/retry, not only at the start of a request.
 

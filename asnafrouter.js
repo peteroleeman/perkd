@@ -7,7 +7,7 @@ class AsnafRouter {
   for(const action of actions)this.router.post(`/${action}`,async(req,res)=>{
    res.set('Cache-Control','no-store');
    if(!req.body||typeof req.body!=='object'||Array.isArray(req.body))return res.status(400).json({success:false,ok:false,code:'INVALID_REQUEST',message:'JSON object required'});
-   const result=await client(action,req.body,req.headers);return res.status(result.status).json(result.data);
+   const result=await client(action,req.body);return res.status(result.status).json(result.data);
   });
  }
  getRouter(){return this.router;}
