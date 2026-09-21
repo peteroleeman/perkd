@@ -1,4 +1,5 @@
 const express = require('express');
+const nodeCrypto = require('node:crypto');
 const { BigQuery } = require('@google-cloud/bigquery');
 const firebase = require("./db");
 const fireStore = firebase.firestore();
@@ -49,6 +50,7 @@ class UserRouter {
   }
 
   initializeRoutes() {
+    this.router.post('/verifylighthousepassword', this.verifyLighthousePassword.bind(this));
     this.router.get('/about', this.about.bind(this));
     this.router.post('/querybigquery', this.queryBigQuery.bind(this));
     this.router.post('/queryrawdata', this.queryRawData.bind(this));
@@ -81,6 +83,40 @@ class UserRouter {
         }
         return this.gkashRouter.handleDeletePendingPoints(req, res);
     });
+  }
+
+  // Verify against the existing Foodio Lighthouse record; never copy credentials
+  // into Smart Kotak or return the merchant document to the caller.
+  async verifyLighthousePassword(req, res) {
+    res.set('Cache-Control', 'no-store');
+    const password = req.body && req.body.password;
+    if (!req.is('application/json') || typeof password !== 'string' ||
+        password.length === 0 || password.length > 256) {
+      return res.status(400).json({ ok: false, error: 'Password is required' });
+    }
+    if (firebase.options.projectId !== 'foodio-ab3b2') {
+      return res.status(503).json({ ok: false, error: 'Verification unavailable' });
+    }
+    try {
+      const snapshot = await fireStore.collection('merchant')
+        .where('username', '==', '123456').limit(2).get();
+      if (snapshot.empty) return res.json({ ok: false });
+      if (snapshot.size !== 1) {
+        return res.status(503).json({ ok: false, error: 'Verification unavailable' });
+      }
+      const merchant = snapshot.docs[0].data();
+      const valid = String(merchant.storeid) === '123456' &&
+        merchant.locked !== true && merchant.disabled !== true &&
+        typeof merchant.password === 'string' && merchant.password.length > 0 &&
+        nodeCrypto.timingSafeEqual(
+          nodeCrypto.createHash('sha256').update(password).digest(),
+          nodeCrypto.createHash('sha256').update(merchant.password).digest()
+        );
+      return res.json({ ok: valid });
+    } catch (_) {
+      console.error('Lighthouse password verification failed');
+      return res.status(503).json({ ok: false, error: 'Verification unavailable' });
+    }
   }
 
   /**
@@ -842,4 +878,4 @@ if (userid) {
   }
 }
 
-module.exports = UserRouter; 
+module.exports = UserRouter;

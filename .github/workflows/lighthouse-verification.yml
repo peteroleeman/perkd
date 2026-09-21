@@ -1,0 +1,30 @@
+name: Lighthouse verification
+on:
+  push:
+    paths: ['userrouter.js', 'test/lighthouse_verification.test.js', 'asnafrouter.js', 'util/asnaf_service_client.js', 'test/asnaf.test.js', '.github/workflows/lighthouse-verification.yml']
+  pull_request:
+    paths: ['userrouter.js', 'test/lighthouse_verification.test.js', 'asnafrouter.js', 'util/asnaf_service_client.js', 'test/asnaf.test.js', '.github/workflows/lighthouse-verification.yml']
+permissions:
+  contents: read
+jobs:
+  isolated-routes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install isolated test dependency
+        run: npm install --prefix "$RUNNER_TEMP/perkd-route-tests" --no-package-lock --ignore-scripts --no-audit --no-fund express@4
+      - name: Verify password route and existing Asnaf adapter
+        run: |
+          node --check userrouter.js
+          # The repository tracks an incomplete node_modules snapshot. Stage the
+          # actual source/tests beside fresh dependencies without changing it.
+          mkdir -p "$RUNNER_TEMP/perkd-route-tests/test" "$RUNNER_TEMP/perkd-route-tests/util"
+          cp userrouter.js asnafrouter.js server.js "$RUNNER_TEMP/perkd-route-tests/"
+          cp util/asnaf_service_client.js "$RUNNER_TEMP/perkd-route-tests/util/"
+          cp test/lighthouse_verification.test.js test/asnaf.test.js "$RUNNER_TEMP/perkd-route-tests/test/"
+          cd "$RUNNER_TEMP/perkd-route-tests"
+          node --test test/lighthouse_verification.test.js test/asnaf.test.js
