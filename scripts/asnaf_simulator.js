@@ -5,7 +5,7 @@ const fs=require('node:fs');
 async function main(){
  const [action,file]=process.argv.slice(2),{actions}=require('../util/asnaf_service_client');
  if(!actions.has(action)||!file)throw Error('Usage: node scripts/asnaf_simulator.js ACTION request.json');
- const url=new URL(process.env.ASNAF_TEST_API_ORIGIN||'');
+ let url;try{url=new URL(process.env.ASNAF_TEST_API_ORIGIN||'');}catch{throw Error('Select an HTTPS staging origin or loopback origin');}
  if(!(url.protocol==='https:'||url.protocol==='http:'&&['localhost','127.0.0.1'].includes(url.hostname))||url.username||url.password||url.pathname!=='/'||url.search||url.hash)throw Error('Select an HTTPS staging origin or loopback origin');
  if(process.env.ASNAF_TEST_CONFIRMED!=='true')throw Error('Set ASNAF_TEST_CONFIRMED=true only for the intended disposable test scope');
  const response=await fetch(`${url.origin}/asnaf/${action}`,{method:'POST',redirect:'error',headers:{'Content-Type':'application/json'},body:fs.readFileSync(file,'utf8'),signal:AbortSignal.timeout(20000)});
