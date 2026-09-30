@@ -3,7 +3,16 @@ const firebaseApp = require('./db');
 const firebase = require('firebase');
 const fireStore = firebaseApp.firestore();
 const FieldValue = firebase.firestore.FieldValue;
-const { buildEinvoiceOrderFromBody } = require('./util/build_einvoice_order');
+const {
+  buildEinvoiceOrderFromBody,
+  deviceCompanyMismatch,
+} = require('./util/build_einvoice_order');
+const {
+  buildCeriaDeductOrderData,
+  ceriaDeductReceiptKey,
+  buildReceiptClaim,
+  duplicateDeductResponse,
+} = require('./util/ceria_deduct_order');
 const {
   encryptEmployeeId,
   decryptEmployeeId,
@@ -1714,6 +1723,11 @@ async function ceriaDeductBalanceCore(body) {
     return { success: false, code: built.code || 'INVALID_REQUEST', message: built.message };
   }
 
+  const companyMismatch = deviceCompanyMismatch(built.machine, companyId);
+  if (companyMismatch) {
+    return { success: false, code: companyMismatch.code, message: companyMismatch.message };
+  }
+
   const amountRm = roundRm(built.grandTotal);
   if (amountRm <= 0) {
     return { success: false, code: 'INVALID_AMOUNT', message: 'amount must be greater than 0' };
@@ -1731,9 +1745,21 @@ async function ceriaDeductBalanceCore(body) {
   const dayKey = todayDayKey(timeZone);
   const localDate = nowInTimeZone(timeZone);
 
+  const receiptId = String(body.receipt_id || '').trim();
+  const claimRef = fireStore
+    .collection('ceria_hub')
+    .doc(companyId)
+    .collection('deduct_receipts')
+    .doc(ceriaDeductReceiptKey(receiptId));
+
   let deductResult;
   try {
     deductResult = await fireStore.runTransaction(async (tx) => {
+      const claimSnap = await tx.get(claimRef);
+      if (claimSnap.exists) {
+        return { duplicate: true, claim: claimSnap.data() || {} };
+      }
+
       const ceriaSnap = await tx.get(resolved.ceriaRef);
       const userSnap = await tx.get(resolved.userRef);
 
@@ -1775,11 +1801,38 @@ async function ceriaDeductBalanceCore(body) {
       tx.set(resolved.userRef, patch, { merge: true });
       tx.set(resolved.ceriaRef, patch, { merge: true });
 
+      const companyPaymentDetail = buildCompanyPaymentDetail({
+        companyId,
+        beforeWallet,
+        afterWallet: split.updated,
+        fromCorporate: split.fromCorporate,
+        fromSelf: split.fromSelf,
+        dayKey,
+      });
+      const balancesAfter = ceriaDeductBalancesAfter(split.updated);
+      tx.set(
+        claimRef,
+        buildReceiptClaim({
+          receiptId,
+          orderId: built.id,
+          userDocId: resolved.userDocId,
+          employeeId,
+          amountRm,
+          fromCorporate: split.fromCorporate,
+          fromSelf: split.fromSelf,
+          balancesAfter,
+          companyPaymentDetail,
+          createdAt: new Date(),
+        }),
+      );
+
       return {
+        duplicate: false,
         fromCorporate: split.fromCorporate,
         fromSelf: split.fromSelf,
         updated: split.updated,
-        beforeWallet,
+        companyPaymentDetail,
+        balancesAfter,
       };
     });
   } catch (error) {
@@ -1800,23 +1853,24 @@ async function ceriaDeductBalanceCore(body) {
     throw error;
   }
 
-  const companyPaymentDetail = buildCompanyPaymentDetail({
-    companyId,
-    beforeWallet: deductResult.beforeWallet,
-    afterWallet: deductResult.updated,
-    fromCorporate: deductResult.fromCorporate,
-    fromSelf: deductResult.fromSelf,
-    dayKey,
-  });
+  if (deductResult.duplicate) {
+    console.log('[CeriaDeduct] Duplicate receipt, no deduction', {
+      companyId,
+      receiptId,
+      orderId: deductResult.claim.order_id,
+    });
+    return duplicateDeductResponse(deductResult.claim, {
+      employeeId,
+      reference: body.reference,
+    });
+  }
 
-  const orderData = {
-    ...built.orderData,
-    employee_id: employeeId,
-    company_id: companyId,
-    is_corporate: true,
-    corporate: true,
-    company_payment_detail: companyPaymentDetail,
-  };
+  const { companyPaymentDetail } = deductResult;
+  const orderData = buildCeriaDeductOrderData(built.orderData, {
+    employeeId,
+    companyId,
+    companyPaymentDetail,
+  });
 
   try {
     await saveCeriaDeductOrders(orderData, built.storeId, resolved.userDocId);
@@ -1843,9 +1897,6 @@ async function ceriaDeductBalanceCore(body) {
     };
   }
 
-  const dailyLimit = deductResult.updated[NEST.corporate_daily_limit];
-  const spent = deductResult.updated[NEST.corporate_spent_today];
-
   return {
     success: true,
     ok: true,
@@ -1858,19 +1909,32 @@ async function ceriaDeductBalanceCore(body) {
       fromCorporate: deductResult.fromCorporate,
       fromSelf: deductResult.fromSelf,
     },
-    balancesAfter: {
-      corporateBalance: deductResult.updated[NEST.corporate_balance],
-      selfBalance: deductResult.updated[NEST.self],
-      corporateSpentToday: spent,
-      remainingToday: dailyLimit > 0 ? Math.max(0, roundRm(dailyLimit - spent)) : null,
-    },
+    balancesAfter: deductResult.balancesAfter,
     companyPaymentDetail,
   };
 }
 
+function ceriaDeductBalancesAfter(updatedWallet) {
+  const dailyLimit = updatedWallet[NEST.corporate_daily_limit];
+  const spent = updatedWallet[NEST.corporate_spent_today];
+  return {
+    corporateBalance: updatedWallet[NEST.corporate_balance],
+    selfBalance: updatedWallet[NEST.self],
+    corporateSpentToday: spent,
+    remainingToday: dailyLimit > 0 ? Math.max(0, roundRm(dailyLimit - spent)) : null,
+  };
+}
+
 function ceriaBalanceHttpStatus(code) {
-  if (code === 'EMPLOYEE_NOT_FOUND') return 404;
-  if (code === 'EMPLOYEE_INACTIVE' || code === 'INSUFFICIENT_BALANCE') return 409;
+  if (code === 'EMPLOYEE_NOT_FOUND' || code === 'DEVICE_NOT_FOUND') return 404;
+  if (code === 'DEVICE_COMPANY_MISMATCH') return 403;
+  if (
+    code === 'EMPLOYEE_INACTIVE' ||
+    code === 'INSUFFICIENT_BALANCE' ||
+    code === 'RECEIPT_ALREADY_USED'
+  ) {
+    return 409;
+  }
   if (code === 'ORDER_SAVE_FAILED') return 500;
   return 400;
 }

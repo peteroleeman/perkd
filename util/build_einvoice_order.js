@@ -10,9 +10,6 @@ const REQUIRED_ITEM_FIELDS = [
   'goods_sku',
 ];
 
-const DEFAULT_STORE_ID = 'S_eeb1c111-2df6-4ecc-a66f-202e5b9a38cf';
-const DEFAULT_STORE_TITLE = 'Fudmart';
-
 /**
  * Format date to YYYY-MM-DD HH:mm:ss.SSS format
  * @param {Date} date
@@ -38,13 +35,13 @@ function validateEinvoiceBody(body) {
     return { ok: false, code: 'INVALID_BODY', message: 'Request body is missing or empty' };
   }
 
-  const { receipt_id, amount, currency, device_number, list, merchant_id } = body;
-  if (!receipt_id || !currency || !device_number || !list || !merchant_id) {
+  const { receipt_id, currency, device_number, list } = body;
+  if (!receipt_id || !currency || !device_number || !list) {
     return {
       ok: false,
       code: 'MISSING_FIELDS',
       message:
-        'Missing required fields. Please provide receipt_id, amount, currency, device_number, list, and merchant_id',
+        'Missing required fields. Please provide receipt_id, currency, device_number, and list',
     };
   }
 
@@ -70,18 +67,54 @@ function validateEinvoiceBody(body) {
   return { ok: true, body };
 }
 
+function firstStoreId(machine) {
+  const storeIds = machine.storeids || machine.storeIds || [];
+  if (!Array.isArray(storeIds) || storeIds.length === 0) return '';
+  return String(storeIds[0] || '').trim();
+}
+
 /**
- * Build order document from /pos/einvoice-style payload.
+ * @param {object} machine
+ * @param {string} companyId
+ * @returns {{ code: string, message: string } | null}
+ */
+function deviceCompanyMismatch(machine, companyId) {
+  const machineCompanyId = String((machine && machine.companyid) || '').trim();
+  if (!machineCompanyId || machineCompanyId === String(companyId || '').trim()) {
+    return null;
+  }
+  return {
+    code: 'DEVICE_COMPANY_MISMATCH',
+    message: 'Device is not registered to this company',
+  };
+}
+
+async function resolveStoreTitle(fireStore, storeId, machine) {
+  const fromMachine = String((machine && machine.title) || '').trim();
+  if (fromMachine) return fromMachine;
+  const storeSnap = await fireStore.collection('store').doc(storeId).get();
+  const fromStore =
+    storeSnap.exists && storeSnap.data()
+      ? String(storeSnap.data().title || '').trim()
+      : '';
+  return fromStore || 'Unknown Store';
+}
+
+/**
+ * Build order document from a Ceria deduct payload.
+ * Machine comes from merchant_device.fridgemid === device_number; storeid is
+ * its first storeids entry and storetitle is its title (store title only if blank).
+ * merchant_id on the body is ignored.
  * @param {object} body
  * @param {import('firebase-admin').firestore.Firestore} fireStore
  * @param {{ paymentType?: string, mode?: string, orderId?: string }} [options]
- * @returns {Promise<{ ok: false, code: string, message: string } | { ok: true, orderData: object, storeId: string, id: string, grandTotal: number, subtotal: number }>}
+ * @returns {Promise<{ ok: false, code: string, message: string } | { ok: true, orderData: object, storeId: string, id: string, grandTotal: number, subtotal: number, machine: object }>}
  */
 async function buildEinvoiceOrderFromBody(body, fireStore, options = {}) {
   const validated = validateEinvoiceBody(body);
   if (!validated.ok) return validated;
 
-  const { receipt_id, amount, currency, device_number, list, merchant_id } = validated.body;
+  const { receipt_id, amount, currency, device_number, list } = validated.body;
   const paymentType = options.paymentType || 'E-Invoice';
   const mode = options.mode || 'einvoice';
   const id = options.orderId || `O_${uuidv4()}`;
@@ -89,65 +122,36 @@ async function buildEinvoiceOrderFromBody(body, fireStore, options = {}) {
   const subtotal = list.reduce((sum, item) => sum + item.goods_count * item.goods_price, 0);
   const grandTotal = parseFloat(amount || subtotal) || 0;
 
-  console.log(
-    'Querying vending_merchant for merchant_id:',
-    merchant_id,
-    'device number:',
-    device_number,
-  );
+  console.log('Querying merchant_device for fridgemid:', device_number);
+  const machineModelQuery = await fireStore
+    .collection('merchant_device')
+    .where('fridgemid', '==', device_number)
+    .limit(1)
+    .get();
 
-  const merchantRef = fireStore.collection('vending_merchant').doc(merchant_id);
-  const merchantDoc = await merchantRef.get();
-  let storeId = DEFAULT_STORE_ID;
-  let storeTitle = DEFAULT_STORE_TITLE;
-
-  if (!merchantDoc.exists) {
-    console.error('Merchant not found, use default', merchant_id);
-  } else {
-    const merchantData = merchantDoc.data();
-    storeId = merchantData.storeid;
-    storeTitle = merchantData.title || 'Unknown Store';
+  if (machineModelQuery.empty) {
+    return {
+      ok: false,
+      code: 'DEVICE_NOT_FOUND',
+      message: `No machine found in merchant_device for device_number (fridgemid): ${device_number}`,
+    };
   }
 
+  const machine = machineModelQuery.docs[0].data() || {};
+  const storeId = firstStoreId(machine);
   if (!storeId) {
     return {
       ok: false,
       code: 'STORE_NOT_FOUND',
-      message: `Store ID not found for merchant ${merchant_id}`,
+      message: 'Machine model has no store linked (storeids empty).',
     };
   }
 
+  const storeTitle = await resolveStoreTitle(fireStore, storeId, machine);
+  const vendingDeviceNumber = machine.vendingdevicenumber || device_number;
+  const vendingMerchantId = machine.vendingmerchantid || '';
+
   console.log('Found store ID:', storeId);
-
-  let vendingDeviceNumber = device_number;
-  let vendingMerchantId = merchant_id;
-
-  try {
-    console.log('Querying merchant_device for fridgemid:', device_number);
-    const machineModelQuery = await fireStore
-      .collection('merchant_device')
-      .where('fridgemid', '==', device_number)
-      .limit(1)
-      .get();
-
-    if (!machineModelQuery.empty) {
-      const machineModel = machineModelQuery.docs[0].data();
-      if (machineModel.vendingdevicenumber) {
-        vendingDeviceNumber = machineModel.vendingdevicenumber;
-      }
-      if (machineModel.vendingmerchantid) {
-        vendingMerchantId = machineModel.vendingmerchantid;
-      }
-    } else {
-      console.log(
-        'Machine model not found in merchant_device with fridgemid:',
-        device_number,
-        '- using original device_number and merchant_id',
-      );
-    }
-  } catch (machineModelError) {
-    console.error('Error querying merchant_device:', machineModelError);
-  }
 
   const orderitems = list.map((item) => ({
     id: item.goods_id,
@@ -167,7 +171,7 @@ async function buildEinvoiceOrderFromBody(body, fireStore, options = {}) {
     id,
     orderid: receipt_id,
     storetitle: storeTitle,
-    store_merchant_code: merchant_id,
+    store_merchant_code: vendingMerchantId,
     orderdatetime: formatOrderDateTime(),
     payment_type: paymentType,
     subtotal,
@@ -180,6 +184,7 @@ async function buildEinvoiceOrderFromBody(body, fireStore, options = {}) {
     merchantid: vendingMerchantId,
     storeid: storeId,
     store_id: storeId,
+    machine_model_id: machine.id,
     totalqty: totalQty,
     totalprice: totalPrice,
     totalpaid: totalPaid,
@@ -194,11 +199,13 @@ async function buildEinvoiceOrderFromBody(body, fireStore, options = {}) {
     id,
     grandTotal,
     subtotal,
+    machine,
   };
 }
 
 module.exports = {
   buildEinvoiceOrderFromBody,
   validateEinvoiceBody,
+  deviceCompanyMismatch,
   formatOrderDateTime,
 };
