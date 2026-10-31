@@ -3,6 +3,9 @@ const axios = require('axios');
 const crypto = require('crypto');
 const UtilFeie = require("./feie/util_feie");
 const UtilFeieReceipt = require('./util/util_feie_receipt');
+const { buildFeieNewReceipt } = require('./util/util_feie_new_receipt');
+const { buildFeieNormalSlip } = require('./util/util_feie_normal_slip');
+const { buildFeieCancellationSlip } = require('./util/util_feie_cancellation_slip');
 const {
   normalizeOrderSlipStyle,
   printOrderItemSlipPOSByStyle,
@@ -53,12 +56,21 @@ class PosRouter {
     // Add printOrderSlipEx endpoints
     this.router.post('/kdsorderslipex', this.handlePrintOrderSlipExCN.bind(this));
     this.router.post('/kdsorderslipexap', this.handlePrintOrderSlipExJP.bind(this));
+    this.router.post('/newkdsorderslipex', this.handlePrintNewOrderSlipExCN.bind(this));
+    this.router.post('/newkdsorderslipexap', this.handlePrintNewOrderSlipExJP.bind(this));
     // Same slip layout as above; optional body.cancelled (default false). When true, prints ORDER CANCELLED after order mode and DO NOT PREPARE at the bottom.
     this.router.post('/kdsorderslipexcancel', this.handlePrintOrderSlipExCancelCN.bind(this));
     this.router.post('/kdsorderslipexapcancel', this.handlePrintOrderSlipExCancelJP.bind(this));
+    this.router.post('/newkdsorderslipexcancel', this.handlePrintNewOrderSlipExCancelCN.bind(this));
+    this.router.post('/newkdsorderslipexapcancel', this.handlePrintNewOrderSlipExCancelJP.bind(this));
 
     this.router.post('/kdsreceipt', this.handlePrintReceiptCN.bind(this));
     this.router.post('/kdsreceiptap', this.handlePrintReceiptJP.bind(this));
+    // Same receipt template as /kdsreceiptap, with a *VOID* banner at the top.
+    this.router.post('/kdsreceiptapvoid', this.handlePrintReceiptVoidJP.bind(this));
+    this.router.post('/newkdsreceipt', this.handlePrintNewReceiptCN.bind(this));
+    this.router.post('/newkdsreceiptap', this.handlePrintNewReceiptJP.bind(this));
+    this.router.post('/newkdsreceiptapvoid', this.handlePrintNewReceiptVoidJP.bind(this));
     
     // Add label printing endpoint
     this.router.post('/printlabelap', this.handlePrintLabel.bind(this));
@@ -105,12 +117,150 @@ class PosRouter {
     return this.printOrderSlipEx(req, res, true, true);
   }
 
+
+
+  async handlePrintNewOrderSlipExCN(req, res) {
+    return this.printNewOrderSlipEx(req, res, false);
+  }
+
+  async handlePrintNewOrderSlipExJP(req, res) {
+    return this.printNewOrderSlipEx(req, res, true);
+  }
+
+  async printNewOrderSlipEx(req, res, isJP) {
+    if (!req.body) {
+      res.status(400).json({ error: 'Request body is missing or empty' });
+      return;
+    }
+    const requiredFields = ['sn', 'orderId', 'orderItems', 'type', 'isReprint'];
+    for (const field of requiredFields) {
+      if (!(field in req.body)) {
+        res.status(400).json({ error: `Missing required field: ${field}` });
+        return;
+      }
+    }
+    if (!Array.isArray(req.body.orderItems)) {
+      res.status(400).json({ error: 'orderItems must be an array' });
+      return;
+    }
+
+    const feie = new UtilFeie();
+    const style = normalizeOrderSlipStyle(req.body.style);
+    try {
+      const order = feie.createFeieOrderSlipFromJSON(req.body);
+      const content = buildFeieNormalSlip(feie, order, req.body.isReprint, req.body.type, style);
+      const result = await feie.printFeie2(order.sn, content, isJP);
+      res.json({ message: result });
+    } catch (ex) {
+      console.log(ex);
+      res.status(401).json({ error: ex });
+    }
+  }
+
+  async handlePrintNewOrderSlipExCancelCN(req, res) {
+    return this.printNewOrderSlipExCancel(req, res, false);
+  }
+
+  async handlePrintNewOrderSlipExCancelJP(req, res) {
+    return this.printNewOrderSlipExCancel(req, res, true);
+  }
+
+  async printNewOrderSlipExCancel(req, res, isJP) {
+    if (!req.body) {
+      res.status(400).json({ error: 'Request body is missing or empty' });
+      return;
+    }
+    const requiredFields = ['sn', 'orderId', 'orderItems', 'type', 'isReprint'];
+    for (const field of requiredFields) {
+      if (!(field in req.body)) {
+        res.status(400).json({ error: `Missing required field: ${field}` });
+        return;
+      }
+    }
+    if (!Array.isArray(req.body.orderItems)) {
+      res.status(400).json({ error: 'orderItems must be an array' });
+      return;
+    }
+
+    const feie = new UtilFeie();
+    const style = normalizeOrderSlipStyle(req.body.style);
+    try {
+      const order = feie.createFeieOrderSlipFromJSON(req.body);
+      const content = req.body.cancelled === true
+        ? buildFeieCancellationSlip(order, req.body.type, style)
+        : printOrderItemSlipPOSByStyle(feie, order, req.body.isReprint, req.body.type, false, style);
+      const result = await feie.printFeie2(order.sn, content, isJP);
+      res.json({ message: result });
+    } catch (ex) {
+      console.log(ex);
+      res.status(401).json({ error: ex });
+    }
+  }
+
   async handlePrintReceiptCN(req, res) {
     return this.printReceipt(req, res, false);
   }
 
   async handlePrintReceiptJP(req, res) {
     return this.printReceipt(req, res, true);
+  }
+
+  async handlePrintReceiptVoidJP(req, res) {
+    return this.printReceipt(req, res, true, true);
+  }
+
+
+  async handlePrintNewReceiptCN(req, res) {
+    return this.printNewReceipt(req, res, false);
+  }
+
+  async handlePrintNewReceiptJP(req, res) {
+    return this.printNewReceipt(req, res, true);
+  }
+
+  async handlePrintNewReceiptVoidJP(req, res) {
+    return this.printNewReceipt(req, res, true, true);
+  }
+
+  async printNewReceipt(req, res, isJP, isVoid = false) {
+    const feie = new UtilFeie();
+
+    if (!req.body) {
+      res.status(400).json({ error: 'Request body is missing or empty' });
+      return;
+    }
+
+    const requiredFields = ['sn', 'orderId', 'orderItems'];
+    for (const field of requiredFields) {
+      if (!(field in req.body)) {
+        res.status(400).json({ error: `Missing required field: ${field}` });
+        return;
+      }
+    }
+
+    if (!Array.isArray(req.body.orderItems)) {
+      res.status(400).json({ error: 'orderItems must be an array' });
+      return;
+    }
+
+    const receiptType = Number(req.body.type) === 1 ? 1 : 0;
+    const isReprint = req.body.isReprint === true;
+
+    try {
+      const storeModel = { title: req.body.storeTitle, id: req.body.storeId };
+      const receiptLines = buildFeieNewReceipt(
+        storeModel,
+        req.body,
+        { bReprint: isReprint, type: receiptType, bVoid: isVoid }
+      );
+      const feieResult = await feie.printFeie2(req.body.sn, receiptLines, isJP);
+
+      res.json({ message: feieResult });
+    }
+    catch(ex) {
+      console.log(ex);
+      res.status(401).json({ error: ex });
+    }
   }
 
   async handlePrintLabel(req, res) {
@@ -251,7 +401,7 @@ class PosRouter {
     }
   }
 
-  async printReceipt(req, res, isJP) {
+  async printReceipt(req, res, isJP, isVoid = false) {
     const feie = new UtilFeie();
 
     if (!req.body) {
@@ -280,7 +430,7 @@ class PosRouter {
       const receiptLines = UtilFeieReceipt.printOrderReceiptFromOrder(
         storeModel,
         req.body,
-        { bReprint: isReprint, type: receiptType }
+        { bReprint: isReprint, type: receiptType, bVoid: isVoid }
       );
       const feieResult = await feie.printFeie2(req.body.sn, receiptLines, isJP);
 

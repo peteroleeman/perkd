@@ -154,7 +154,7 @@ class UtilFeieReceipt {
    * @returns {string[]} Receipt lines for Feie
    */
   static printOrderReceiptFromOrder(storeModel, orderModel, opts = {}) {
-    const { bReprint = false, type = 0 } = opts;
+    const { bReprint = false, type = 0, bVoid = false } = opts;
     const receipt = [];
     const receiptWidth = type === 1 ? 48 : 32;
     const keyLen = 10;
@@ -169,6 +169,13 @@ class UtilFeieReceipt {
       line.refresh();
       line.init(receiptWidth);
       line.addMarkupLine(ReceiptFormat.setCenterBIG('*DUPLICATE*'));
+      flushLine(line, receipt);
+    }
+
+    if (bVoid === true) {
+      line.refresh();
+      line.init(receiptWidth);
+      line.addMarkupLine(ReceiptFormat.setCenterBIG('*VOID*'));
       flushLine(line, receipt);
     }
 
