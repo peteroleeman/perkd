@@ -1,0 +1,9 @@
+# Cloud Run / gcloud builds: only paths listed here are excluded from the upload.
+# Do NOT add sqlAccountCredentials.json — the app reads it at repo root (util/sqlAccountCredentials.js).
+.git
+.idea
+node_modules
+.cursor
+agent-transcripts
+**.ps1
+**/*.map
