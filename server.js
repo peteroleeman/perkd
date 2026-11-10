@@ -36,6 +36,7 @@ var LalamoveRouter = require('./lalamoverouter');
 var CronRouter = require('./cronrouter');
 var CeriaRouter = require('./ceriarouter');
 var AsnafRouter = require('./asnafrouter');
+var HoroscopeRouter = require('./horoscoperouter');
 
 
 var {Logging} = require('@google-cloud/logging');
@@ -238,6 +239,7 @@ app.use('/user', myUser.getRouter());
 
 const ceriaRouter = new CeriaRouter();
 app.use('/ceria', ceriaRouter.getRouter());
+app.use('/horoscope', new HoroscopeRouter().getRouter());
 app.use('/asnaf', new AsnafRouter().getRouter());
 
 //for kaotimhq

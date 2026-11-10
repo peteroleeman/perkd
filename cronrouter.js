@@ -39,6 +39,10 @@ class CronRouter {
       process.env.KDS_PREP_MONITOR_HTTP_URI ||
       'https://sql-app-261774603679.asia-east1.run.app/kds/preparation-monitor';
 
+    this.horoscopeRefreshHttpUri =
+      process.env.HOROSCOPE_REFRESH_HTTP_URI ||
+      'https://crm--app-261774603679.asia-east1.run.app/horoscope/refresh-daily';
+
     this._client = null;
     this.initializeRoutes();
   }
@@ -155,6 +159,10 @@ class CronRouter {
     this.router.post(
       '/scheduler/prep-monitor',
       this.createPrepMonitorJob.bind(this),
+    );
+    this.router.post(
+      '/scheduler/horoscope-daily',
+      this.createHoroscopeDailyJob.bind(this),
     );
     this.router.get('/scheduler/jobs', this.listJobs.bind(this));
     this.router.delete('/scheduler/jobs/:jobId', this.deleteJob.bind(this));
@@ -451,6 +459,60 @@ class CronRouter {
       });
     } catch (error) {
       console.error('[CronRouter] createPrepMonitorJob:', error);
+      return res.status(500).json({
+        success: false,
+        error: error.message || String(error),
+      });
+    }
+  }
+
+  /**
+   * Creates one Cloud Scheduler job that POSTs to the crm-app horoscope refresh.
+   * Existing stock, prep-monitor, and Ceria jobs are not changed.
+   *
+   * POST /cron/scheduler/horoscope-daily
+   * Body: { cronSchedule | time, name?, description?, timeZone? }
+   * Empty body uses horoscope-daily at 06:00 Asia/Kuala_Lumpur.
+   */
+  async createHoroscopeDailyJob(req, res) {
+    try {
+      const body = req.body || {};
+      const cronSchedule = this.resolveCronSchedule(body) || '0 6 * * *';
+      const schedulerTz =
+        (body.timeZone && String(body.timeZone).trim()) || this.timeZone;
+      const nameInput = body.name && String(body.name).trim();
+      const jobId = this.sanitizeJobId(nameInput || 'horoscope-daily');
+      const parent = this.parentPath();
+      const jobName = `${parent}/jobs/${jobId}`;
+      const httpBody = {};
+      const job = {
+        name: jobName,
+        description:
+          body.description ||
+          'Daily horoscope refresh for all 12 signs',
+        schedule: cronSchedule,
+        timeZone: schedulerTz,
+        httpTarget: {
+          uri: this.horoscopeRefreshHttpUri,
+          httpMethod: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: Buffer.from(JSON.stringify(httpBody)).toString('base64'),
+        },
+      };
+      const client = this.getClient();
+      const [response] = await client.createJob({ parent, job });
+      return res.json({
+        success: true,
+        job: response,
+        horoscopeRefreshHttpUri: this.horoscopeRefreshHttpUri,
+        schedulerHttpBody: httpBody,
+        cronSchedule,
+        timeZone: schedulerTz,
+      });
+    } catch (error) {
+      console.error('[CronRouter] createHoroscopeDailyJob:', error);
       return res.status(500).json({
         success: false,
         error: error.message || String(error),

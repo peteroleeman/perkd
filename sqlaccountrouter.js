@@ -1,4 +1,5 @@
 const express = require('express');
+const {applyKitchenReceipt, businessDate, addCashSaleLineNumbers} = require('./util/kitchenCashSaleReceipt');
 const { sendRequest, buildQuery } = require('./api/APICommon.cjs');
 const { getCredentialsForStore } = require('./util/sqlAccountCredentials');
 require('./db'); // Initialize firebase app
@@ -889,7 +890,7 @@ class SqlAccountRouter {
         return res.status(400).json({ message: "Cash sales payload is required." });
       }
       const storeId = this.getStoreIdFromRequest(req);
-      const data = await this._requestWithOptionalStore(storeId, "POST", this.CASH_SALES_BASE_PATH, req.body);
+      const data = await this._requestWithOptionalStore(storeId, "POST", this.CASH_SALES_BASE_PATH, addCashSaleLineNumbers(req.body));
       res.status(201).json({ status: "created", data });
     } catch (error) {
       res.status(error.response?.status || 500).json(this.buildError(error));
@@ -1073,10 +1074,11 @@ class SqlAccountRouter {
   async getCustomerPayment(req, res) {
     try {
       const docno = req.query.docno || req.query.docNo;
+      const storeId = this.getStoreIdFromRequest(req);
       if (docno) {
-        console.log('[CUSTOMER PAYMENT] getCustomerPayment (by docno):', docno);
+        console.log('[CUSTOMER PAYMENT] getCustomerPayment (by docno):', docno, 'storeId=', storeId ?? 'none');
         const query = buildQuery({ docno });
-        const data = await sendRequest("GET", this.CUSTOMER_PAYMENT_PATH, null, query);
+        const data = await this._requestWithOptionalStore(storeId, "GET", this.CUSTOMER_PAYMENT_PATH, null, query);
         return res.json(data);
       }
 
@@ -1086,7 +1088,7 @@ class SqlAccountRouter {
         : this.CUSTOMER_PAYMENT_REMOTE_PAGE_LIMIT;
       console.log('[CUSTOMER PAYMENT] getCustomerPayment (list): offset=', offset, 'limit=', limit);
       const query = buildQuery({ offset, limit });
-      const data = await sendRequest("GET", this.CUSTOMER_PAYMENT_PATH, null, query);
+      const data = await this._requestWithOptionalStore(storeId, "GET", this.CUSTOMER_PAYMENT_PATH, null, query);
       res.json(data);
     } catch (error) {
       console.warn('[CUSTOMER PAYMENT] getCustomerPayment error:', error.response?.status, error.message);
@@ -1180,6 +1182,182 @@ class SqlAccountRouter {
   }
 
   /**
+   * Rows from a SQL Account list response ({ data: [...] }, { items: [...] }, array, or single record).
+   * @param {any} payload
+   * @returns {Array<Object>}
+   */
+  extractRecords(payload) {
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload.data)) return payload.data;
+    if (Array.isArray(payload.items)) return payload.items;
+    if (typeof payload === 'object' && payload.docno != null) return [payload];
+    return [];
+  }
+
+  /**
+   * True when a SQL Account error / body means "no record" (e.g. 400 {"data":{"error":{"message":"No record found."}}}).
+   * @param {any} error - axios-style error or response body
+   * @returns {boolean}
+   */
+  isNoRecordError(error) {
+    const body = error?.response?.data ?? error;
+    let text = '';
+    try {
+      text = typeof body === 'string' ? body : JSON.stringify(body || {});
+    } catch (_) {
+      text = String(body);
+    }
+    return text.toLowerCase().includes('no record found');
+  }
+
+  /**
+   * SQL `docdate` (`yyyy-MM-dd`, `yyyy-MM-ddTHH:mm:ss` or `yyyyMMdd`) as `yyyyMMdd`.
+   * '' when unreadable or when it carries a timezone (Z / +hh:mm), because the calendar day
+   * could then differ from the one SQL shows.
+   */
+  normalizeSqlDocdate(value) {
+    const s = String(value ?? '').trim();
+    if (/^\d{8}$/.test(s)) return s;
+    const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$/.exec(s);
+    return m ? `${m[1]}${m[2]}${m[3]}` : '';
+  }
+
+  /** SQL cash sales / payment `cancelled` flag (bool, 1, or "true"). */
+  isCancelledFlag(value) {
+    if (value === true || value === 1 || value === '1') return true;
+    return String(value ?? '').trim().toLowerCase() === 'true';
+  }
+
+  /**
+   * Look up one customer payment by exact docno.
+   * @returns {Promise<{ state: 'found'|'notFound'|'error', record: Object|null, message: string }>}
+   */
+  async helperFindCustomerPaymentByDocno({ docno, storeId = null }) {
+    const wanted = String(docno || '').trim();
+    if (!wanted) return { state: 'error', record: null, message: 'docno is required.' };
+    try {
+      const query = buildQuery({ docno: wanted });
+      const list = await this._requestWithOptionalStore(storeId, "GET", this.CUSTOMER_PAYMENT_PATH, null, query);
+      const record = this.extractRecords(list).find((r) => String(r?.docno ?? '').trim() === wanted) || null;
+      return record
+        ? { state: 'found', record, message: '' }
+        : { state: 'notFound', record: null, message: '' };
+    } catch (e) {
+      if (this.isNoRecordError(e)) return { state: 'notFound', record: null, message: '' };
+      return {
+        state: 'error',
+        record: null,
+        message: e.response?.data?.message || e.message || 'Customer payment lookup failed.',
+      };
+    }
+  }
+
+  /** "cash" | "creditcard" | "ewallet"; must match the POS and kitchen apps. */
+  paymentCategoryForSqlAccount(paymentType) {
+    let t = String(paymentType || '').toLowerCase().trim();
+    // A voided order keeps its method behind a `void_` prefix (for example `void_8`).
+    if (t.startsWith('void_')) t = t.substring(5).trim();
+    if (t === 'cash' || t === 'cod' || t === '2') return 'cash';
+    if (t.includes('credit card') || t.includes('creditcard') || t === '8') return 'creditcard';
+    if (t.includes('touch') || t.includes('grab') || t.includes('ewallet') ||
+        t.includes('e-wallet') || t.includes('razor') || t.includes('ipay') ||
+        t.includes('epayment') || t === '0' || t === '1') return 'ewallet';
+    return 'cash';
+  }
+
+  /**
+   * Mixed payments posted without paymentBreakdown were named `{docno}_{raw paymentType}`.
+   * Looks for such a payment of [category] so an existing cash sale does not get a second one.
+   * @returns {Promise<{ state: 'found'|'notFound'|'error', docno: string, message: string }>}
+   */
+  async helperFindLegacyCustomerPayment({ order, cashSalesDocno, category, storeId = null }) {
+    const mixedpayments = order?.mixedpayments || order?.mixedPayments;
+    if (!Array.isArray(mixedpayments) || mixedpayments.length === 0) {
+      return { state: 'notFound', docno: '', message: '' };
+    }
+    const categoryDocno = `${cashSalesDocno}_${category}`;
+    const docnos = [];
+    for (const item of mixedpayments) {
+      const raw = item?.paymentType != null ? String(item.paymentType).trim() : '';
+      if (!raw || this.paymentCategoryForSqlAccount(raw) !== category) continue;
+      const docno = `${cashSalesDocno}_${raw}`;
+      if (docno !== categoryDocno && !docnos.includes(docno)) docnos.push(docno);
+    }
+    for (const docno of docnos) {
+      const found = await this.helperFindCustomerPaymentByDocno({ docno, storeId });
+      if (found.state === 'found') {
+        if (!this.isCancelledFlag(found.record?.cancelled)) {
+          return { state: 'found', docno, message: '' };
+        }
+        continue;
+      }
+      if (found.state === 'error') return { state: 'error', docno, message: found.message };
+    }
+    return { state: 'notFound', docno: '', message: '' };
+  }
+
+  /** Replacement docno after a cancel: `X` → `X-1`, `X-1` → `X-2` (same rule as the kitchen app). */
+  nextCashSalesReplacementDocno(docno) {
+    const s = String(docno || '').trim();
+    const m = /^(.+)-(\d+)$/.exec(s);
+    if (m) return `${m[1]}-${Number(m[2]) + 1}`;
+    return `${s}-1`;
+  }
+
+  /**
+   * Follows `X` → `X-1` → … (at most 5 steps) while rows are cancelled; returns the first
+   * active replacement for this project.
+   * @returns {Promise<{ state: 'found'|'notFound'|'error', docno: string, message: string }>}
+   */
+  async helperFindLiveCashSalesReplacement({ docno, project = '', storeId = null }) {
+    let current = String(docno || '').trim();
+    for (let i = 0; i < 5 && current; i++) {
+      const next = this.nextCashSalesReplacementDocno(current);
+      const found = await this.helperFindCashSalesByDocno({ docno: next, project, storeId });
+      if (found.state === 'error') return { state: 'error', docno: next, message: found.message };
+      if (found.state !== 'found') return { state: 'notFound', docno: '', message: '' };
+      if (!this.isCancelledFlag(found.record?.cancelled)) return { state: 'found', docno: next, message: '' };
+      current = next;
+    }
+    return { state: 'notFound', docno: '', message: '' };
+  }
+
+  /**
+   * Look up cash sales by exact docno, matching this store's project when given.
+   * @returns {Promise<{ state: 'found'|'notFound'|'conflict'|'error', record: Object|null, projects: string[], message: string }>}
+   */
+  async helperFindCashSalesByDocno({ docno, project = '', storeId = null }) {
+    const wanted = String(docno || '').trim();
+    const wantedProject = String(project || '').trim().toLowerCase();
+    if (!wanted) return { state: 'error', record: null, projects: [], message: 'docno is required.' };
+    try {
+      const query = buildQuery({ docNo: wanted });
+      const list = await this._requestWithOptionalStore(storeId, "GET", this.CASH_SALES_PATH, null, query);
+      const rows = this.extractRecords(list).filter((r) => String(r?.docno ?? '').trim() === wanted);
+      if (rows.length === 0) return { state: 'notFound', record: null, projects: [], message: '' };
+      if (!wantedProject) return { state: 'found', record: rows[0], projects: [], message: '' };
+      const match = rows.find((r) => String(r?.project ?? '').trim().toLowerCase() === wantedProject);
+      if (match) return { state: 'found', record: match, projects: [], message: '' };
+      const projects = rows.map((r) => String(r?.project ?? '').trim()).filter(Boolean);
+      return {
+        state: 'conflict',
+        record: null,
+        projects,
+        message: `Docno '${wanted}' already exists in SQL for another project (${projects.join(', ') || 'no project'}).`,
+      };
+    } catch (e) {
+      if (this.isNoRecordError(e)) return { state: 'notFound', record: null, projects: [], message: '' };
+      return {
+        state: 'error',
+        record: null,
+        projects: [],
+        message: e.response?.data?.message || e.message || 'Cash sales lookup failed.',
+      };
+    }
+  }
+
+  /**
    * Helper: Create customer payment with docno, code, payment method, amount.
    * @param {Object} params
    * @param {string} params.docno - Document number (e.g. "CS3_2")
@@ -1206,11 +1384,27 @@ class SqlAccountRouter {
     postdate,
     storeId = null,
   }) {
-    const result = { success: false, data: null, message: "" };
+    const result = { success: false, data: null, message: "", alreadyExists: false };
     console.log('[CUSTOMER PAYMENT] helperCreateCustomerPaymentWithParams: docno=', docno, 'code=', code, 'paymentMethod=', paymentMethod, 'amount=', amount, 'storeId=', storeId ?? 'none');
     if (!docno || !code || !paymentMethod) {
       result.message = "docno, code, and paymentMethod are required.";
       console.warn('[CUSTOMER PAYMENT] helperCreateCustomerPaymentWithParams validation failed:', result.message);
+      return result;
+    }
+
+    // Create only when SQL confirms there is no customer payment with this docno.
+    const existing = await this.helperFindCustomerPaymentByDocno({ docno, storeId });
+    if (existing.state === 'found' && !this.isCancelledFlag(existing.record?.cancelled)) {
+      result.success = true;
+      result.alreadyExists = true;
+      result.data = existing.record;
+      result.message = `Customer payment '${docno}' already exists in SQL; not created again.`;
+      console.log('[CUSTOMER PAYMENT] helperCreateCustomerPaymentWithParams skipped (exists): docno=', docno);
+      return result;
+    }
+    if (existing.state === 'error') {
+      result.message = `SQL lookup failed for customer payment '${docno}', not created: ${existing.message}`;
+      console.warn('[CUSTOMER PAYMENT] helperCreateCustomerPaymentWithParams lookup failed:', docno, existing.message);
       return result;
     }
     const date = new Date();
@@ -1273,12 +1467,15 @@ class SqlAccountRouter {
       return result;
     }
     try {
-      const query = buildQuery({ docno: String(docno) });
-      const list = storeId
-        ? await this.sendRequestWithCredentials(storeId, "GET", this.CUSTOMER_PAYMENT_PATH, null, query)
-        : await sendRequest("GET", this.CUSTOMER_PAYMENT_PATH, null, query);
-      const record = this.pickFirstRecord(list);
-      if (!record || record.dockey == null) {
+      const existing = await this.helperFindCustomerPaymentByDocno({ docno, storeId });
+      if (existing.state === 'error') {
+        result.message = `SQL lookup failed for customer payment '${docno}': ${existing.message}`;
+        console.warn('[CUSTOMER PAYMENT] helperVoidCustomerPaymentByDocno lookup failed:', docno, existing.message);
+        return result;
+      }
+      const record = existing.record;
+      if (existing.state !== 'found' || !record || record.dockey == null) {
+        result.notFound = true;
         result.message = `Customer payment with docno '${docno}' not found.`;
         console.warn('[CUSTOMER PAYMENT] helperVoidCustomerPaymentByDocno not found:', docno);
         return result;
@@ -1302,7 +1499,8 @@ class SqlAccountRouter {
   async createCustomerPaymentWithParams(req, res) {
     try {
       const { docno, code, paymentMethod, amount, description, sdsknockoff, knockoffDocno, docdate, postdate } = req.body || {};
-      console.log('[CUSTOMER PAYMENT] createCustomerPaymentWithParams (route): docno=', docno, 'code=', code, 'paymentMethod=', paymentMethod, 'amount=', amount);
+      const storeId = this.getStoreIdFromRequest(req);
+      console.log('[CUSTOMER PAYMENT] createCustomerPaymentWithParams (route): docno=', docno, 'code=', code, 'paymentMethod=', paymentMethod, 'amount=', amount, 'storeId=', storeId ?? 'none');
       const result = await this.helperCreateCustomerPaymentWithParams({
         docno,
         code,
@@ -1313,10 +1511,14 @@ class SqlAccountRouter {
         knockoffDocno,
         docdate,
         postdate,
+        storeId,
       });
       if (result.success) {
+        if (result.alreadyExists) {
+          return res.status(200).json({ status: "exists", alreadyExists: true, message: result.message, data: result.data });
+        }
         console.log('[CUSTOMER PAYMENT] createCustomerPaymentWithParams (route) success: docno=', docno);
-        return res.status(201).json({ status: "created", data: result.data });
+        return res.status(201).json({ status: "created", alreadyExists: false, data: result.data });
       }
       console.warn('[CUSTOMER PAYMENT] createCustomerPaymentWithParams (route) failed: docno=', docno, 'message=', result.message);
       return res.status(400).json({ message: result.message, data: result.data });
@@ -1329,8 +1531,9 @@ class SqlAccountRouter {
   async voidCustomerPaymentByDocno(req, res) {
     try {
       const { docno } = req.body || {};
-      console.log('[CUSTOMER PAYMENT] voidCustomerPaymentByDocno (route): docno=', docno);
-      const result = await this.helperVoidCustomerPaymentByDocno({ docno });
+      const storeId = this.getStoreIdFromRequest(req);
+      console.log('[CUSTOMER PAYMENT] voidCustomerPaymentByDocno (route): docno=', docno, 'storeId=', storeId ?? 'none');
+      const result = await this.helperVoidCustomerPaymentByDocno({ docno, storeId });
       if (result.success) {
         console.log('[CUSTOMER PAYMENT] voidCustomerPaymentByDocno (route) success: docno=', docno);
         return res.json({ status: "voided", data: result.data });
@@ -1349,14 +1552,16 @@ class SqlAccountRouter {
       if (!docno) {
         return res.status(400).json({ message: "docno is required." });
       }
-      console.log('[CUSTOMER PAYMENT] deleteCustomerPaymentByDocno (route): docno=', docno);
-      const result = await this.helperVoidCustomerPaymentByDocno({ docno });
+      const storeId = this.getStoreIdFromRequest(req);
+      console.log('[CUSTOMER PAYMENT] deleteCustomerPaymentByDocno (route): docno=', docno, 'storeId=', storeId ?? 'none');
+      const result = await this.helperVoidCustomerPaymentByDocno({ docno, storeId });
       if (result.success) {
         console.log('[CUSTOMER PAYMENT] deleteCustomerPaymentByDocno (route) success: docno=', docno);
         return res.json({ status: "deleted", data: result.data });
       }
       console.warn('[CUSTOMER PAYMENT] deleteCustomerPaymentByDocno (route) failed: docno=', docno, 'message=', result.message);
-      return res.status(404).json({ message: result.message, data: result.data });
+      const status = result.notFound ? 404 : 502;
+      return res.status(status).json({ message: result.message, notFound: result.notFound === true, data: result.data });
     } catch (error) {
       console.warn('[CUSTOMER PAYMENT] deleteCustomerPaymentByDocno (route) error:', error.response?.status, error.message);
       res.status(error.response?.status || 500).json(this.buildError(error));
@@ -1467,7 +1672,7 @@ class SqlAccountRouter {
   async syncCashSales(req, res) {
     try {
       const payload = this.mapReportOrderToSqlInvoice(req.body || {});
-      const data = await sendRequest("POST", this.CASH_SALES_PATH, payload, "", {
+      const data = await sendRequest("POST", this.CASH_SALES_PATH, addCashSaleLineNumbers(payload), "", {
         headers: req.body?.__headers,
       });
       res.json({ status: "synced", data });
@@ -1811,7 +2016,7 @@ class SqlAccountRouter {
         return res.status(400).json({ message: "Order object is required in request body." });
       }
       const storeId = req.body?.storeId ?? req.body?.storeid ?? req.body?.order?.storeId ?? req.body?.order?.storeid ?? null;
-      const result = await this.helperCreateCashSalesFromOrder({ order: req.body.order, action: 'create', paymentBreakdown: req.body.paymentBreakdown, storeId });
+      const result = await this.helperCreateCashSalesFromOrder({ order: req.body.order, action: 'create', paymentBreakdown: req.body.paymentBreakdown, accountingSnapshot: req.body.accountingSnapshot, storeId });
       if (result.success) {
         res.status(201).json(result);
       } else {
@@ -1835,6 +2040,8 @@ class SqlAccountRouter {
         order: req.body.order, 
         action: 'update',
         cancelled: req.body.cancelled,
+        accountingSnapshot: req.body.accountingSnapshot,
+        updateMode: req.body.updateMode,
         paymentBreakdown: req.body.paymentBreakdown,
         storeId 
       });
@@ -2899,7 +3106,7 @@ class SqlAccountRouter {
     };
 
     try {
-      const data = await this.sendRequestWithCredentials(storeId, "POST", this.CASH_SALES_BASE_PATH, cashSalesData);
+      const data = await this.sendRequestWithCredentials(storeId, "POST", this.CASH_SALES_BASE_PATH, addCashSaleLineNumbers(cashSalesData));
       result.success = true;
       result.data = data;
       result.response = JSON.stringify(data);
@@ -2929,7 +3136,7 @@ class SqlAccountRouter {
    * @param {string|null} options.storeId - Store ID for credentials (optional)
    * @returns {Promise<Object>} Result object with success, message, data, and response
    */
-  async helperUpdateCashSales({ dockey, cashSalesData, storeId = null }) {
+  async helperUpdateCashSales({ dockey, cashSalesData, storeId = null, updateMode }) {
     const result = {
       success: false,
       message: '',
@@ -2955,9 +3162,8 @@ class SqlAccountRouter {
       let finalPayload;
       
       // Check if IRBM fields are being updated
-      const hasIrbmFields = cashSalesData.irbm_uuid !== undefined || 
-                            cashSalesData.irbm_longid !== undefined || 
-                            (cashSalesData.irbm_status !== undefined && cashSalesData.irbm_status !== null);
+      const hasIrbmFields = updateMode === 'irbm' ||
+        (updateMode == null && Boolean(cashSalesData.irbm_uuid && cashSalesData.irbm_longid));
       
       if (cashSalesData.cancelled === true) {
         // use simplified payload for cancellation/voiding
@@ -2992,9 +3198,10 @@ class SqlAccountRouter {
         const now = new Date();
         finalPayload.eiv_utc = now.toISOString();
       } else {
+        const {irbm_status, irbm_uuid, irbm_longid, ...businessFields} = cashSalesData;
         finalPayload = this.removeNullValues({
           ...record,
-          ...cashSalesData,
+          ...businessFields,
           dockey: record.dockey,
           docno: record.docno,
           updatecount: (record.updatecount || 0) + 1,
@@ -3509,7 +3716,7 @@ class SqlAccountRouter {
    * @param {Array|null} options.paymentBreakdown - Array of { paymentType, accountCode, amount } for customer payments (optional)
    * @returns {Promise<Object>} Result object with success, message, data, response, customerCreated, customerResponse, and cashSalesPayload
    */
-  async helperCreateCashSalesFromOrder({ order, action = 'create', storeId = null, cancelled = null, paymentBreakdown = null }) {
+  async helperCreateCashSalesFromOrder({ order, action = 'create', storeId = null, cancelled = null, paymentBreakdown = null, accountingSnapshot = null, updateMode }) {
     const result = {
       success: false,
       message: '',
@@ -3522,7 +3729,21 @@ class SqlAccountRouter {
 
     try {
       // Build cash sales payload using helper function (same structure as invoice)
-      const payload = this.buildInvoicePayloadFromOrder(order);
+      let payload = this.buildInvoicePayloadFromOrder(order);
+      const prepareDocumentWrite = () => {
+        if (accountingSnapshot) {
+          payload = applyKitchenReceipt(payload, accountingSnapshot, order);
+        } else if (order.orderdatetime || order.orderDateTime) {
+          try {
+            const date = businessDate(order.orderdatetime || order.orderDateTime);
+            payload = {...payload, docdate: date, postdate: date, taxdate: date};
+          } catch (error) {
+            if (order.posagentid) throw error;
+            // Older clients can supply an opaque date; retain their original payload.
+          }
+        }
+        result.cashSalesPayload = payload;
+      };
       result.cashSalesPayload = payload;
       console.log('[CASH SALES] payload to be sent:', JSON.stringify(payload, null, 2));
 
@@ -3563,6 +3784,7 @@ class SqlAccountRouter {
       // Step 3: Create or update cash sales (always proceed regardless of customer creation result)
       // Note: Empty sdsdocdetail is allowed - let SQL Account API validate if needed
       let cashSalesResult = null;
+      let updateLeavesSaleCancelled = false;
 
       // Add cancelled field to payload if provided
       if (cancelled !== null && cancelled !== undefined) {
@@ -3579,17 +3801,51 @@ class SqlAccountRouter {
           const docno = payload.docno;
           console.log('🔍 [UPDATE] Searching for cash sale with docno:', docno);
           
-          const query = buildQuery({ docNo: docno });
-          console.log('🔍 [UPDATE] Query string:', query);
-          
-          const existingCashSales = await this.sendRequestWithCredentials(storeId, "GET", this.CASH_SALES_PATH, null, query);
-          console.log('📥 [UPDATE] Existing cash sales response:', JSON.stringify(existingCashSales, null, 2));
-          
-          const existingRecord = this.pickFirstRecord(existingCashSales);
-          console.log('📋 [UPDATE] Picked first record:', JSON.stringify(existingRecord, null, 2));
+          // Same docno can exist once per store project; only touch this store's row.
+          const found = await this.helperFindCashSalesByDocno({
+            docno,
+            project: payload.project,
+            storeId: storeId || order.storeid || order.storeId || null,
+          });
+          if (found.state === 'error') {
+            result.message = `SQL lookup failed, not updated: ${found.message}`;
+            result.response = JSON.stringify({ docno, action: 'update', lookupError: found.message });
+            return result;
+          }
+          if (found.state === 'conflict') {
+            result.docnoConflict = true;
+            result.message = found.message;
+            result.response = JSON.stringify({ docno, action: 'update', docnoConflict: true, projects: found.projects });
+            return result;
+          }
+          const existingRecord = found.record;
+          console.log('📋 [UPDATE] Matched record:', JSON.stringify(existingRecord, null, 2));
           
           if (existingRecord && existingRecord.dockey) {
             console.log('✅ [UPDATE] Found dockey:', existingRecord.dockey);
+            // Without an explicit `cancelled`, the PUT keeps SQL's current state.
+            updateLeavesSaleCancelled = cancelled === true ||
+              (cancelled !== false && this.isCancelledFlag(existingRecord.cancelled));
+
+            // Un-cancelling X while its replacement X-1 is live would count the sale twice.
+            if (cancelled === false && this.isCancelledFlag(existingRecord.cancelled)) {
+              const replacement = await this.helperFindLiveCashSalesReplacement({
+                docno,
+                project: payload.project,
+                storeId: storeId || order.storeid || order.storeId || null,
+              });
+              if (replacement.state === 'error') {
+                result.message = `SQL lookup failed, not updated: ${replacement.message}`;
+                result.response = JSON.stringify({ docno, action: 'update', lookupError: replacement.message });
+                return result;
+              }
+              if (replacement.state === 'found') {
+                result.replacedBy = replacement.docno;
+                result.message = `Cash sale '${docno}' was replaced by '${replacement.docno}', which is active in SQL; '${docno}' was not un-cancelled.`;
+                result.response = JSON.stringify({ docno, action: 'update', replacedBy: replacement.docno });
+                return result;
+              }
+            }
 
             // When cancelling: DELETE customer payments FIRST, then PUT cash sale
             if (cancelled === true) {
@@ -3602,16 +3858,20 @@ class SqlAccountRouter {
                   const paymentType = item.paymentType != null ? String(item.paymentType).trim() : String(idx);
                   paymentDocnosToDelete.push(`${cashSalesDocno}_${paymentType}`);
                 }
-              } else {
-                const mixedpayments = order.mixedpayments || order.mixedPayments;
-                if (Array.isArray(mixedpayments) && mixedpayments.length > 0) {
-                  for (const item of mixedpayments) {
-                    const paymentType = item.paymentType != null ? String(item.paymentType).trim() : '';
-                    if (paymentType) paymentDocnosToDelete.push(`${cashSalesDocno}_${paymentType}`);
+              }
+              // Mixed payments posted without paymentBreakdown were named after the raw payment type.
+              const mixedpayments = order.mixedpayments || order.mixedPayments;
+              if (Array.isArray(mixedpayments) && mixedpayments.length > 0) {
+                for (const item of mixedpayments) {
+                  const paymentType = item.paymentType != null ? String(item.paymentType).trim() : '';
+                  const legacyDocno = `${cashSalesDocno}_${paymentType}`;
+                  if (paymentType && !paymentDocnosToDelete.includes(legacyDocno)) {
+                    paymentDocnosToDelete.push(legacyDocno);
                   }
                 }
               }
               let customerPaymentsDeleted = 0;
+              let customerPaymentDeleteFailures = 0;
               console.log('[CUSTOMER PAYMENT] cancelled=true, deleting payments BEFORE PUT: count=', paymentDocnosToDelete.length, 'docnos=', paymentDocnosToDelete);
               for (const paymentDocno of paymentDocnosToDelete) {
                 try {
@@ -3622,22 +3882,30 @@ class SqlAccountRouter {
                   if (voidResult.success) {
                     customerPaymentsDeleted++;
                     console.log('[CASH SALES] Customer payment deleted:', paymentDocno);
+                  } else if (voidResult.notFound) {
+                    console.log('[CASH SALES] Customer payment not in SQL, nothing to delete:', paymentDocno);
                   } else {
-                    console.warn('[CASH SALES] Customer payment delete skipped (not found or error):', paymentDocno, voidResult.message);
+                    // A real failure: the payment may still be in SQL. Report it so the caller does not treat the void as clean.
+                    customerPaymentDeleteFailures++;
+                    console.warn('[CASH SALES] Customer payment delete failed:', paymentDocno, voidResult.message);
                   }
                 } catch (voidErr) {
+                  customerPaymentDeleteFailures++;
                   console.warn('[CASH SALES] Customer payment delete error:', paymentDocno, voidErr.message || voidErr);
                 }
               }
               result.customerPaymentsDeleted = customerPaymentsDeleted;
+              if (customerPaymentDeleteFailures > 0) result.customerPaymentsFailed = customerPaymentDeleteFailures;
               console.log('[CUSTOMER PAYMENT] cancelled=true done: deleted=', customerPaymentsDeleted);
             }
 
             console.log('🔄 [UPDATE] Calling helperUpdateCashSales with dockey:', existingRecord.dockey);
             
+            if (cancelled !== true && updateMode !== 'irbm') prepareDocumentWrite();
             cashSalesResult = await this.helperUpdateCashSales({ 
               dockey: existingRecord.dockey, 
-              cashSalesData: payload, 
+              cashSalesData: payload,
+              updateMode,
               storeId: storeId,
             });
             
@@ -3657,28 +3925,84 @@ class SqlAccountRouter {
           return result;
         }
       } else {
-        // Default action is 'create'
-        cashSalesResult = await this.helperCreateCashSales({ cashSalesData: payload, storeId: storeId });
-        console.log('[CASH SALES] helperCreateCashSales result:', JSON.stringify(cashSalesResult, null, 2));
+        // Default action is 'create': only create when SQL confirms there is no row for this docno + project.
+        const lookupStoreId = storeId || order.storeid || order.storeId || null;
+        const existing = await this.helperFindCashSalesByDocno({
+          docno: payload.docno,
+          project: payload.project,
+          storeId: lookupStoreId,
+        });
+        if (existing.state === 'found') {
+          console.log('[CASH SALES] create skipped, docno already in SQL:', payload.docno);
+          result.alreadyExists = true;
+          cashSalesResult = {
+            success: true,
+            data: existing.record,
+            response: JSON.stringify({ alreadyExists: true, docno: payload.docno }),
+          };
+        } else if (existing.state === 'conflict') {
+          console.warn('[CASH SALES] create blocked, docno used by another project:', payload.docno, existing.projects);
+          result.docnoConflict = true;
+          result.message = existing.message;
+          result.response = JSON.stringify({ docno: payload.docno, docnoConflict: true, projects: existing.projects });
+          return result;
+        } else if (existing.state === 'error') {
+          console.warn('[CASH SALES] create blocked, SQL lookup failed:', payload.docno, existing.message);
+          result.message = `SQL lookup failed, not created: ${existing.message}`;
+          result.response = JSON.stringify({ docno: payload.docno, lookupError: existing.message });
+          return result;
+        } else {
+          prepareDocumentWrite();
+          cashSalesResult = await this.helperCreateCashSales({ cashSalesData: payload, storeId: storeId });
+          console.log('[CASH SALES] helperCreateCashSales result:', JSON.stringify(cashSalesResult, null, 2));
+        }
       }
 
       if (cashSalesResult.success) {
         result.success = true;
         result.data = cashSalesResult.data;
+        result.resolvedDocno = payload.docno;
         result.response = cashSalesResult.response;
 
         // Customer payments: when cancelled, delete existing; otherwise create
         const resolvedStoreId = order.storeid || order.storeId || storeId;
         const cashSalesDocno = payload.docno;
-        const dateStr = payload.docdate || this.formatDateYYYYMMDD(new Date());
-        const code = payload.code;
+        // A payment belongs to the period of the sale it knocks off, so an existing sale keeps its SQL date.
+        const existingDate = result.alreadyExists
+          ? this.normalizeSqlDocdate(cashSalesResult?.data?.docdate)
+          : '';
+        const dateStr = existingDate || payload.docdate || this.formatDateYYYYMMDD(new Date());
+        const existingCode = result.alreadyExists ? String(cashSalesResult.data?.code ?? '').trim() : '';
+        const code = existingCode || payload.code;
         let customerPaymentsCreated = 0;
         let customerPaymentsSkipped = 0;
+        let customerPaymentsExisting = 0;
+        let customerPaymentsFailed = 0;
         let customerPaymentsDeleted = 0;
+        const countPaymentResult = (cpResult, paymentDocno) => {
+          if (cpResult.success && cpResult.alreadyExists) {
+            customerPaymentsExisting++;
+            console.log('[CASH SALES] Customer payment already exists:', paymentDocno);
+          } else if (cpResult.success) {
+            customerPaymentsCreated++;
+            console.log('[CASH SALES] Customer payment created:', paymentDocno);
+          } else {
+            customerPaymentsFailed++;
+            console.warn('[CASH SALES] Customer payment failed:', paymentDocno, cpResult.message);
+          }
+        };
 
-        if (cancelled === true) {
-          // Customer payments already deleted BEFORE PUT (in update block above); nothing more to do
-          console.log('[CUSTOMER PAYMENT] cancelled=true: payments deleted before PUT, no further action');
+        const existingSaleCancelled = updateLeavesSaleCancelled || Boolean(
+          result.alreadyExists && this.isCancelledFlag(cashSalesResult?.data?.cancelled)
+        );
+        if (cancelled === true || existingSaleCancelled) {
+          // A cancelled cash sale must not gain customer payments. Creating against
+          // one that already exists (a repeated void post) would put them back.
+          if (cancelled === true) {
+            console.log('[CUSTOMER PAYMENT] cancelled=true: payments deleted before PUT, no further action');
+          } else {
+            console.log('[CUSTOMER PAYMENT] existing cash sale is cancelled; payments not created:', cashSalesDocno);
+          }
         } else if (Array.isArray(paymentBreakdown) && paymentBreakdown.length > 0) {
           // Priority 1: Use paymentBreakdown directly (accountCode and amount from payload, no store lookup)
           console.log('[CUSTOMER PAYMENT] paymentBreakdown: count=', paymentBreakdown.length, 'storeId=', resolvedStoreId, 'cashSalesDocno=', cashSalesDocno);
@@ -3703,6 +4027,24 @@ class SqlAccountRouter {
               const paymentType = item.paymentType != null ? String(item.paymentType).trim() : String(idx);
               const paymentDocno = `${cashSalesDocno}_${paymentType}`;
               try {
+                if (result.alreadyExists || action === 'update') {
+                  const legacy = await this.helperFindLegacyCustomerPayment({
+                    order,
+                    cashSalesDocno,
+                    category: paymentType,
+                    storeId: resolvedStoreId,
+                  });
+                  if (legacy.state === 'found') {
+                    customerPaymentsExisting++;
+                    console.log('[CASH SALES] Legacy customer payment already exists:', legacy.docno);
+                    continue;
+                  }
+                  if (legacy.state === 'error') {
+                    customerPaymentsFailed++;
+                    console.warn('[CASH SALES] Legacy customer payment lookup failed, not created:', paymentDocno, legacy.message);
+                    continue;
+                  }
+                }
                 const cpResult = await this.helperCreateCustomerPaymentWithParams({
                   docno: paymentDocno,
                   code,
@@ -3713,19 +4055,17 @@ class SqlAccountRouter {
                   postdate: dateStr,
                   storeId: resolvedStoreId,
                 });
-                if (cpResult.success) {
-                  customerPaymentsCreated++;
-                  console.log('[CASH SALES] Customer payment created:', paymentDocno, 'accountCode:', accountCode, 'amount:', numAmount);
-                } else {
-                  console.warn('[CASH SALES] Customer payment failed:', paymentDocno, cpResult.message);
-                }
+                countPaymentResult(cpResult, paymentDocno);
               } catch (cpErr) {
+                customerPaymentsFailed++;
                 console.warn('[CASH SALES] Customer payment error:', paymentDocno, cpErr.message || cpErr);
               }
             }
             result.customerPaymentsCreated = customerPaymentsCreated;
             result.customerPaymentsSkipped = customerPaymentsSkipped;
-            console.log('[CUSTOMER PAYMENT] paymentBreakdown done: created=', customerPaymentsCreated, 'skipped=', customerPaymentsSkipped);
+            result.customerPaymentsExisting = customerPaymentsExisting;
+            result.customerPaymentsFailed = customerPaymentsFailed;
+            console.log('[CUSTOMER PAYMENT] paymentBreakdown done: created=', customerPaymentsCreated, 'existing=', customerPaymentsExisting, 'skipped=', customerPaymentsSkipped, 'failed=', customerPaymentsFailed);
           }
         } else {
           // Priority 2: Fallback to mixedpayments + store lookup (backward compatibility)
@@ -3754,6 +4094,21 @@ class SqlAccountRouter {
                   }
                   const paymentDocno = `${cashSalesDocno}_${paymentType}`;
                   try {
+                    // Newer apps name the payment after its category; do not post the same money again.
+                    const categoryDocno = `${cashSalesDocno}_${this.paymentCategoryForSqlAccount(paymentType)}`;
+                    if (categoryDocno !== paymentDocno) {
+                      const byCategory = await this.helperFindCustomerPaymentByDocno({ docno: categoryDocno, storeId: resolvedStoreId });
+                      if (byCategory.state === 'error') {
+                        customerPaymentsFailed++;
+                        console.warn('[CASH SALES] Category payment lookup failed, not created:', paymentDocno, byCategory.message);
+                        continue;
+                      }
+                      if (byCategory.state === 'found' && !this.isCancelledFlag(byCategory.record?.cancelled)) {
+                        customerPaymentsExisting++;
+                        console.log('[CASH SALES] Category customer payment already exists:', categoryDocno);
+                        continue;
+                      }
+                    }
                     const cpResult = await this.helperCreateCustomerPaymentWithParams({
                       docno: paymentDocno,
                       code,
@@ -3764,22 +4119,33 @@ class SqlAccountRouter {
                       postdate: dateStr,
                       storeId: resolvedStoreId,
                     });
-                    if (cpResult.success) {
-                      customerPaymentsCreated++;
-                      console.log('[CASH SALES] Customer payment created:', paymentDocno, 'amount:', amount);
-                    } else {
-                      console.warn('[CASH SALES] Customer payment failed:', paymentDocno, cpResult.message);
-                    }
+                    countPaymentResult(cpResult, paymentDocno);
                   } catch (cpErr) {
+                    customerPaymentsFailed++;
                     console.warn('[CASH SALES] Customer payment error:', paymentDocno, cpErr.message || cpErr);
                   }
                 }
                 result.customerPaymentsCreated = customerPaymentsCreated;
                 result.customerPaymentsSkipped = customerPaymentsSkipped;
+                result.customerPaymentsExisting = customerPaymentsExisting;
+                result.customerPaymentsFailed = customerPaymentsFailed;
                 console.log('[CUSTOMER PAYMENT] mixedpayments done: created=', customerPaymentsCreated, 'skipped=', customerPaymentsSkipped);
               }
             }
           }
+        }
+        // Older clients still use success for the cash sale itself. Kitchen
+        // separately verifies SQL, including payments, before persisting pass.
+        if (accountingSnapshot) {
+          const mapped = (paymentBreakdown || []).filter(p => p.accountCode && Number(p.amount) > 0);
+          const handled = (result.customerPaymentsExisting || 0) + (result.customerPaymentsCreated || 0);
+          const paymentsExpected = accountingSnapshot.paymentsExpected === true || mapped.length > 0;
+          const paymentsOk = !(result.customerPaymentsFailed > 0) && (cancelled === true ||
+            (!existingSaleCancelled && handled === mapped.length &&
+              (!paymentsExpected || !(result.customerPaymentsSkipped > 0))));
+          // An already-existing sale was accepted under the original matching
+          // policy. Kitchen's read-back determines its final reconciliation.
+          if (!paymentsOk || !result.alreadyExists) result.syncComplete = paymentsOk;
         }
       } else {
         result.message = cashSalesResult.message || `Failed to ${action} cash sales`;

@@ -776,11 +776,11 @@ async function processCorporateCreditsForEmployees({
       allocations,
       defaultAllocation,
     );
-    const empCc = data.company_credit && data.company_credit[companyId];
+    const empCc = (data.company_credit && data.company_credit[companyId]) || {};
     const userSnap = await fireStore.collection('user').doc(docId).get();
     const userData = userSnap.exists ? userSnap.data() || {} : {};
     const userCc =
-      userData.company_credit && userData.company_credit[companyId];
+      (userData.company_credit && userData.company_credit[companyId]) || {};
     const existingCc = resolveExistingCcForTopup(empCc, userCc, dayKey);
     const allocationResolved = { ...allocation };
     if (
