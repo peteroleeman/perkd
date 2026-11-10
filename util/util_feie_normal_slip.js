@@ -3,18 +3,19 @@
 const { ReceiptFormat, orderItemIsTakeAway } = require('../feie/util_feie');
 
 // Wrap before adding markup. Keep whitespace and final partial lines intact.
-function wrapText(value, width) {
+function wrapText(value, width, continuationWidth = width) {
   const rows = [];
   for (const paragraph of String(value).split(/\r\n|\r|\n/)) {
     let remaining = [...paragraph];
     if (!remaining.length) rows.push('');
     while (remaining.length) {
+      const rowWidth = rows.length ? continuationWidth : width;
       let cells = 0;
       let end = 0;
       let wordBreak = 0;
       while (end < remaining.length) {
         const size = remaining[end].codePointAt(0) <= 127 ? 1 : 2;
-        if (cells + size > width) break;
+        if (cells + size > rowWidth) break;
         cells += size;
         if (remaining[end] === ' ') wordBreak = end + 1;
         end++;
@@ -42,10 +43,12 @@ function buildStyle2Slip(order, isReprint, type) {
   const width = type === 1 ? 48 : 32;
   const itemWidth = width / 2;
   const receipt = [];
-  const text = (value, { big = false, bold = false, center = false, indent = '' } = {}) => {
+  const text = (value, { big = false, bold = false, center = false, indent = '', hangingIndent = '' } = {}) => {
     if (value == null || String(value).trim() === '' || value === 'null') return;
-    for (const row of wrapText(value, (big ? itemWidth : width) - indent.length)) {
-      let formatted = indent + row;
+    const textWidth = (big ? itemWidth : width) - indent.length;
+    const rows = wrapText(value, textWidth, textWidth - hangingIndent.length);
+    for (const [index, row] of rows.entries()) {
+      let formatted = indent + (index > 0 ? hangingIndent : '') + row;
       if (big) formatted = ReceiptFormat.setBIG(formatted);
       if (bold) formatted = ReceiptFormat.setBold(formatted);
       if (center) formatted = ReceiptFormat.setCenter(formatted);
@@ -80,7 +83,11 @@ function buildStyle2Slip(order, isReprint, type) {
     if (orderItemIsTakeAway(item)) text('*TAKE AWAY*', detailOptions);
     if (Array.isArray(item.modInfo)) {
       for (const mod of item.modInfo) {
-        text(`${mod.qty ?? 1}x ${mod.title ?? ''}`, detailOptions);
+        if (mod.isPortionLine === true) {
+          text(mod.title, { ...detailOptions, hangingIndent: '  ' });
+        } else {
+          text(`${mod.qty ?? 1}x ${mod.title ?? ''}`, detailOptions);
+        }
       }
     }
     text(item.remark, detailOptions);

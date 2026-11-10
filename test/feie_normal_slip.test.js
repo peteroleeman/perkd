@@ -8,7 +8,8 @@ const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const UtilFeie = require('../feie/util_feie');
 const { buildFeieNormalSlip } = require('../util/util_feie_normal_slip');
-const { printOrderItemSlipPOSByStyle } = require('../util/util_feie_orderslip');
+const UtilFeieOrderSlip = require('../util/util_feie_orderslip');
+const { printOrderItemSlipPOSByStyle } = UtilFeieOrderSlip;
 
 function payload(overrides = {}) {
   return {
@@ -83,6 +84,43 @@ function loadRouter() {
     },
   };
 }
+
+test('POS Agent replay and cancellation preserve portion lines in a saved payload', async () => {
+  const harness = loadRouter();
+  const order = UtilFeieOrderSlip.convertToFeieOrder({
+    orderid: 'TEST-PORTION-REPLAY',
+    orderitems: [{
+      title: 'Crawfish 456',
+      qty: 1,
+      portionsummary: '1.5斤: Mala | 1.5斤: Wangi',
+      modinfo: 'Mala,Wangi',
+    }],
+  });
+  order.sn = 'TEST-NOT-A-REAL-PRINTER';
+  for (const type of [0, 1]) {
+    for (const style of [0, 1, 2]) {
+      const saved = UtilFeieOrderSlip.buildKdsOrderSlipExApiBody({ ...order, type }, { style });
+      const body = { ...JSON.parse(JSON.stringify(saved)), isReprint: true };
+      const reprint = await harness.post('/newkdsorderslipexap', body);
+      assert.equal(reprint.statusCode, 200);
+      assert.equal(harness.calls.at(-1).isJP, true);
+      const reprinted = plain(harness.calls.at(-1).content);
+      assert.match(reprinted, /DUPLICATE/i);
+      assert.match(reprinted, /1\.5斤: Mala/);
+      assert.match(reprinted, /1\.5斤: Wangi/);
+      assert.doesNotMatch(reprinted, /1\s*x\s*1\.5斤|1\.5斤: (Mala|Wangi)\s+1(?=\s|$)/);
+
+      const cancel = await harness.post('/newkdsorderslipexapcancel', { ...body, cancelled: true });
+      assert.equal(cancel.statusCode, 200);
+      const cancelled = plain(harness.calls.at(-1).content);
+      assert.match(cancelled, /ORDER CANCELLED/);
+      assert.match(cancelled, /DO NOT PREPARE/);
+      assert.match(cancelled, /1\.5斤: Mala/);
+      assert.match(cancelled, /1\.5斤: Wangi/);
+      assert.doesNotMatch(cancelled, /1\s*x\s*1\.5斤/);
+    }
+  }
+});
 
 
 test('new normal endpoints preserve styles 0 and 1 for both regions, widths and reprints', async () => {

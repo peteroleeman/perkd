@@ -1257,8 +1257,9 @@ class UtilFeie
             let modQty = mod?.qty ?? 1;
 
             dualTable.refresh();
-            dualTable.addKey(useStyle1 ? `-${modTitle}` : `  ${modTitle}`);
-            if (!useStyle1) {
+            const isPortionLine = mod?.isPortionLine === true;
+            dualTable.addKey(useStyle1 && !isPortionLine ? `-${modTitle}` : `  ${modTitle}`);
+            if (!useStyle1 && !isPortionLine) {
               if (modQty > 1) {
                 dualTable.addBoldValue(`${modQty}`);
               } else {
@@ -1467,7 +1468,8 @@ class UtilFeie
         for (const mod of orderItem.modInfo) {
           const modTitle = mod?.title ?? '';
           line.refresh();
-          line.addMarkupLine(ReceiptFormat.setBIG(`-${modTitle}`) + '<BR>');
+          const prefix = mod?.isPortionLine === true ? '  ' : '-';
+          line.addMarkupLine(ReceiptFormat.setBIG(`${prefix}${modTitle}`) + '<BR>');
           for (const lineText of line.getReceipt()) {
             receipt.push(lineText);
           }

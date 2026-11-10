@@ -100,3 +100,83 @@ test('automatic styles 0/1 and cancellation output keep their previous renderer'
     ));
   }
 });
+
+test('automatic crawfish slips save and print bilingual portion lines in both paper widths', async () => {
+  const { printer, calls } = loadAutomaticPrinter();
+  const item = {
+    title: '3斤小龙虾 (456) / 1.5kg Crawfish 456',
+    qty: 2,
+    modinfo: 'Mala,Wangi,黄瓜 / Cucumber,竹笋 / Bamboo',
+    portions: [
+      { label: '1.5斤', modifiers: [{ title: 'Mala', price: 0 }] },
+      { label: '1.5斤', modifiers: [
+        { title: 'Wangi', price: 0 },
+        { title: '黄瓜 / Cucumber', price: 1 },
+        { title: '竹笋 / Bamboo', price: 1 },
+      ] },
+    ],
+  };
+  const expected = [
+    { title: '1.5斤: Mala', isPortionLine: true },
+    { title: '1.5斤: Wangi + 黄瓜 / Cucumber, + 竹笋 / Bamboo', isPortionLine: true },
+  ];
+
+  for (const type of [0, 1]) {
+    for (const enableIndividual of [false, true]) {
+      const before = calls.length;
+      const result = await printer.printFeieOrderSlipsForOrder(
+        { orderid: 'TEST-PORTIONS', orderitems: [item] },
+        { feieorderslipprinter: [{ title: 'TEST-NOT-A-REAL-PRINTER', receipttype: type }] },
+        { enableIndividual },
+      );
+      assert.equal(result.jobsSent, enableIndividual ? 2 : 1);
+      assert.equal(result.errors.length, 0);
+      for (const saved of result.slipPrintPayloads) {
+        assert.deepEqual(JSON.parse(JSON.stringify(saved.orderItems[0].modInfo)), expected);
+        assert.equal(saved.orderItems[0].qty, enableIndividual ? 1 : 2);
+      }
+      for (const call of calls.slice(before)) {
+        const rows = call.content.map((row) => row.replace(/<[^>]+>/g, ''));
+        const start = rows.findIndex((row) => row.trim() === '1.5斤: Mala');
+        assert.ok(start >= 0);
+        assert.match(rows[start + 1], /^  1\.5斤: Wangi/);
+        const portionRows = rows.slice(start, -1);
+        assert.equal(portionRows.join('').replace(/\s+/g, ''),
+          expected.map(({ title }) => title).join('').replace(/\s+/g, ''));
+        assert.ok(portionRows.every((row) => [...row].reduce(
+          (width, char) => width + (char.codePointAt(0) > 127 ? 2 : 1), 0,
+        ) <= (type === 1 ? 24 : 16)));
+      }
+    }
+  }
+});
+
+test('portion modifiers keep whole-item extras, legacy fallbacks, and set selections', () => {
+  const { printer } = loadAutomaticPrinter();
+  const items = printer.convertToFeieOrder({ orderitems: [
+    {
+      title: 'Split order',
+      portions: [{ size: 1.5, unit: '斤', modifiers: [
+        { title: 'Mala' }, { title: 'Mala' }, { title: 'Bamboo', price: 1 },
+      ] }],
+      modinfo: [{ title: 'Mala', qty: 3 }, { title: 'Bamboo', qty: 1 }, { title: 'Extra sauce', qty: 2 }],
+      submenus1: [{ title: 'Rice' }],
+      remark: 'Less spicy',
+    },
+    { portions: [{}], portionsummary: '1.5斤: Mala | 1.5斤: Wangi', modinfo: 'Mala,Wangi' },
+    { portionsummary: ' | ', modinfo: 'Ginger' },
+    { modifiers: { sauce: [{ title: 'Extra sauce' }] }, modinfo: 'Ignored by existing rules' },
+  ] }).orderItems;
+  assert.deepEqual(JSON.parse(JSON.stringify(items.map((item) => item.modInfo))), [
+    [
+      { title: '1.5斤: Mala x2 + Bamboo', isPortionLine: true },
+      { title: 'Mala', qty: 1 },
+      { title: 'Extra sauce', qty: 2 },
+      { title: 'S1:Rice', qty: 1 },
+    ],
+    [{ title: '1.5斤: Mala', isPortionLine: true }, { title: '1.5斤: Wangi', isPortionLine: true }],
+    [{ title: 'Ginger', qty: 1 }],
+    [{ title: 'Extra sauce', qty: 1 }],
+  ]);
+  assert.equal(items[0].remark, 'Less spicy');
+});

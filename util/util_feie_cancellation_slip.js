@@ -73,7 +73,7 @@ function buildFeieCancellationSlip(order, type = 0, style = 0) {
     if (orderItemIsTakeAway(item)) detail('*TAKE AWAY*');
     if (Array.isArray(item.modInfo)) {
       for (const mod of item.modInfo) {
-        detail(`${mod.qty ?? 1} x ${mod.title ?? ''}`);
+        detail(mod.isPortionLine === true ? mod.title : `${mod.qty ?? 1} x ${mod.title ?? ''}`);
       }
     }
     detail(item.remark);

@@ -163,7 +163,10 @@ function feieModInfoListFromOrderItem(orderItem) {
   }
   if (fromDetail.length > 0) return fromDetail;
 
-  const modInfo = orderItem?.modinfo ?? orderItem?.modInfo;
+  return feieModInfoListFromValue(orderItem?.modinfo ?? orderItem?.modInfo);
+}
+
+function feieModInfoListFromValue(modInfo) {
   if (!modInfo || modInfo === 'null') return [];
   if (Array.isArray(modInfo)) {
     return modInfo.map((m) => ({
@@ -185,6 +188,69 @@ function feieModInfoListFromOrderItem(orderItem) {
     ];
   }
   return feieModInfoListFromModInfoString(modInfo);
+}
+
+function modifierTitlesWithCounts(titles) {
+  const counts = new Map();
+  for (const title of titles) {
+    counts.set(title, (counts.get(title) ?? 0) + 1);
+  }
+  return [...counts].map(([title, count]) => count > 1 ? `${title} x${count}` : title);
+}
+
+function portionLabel(portion) {
+  const label = trimStr(portion?.label);
+  if (label) return label;
+  const size = Number(portion?.size);
+  const unit = trimStr(portion?.unit);
+  return Number.isFinite(size) && size > 0 && unit
+    ? `${Number(size.toFixed(3))}${unit}`
+    : '';
+}
+
+function feiePortionModifiers(orderItem) {
+  const portions = orderItem?.portions;
+  const portionLine = (title) => ({ title, isPortionLine: true });
+  if (!Array.isArray(portions) || !portions.length || !portions.every(portionLabel)) {
+    const summary = typeof orderItem?.portionsummary === 'string' ? orderItem.portionsummary : '';
+    const lines = summary.split('|').map((line) => line.trim()).filter(Boolean);
+    return lines.length ? lines.map(portionLine) : feieModInfoListFromOrderItem(orderItem);
+  }
+
+  const remainingPortionPicks = new Map();
+  const lines = portions.map((portion) => {
+    const free = [];
+    const paid = [];
+    const modifiers = Array.isArray(portion.modifiers) ? portion.modifiers : [];
+    for (const modifier of modifiers) {
+      const title = trimStr(modifier?.title);
+      if (!title) continue;
+      const matchTitle = stripEmbeddedModPrice(title);
+      remainingPortionPicks.set(matchTitle, (remainingPortionPicks.get(matchTitle) ?? 0) + 1);
+      const price = Number(modifier.price);
+      (Number.isFinite(price) && price !== 0 ? paid : free).push(title);
+    }
+    const freeText = modifierTitlesWithCounts(free).join(', ');
+    const paidText = modifierTitlesWithCounts(paid).map((title) => `+ ${title}`).join(', ');
+    const selections = [freeText, paidText].filter(Boolean).join(' ');
+    const label = portionLabel(portion);
+    return portionLine(selections ? `${label}: ${selections}` : label);
+  });
+
+  const flat = feieModInfoListFromValue(orderItem.modinfo ?? orderItem.modInfo);
+  if (!flat.length) return [...lines, ...feieModInfoListFromOrderItem(orderItem)];
+  for (const modifier of flat) {
+    const title = stripEmbeddedModPrice(modifier.title);
+    const remaining = remainingPortionPicks.get(title) ?? 0;
+    const used = Math.min(modifier.qty, remaining);
+    if (used <= 0) {
+      lines.push(modifier);
+      continue;
+    }
+    remainingPortionPicks.set(title, remaining - used);
+    if (modifier.qty > used) lines.push({ ...modifier, qty: modifier.qty - used });
+  }
+  return lines;
 }
 
 function orderItemIsSet(orderItem) {
@@ -228,7 +294,7 @@ function appendSetSubmenuModifiers(orderItem, modInfoList, categoryIds = []) {
 function buildFeieOrderItem(order, orderItem, categoryIds = []) {
   const orderType =
     order?.ordertype ?? order?.orderType ?? order?.getOrderType?.() ?? 'Dine In';
-  const modInfoList = feieModInfoListFromOrderItem(orderItem);
+  const modInfoList = feiePortionModifiers(orderItem);
   appendSetSubmenuModifiers(orderItem, modInfoList, categoryIds);
 
   return {
