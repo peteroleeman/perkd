@@ -1337,8 +1337,19 @@ class SqlAccountRouter {
       const rows = this.extractRecords(list).filter((r) => String(r?.docno ?? '').trim() === wanted);
       if (rows.length === 0) return { state: 'notFound', record: null, projects: [], message: '' };
       if (!wantedProject) return { state: 'found', record: rows[0], projects: [], message: '' };
-      const match = rows.find((r) => String(r?.project ?? '').trim().toLowerCase() === wantedProject);
-      if (match) return { state: 'found', record: match, projects: [], message: '' };
+      const containedProjects = new Map();
+      for (const row of rows) {
+        const code = String(row.project ?? '').trim().toLowerCase();
+        if (code === wantedProject) {
+          return { state: 'found', record: row, projects: [], message: '' };
+        }
+        if (code && wantedProject.includes(code) && !containedProjects.has(code)) {
+          containedProjects.set(code, row);
+        }
+      }
+      if (containedProjects.size === 1) {
+        return { state: 'found', record: containedProjects.values().next().value, projects: [], message: '' };
+      }
       const projects = rows.map((r) => String(r?.project ?? '').trim()).filter(Boolean);
       return {
         state: 'conflict',
@@ -2474,6 +2485,7 @@ class SqlAccountRouter {
     return sendRequest(method, path, body, query, {
       ...opts,
       ...credentials,
+      storeId: storeId ?? undefined,
     });
   }
 
@@ -3106,7 +3118,13 @@ class SqlAccountRouter {
     };
 
     try {
-      const data = await this.sendRequestWithCredentials(storeId, "POST", this.CASH_SALES_BASE_PATH, addCashSaleLineNumbers(cashSalesData));
+      const payload = addCashSaleLineNumbers(cashSalesData);
+      const logPayload = { ...payload };
+      for (const field of ['code', 'attention', 'dattention', 'dphone1']) {
+        if (logPayload[field]) logPayload[field] = '[redacted]';
+      }
+      console.log('[SQLAccount] POST cash sale payload:', JSON.stringify(logPayload));
+      const data = await this.sendRequestWithCredentials(storeId, "POST", this.CASH_SALES_BASE_PATH, payload);
       result.success = true;
       result.data = data;
       result.response = JSON.stringify(data);
@@ -3745,7 +3763,6 @@ class SqlAccountRouter {
         result.cashSalesPayload = payload;
       };
       result.cashSalesPayload = payload;
-      console.log('[CASH SALES] payload to be sent:', JSON.stringify(payload, null, 2));
 
       // Extract customer code and name from payload
       const customerCode = payload.code;
@@ -3753,7 +3770,6 @@ class SqlAccountRouter {
       const customerPhone = payload.dphone1;
 
       console.log(`🔔 [CASH SALES] Starting process to ${action} cash sales`);
-      console.log(payload);  
 
       // Step 1: Create customer (always attempt, regardless of whether it exists)
       const createCustomerResult = await this.helperCreateCustomer({

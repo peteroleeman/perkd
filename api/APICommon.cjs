@@ -7,6 +7,8 @@ const { getCredentialsForStore } = require("../util/sqlAccountCredentials.js");
 dotenv.config();
 
 const useAws4Library = (process.env.USE_AWS4_LIBRARY || "true").toLowerCase() === "true";
+// api.sql.my rejects tool User-Agents (axios/*, curl/*) for some accounts with an HTML 404.
+const sqlApiUserAgent = process.env.SQL_API_USER_AGENT || "perkd-sqlaccount/1.0";
 
 function sign(key, msg) {
   return crypto.createHmac("sha256", key).update(msg).digest();
@@ -108,12 +110,6 @@ function signRequest(method, urlObj, body = "", opts = {}) {
     headers = { ...headers, ...opts.headers };
   }
 
-  let symbolString = "";
-  for (let i = 0; i < 50; i += 1) {
-    symbolString += "=";
-  }
-  console.log(symbolString, "\n");
-
   return headers;
 }
 
@@ -138,9 +134,12 @@ async function sendRequest(method, path, body = null, query = "", opts = {}) {
   const bodyString = body ? JSON.stringify(body) : "";
   const headers = signRequest(method, urlObj, bodyString, opts);
 
+  const logStoreId = opts.storeId ?? null;
   console.log('[API REQUEST] data sent to axios:', {
+    storeId: logStoreId,
     method,
     url: requestUrl,
+    query: Object.fromEntries(urlObj.searchParams.entries()),
     data: body || undefined,
   });
   if (body && body.sdsdocdetail) {
@@ -150,23 +149,69 @@ async function sendRequest(method, path, body = null, query = "", opts = {}) {
     console.log('[API REQUEST] sdsknockoff:', JSON.stringify(body.sdsknockoff, null, 2));
   }
 
-  const response = await axios({
-    method,
-    url: requestUrl,
-    headers,
-    data: body || undefined,
-    responseType: opts.responseType || "json",
-    timeout: opts.timeout || 20000,
-  });
+  let response;
+  try {
+    response = await axios({
+      method,
+      url: requestUrl,
+      headers: { "User-Agent": sqlApiUserAgent, ...headers },
+      data: body || undefined,
+      responseType: opts.responseType || "json",
+      timeout: opts.timeout || 20000,
+    });
+  } catch (error) {
+    const errData = error.response?.data;
+    const errBody = typeof errData === "string"
+      ? errData.slice(0, 500)
+      : errData !== undefined
+        ? safeStringify(errData, 2000)
+        : undefined;
+    console.error('[API REQUEST] ERROR:', {
+      storeId: logStoreId,
+      method,
+      url: requestUrl,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      message: error.message,
+      responseBody: errBody,
+    });
+    throw error;
+  }
 
   console.log('[API REQUEST] response:', {
+    storeId: logStoreId,
+    method,
+    url: requestUrl,
     status: response.status,
     statusText: response.statusText,
-    headers: response.headers,
-    data: response.data,
+    contentType: response.headers?.["content-type"],
+    responseBody: summarizeResponseData(response.data),
   });
 
   return opts.raw ? response : response.data;
+}
+
+function safeStringify(value, maxLen = 2000) {
+  try {
+    const s = JSON.stringify(value);
+    return s && s.length > maxLen ? `${s.slice(0, maxLen)}...[truncated]` : s;
+  } catch (_) {
+    return String(value);
+  }
+}
+
+// Full JSON when SQL_API_LOG_VERBOSE=true; otherwise a compact summary for list responses.
+function summarizeResponseData(data) {
+  if ((process.env.SQL_API_LOG_VERBOSE || "").toLowerCase() === "true") return data;
+  if (data && typeof data === "object" && Array.isArray(data.data)) {
+    return {
+      pagination: data.pagination,
+      count: data.data.length,
+      firstDocno: data.data[0]?.docno,
+    };
+  }
+  if (typeof data === "string") return data.slice(0, 500);
+  return data;
 }
 
 function buildQuery(params = {}) {

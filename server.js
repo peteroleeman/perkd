@@ -263,6 +263,7 @@ app.use('/pos', posRouter.getRouter());
 
 const kdsRouter = new KdsRouter();
 app.use('/kds', kdsRouter.getRouter());
+app.use('/login', require('./loginrouter').createLoginRouter(require('./db').firestore()));
 
 //for grab
 const grabRouter = new GrabRouter();
